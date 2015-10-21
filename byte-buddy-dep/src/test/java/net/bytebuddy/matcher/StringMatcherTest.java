@@ -1,6 +1,6 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.method.MethodDescription;
+import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -18,8 +18,11 @@ import static org.hamcrest.MatcherAssert.assertThat;
 public class StringMatcherTest extends AbstractElementMatcherTest<StringMatcher> {
 
     private static final String FOO = "foo";
+
     private final StringMatcher.Mode mode;
+
     private final String matching, nonMatching;
+
     @Mock
     private MethodDescription methodDescription;
 

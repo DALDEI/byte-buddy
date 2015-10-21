@@ -1,7 +1,7 @@
 package net.bytebuddy.dynamic;
 
-import net.bytebuddy.instrumentation.LoadedTypeInitializer;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.LoadedTypeInitializer;
 import net.bytebuddy.test.utility.MockitoRule;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
@@ -30,6 +30,7 @@ public class DynamicTypeDefaultLoadedTest {
 
     @Mock
     private LoadedTypeInitializer mainLoadedTypeInitializer, auxiliaryLoadedTypeInitializer;
+
     @Mock
     private TypeDescription mainTypeDescription, auxiliaryTypeDescription;
 

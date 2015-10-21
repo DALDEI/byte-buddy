@@ -1,7 +1,7 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.ByteCodeElement;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.ByteCodeElement;
+import net.bytebuddy.description.type.TypeDescription;
 import org.junit.Test;
 import org.mockito.Mock;
 
@@ -13,6 +13,7 @@ public class VisibilityMatcherTest extends AbstractElementMatcherTest<Visibility
 
     @Mock
     private TypeDescription typeDescription;
+
     @Mock
     private ByteCodeElement byteCodeElement;
 

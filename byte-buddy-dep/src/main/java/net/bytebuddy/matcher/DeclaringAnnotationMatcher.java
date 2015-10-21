@@ -1,14 +1,14 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.attribute.annotation.AnnotatedElement;
-import net.bytebuddy.instrumentation.attribute.annotation.AnnotationList;
+import net.bytebuddy.description.annotation.AnnotatedCodeElement;
+import net.bytebuddy.description.annotation.AnnotationList;
 
 /**
  * An element matcher that matches the list of annotations that are provided by an annotated element.
  *
  * @param <T> The actual matched type of this matcher.
  */
-public class DeclaringAnnotationMatcher<T extends AnnotatedElement> extends ElementMatcher.Junction.AbstractBase<T> {
+public class DeclaringAnnotationMatcher<T extends AnnotatedCodeElement> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The matcher to be applied to the provided annotation list.
@@ -32,7 +32,7 @@ public class DeclaringAnnotationMatcher<T extends AnnotatedElement> extends Elem
     @Override
     public boolean equals(Object other) {
         return this == other || !(other == null || getClass() != other.getClass())
-                && annotationMatcher.equals(((DeclaringAnnotationMatcher) other).annotationMatcher);
+                && annotationMatcher.equals(((DeclaringAnnotationMatcher<?>) other).annotationMatcher);
     }
 
     @Override

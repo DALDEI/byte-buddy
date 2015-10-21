@@ -14,7 +14,9 @@ import java.io.Writer;
 public class DebuggingWrapper implements ClassVisitorWrapper {
 
     private final PrintWriter printWriter;
+
     private final Printer printer;
+
     public DebuggingWrapper(Writer writer, Printer printer) {
         printWriter = new PrintWriter(writer);
         this.printer = printer;
@@ -27,6 +29,16 @@ public class DebuggingWrapper implements ClassVisitorWrapper {
 
     public static ClassVisitorWrapper makeDefault() {
         return new DebuggingWrapper(System.out, new Textifier());
+    }
+
+    @Override
+    public int mergeWriter(int hint) {
+        return hint;
+    }
+
+    @Override
+    public int mergeReader(int hint) {
+        return hint;
     }
 
     @Override

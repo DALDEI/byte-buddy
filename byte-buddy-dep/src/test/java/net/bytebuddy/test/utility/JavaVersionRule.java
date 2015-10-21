@@ -24,12 +24,12 @@ public class JavaVersionRule implements MethodRule {
         Enforce enforce = method.getAnnotation(Enforce.class);
         return enforce == null || ClassFileVersion.forKnownJavaVersion(enforce.value()).compareTo(supportedVersion) <= 0
                 ? base
-                : new NoOpStatement(method.getAnnotation(Enforce.class).value());
+                : new NoOpStatement(enforce.value());
     }
 
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.METHOD)
-    public static @interface Enforce {
+    public @interface Enforce {
 
         int value();
     }
@@ -44,7 +44,7 @@ public class JavaVersionRule implements MethodRule {
 
         @Override
         public void evaluate() throws Throwable {
-            Logger.getAnonymousLogger().warning("Ignored test case that requires a Java version " + requiredVersion);
+            Logger.getAnonymousLogger().warning("Ignored test case that requires a Java version of at least " + requiredVersion);
         }
     }
 }

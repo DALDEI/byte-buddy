@@ -1,6 +1,6 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.ModifierReviewable;
+import net.bytebuddy.description.ModifierReviewable;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -19,7 +19,9 @@ import static org.mockito.Mockito.*;
 public class ModifierMatcherTest extends AbstractElementMatcherTest<ModifierMatcher<?>> {
 
     private final ModifierMatcher.Mode mode;
+
     private final int modifiers;
+
     @Mock
     private ModifierReviewable modifierReviewable;
 
@@ -33,8 +35,10 @@ public class ModifierMatcherTest extends AbstractElementMatcherTest<ModifierMatc
     @Parameterized.Parameters
     public static Collection<Object[]> data() {
         return Arrays.asList(new Object[][]{
+                {ModifierMatcher.Mode.ABSTRACT, Opcodes.ACC_ABSTRACT},
                 {ModifierMatcher.Mode.BRIDGE, Opcodes.ACC_BRIDGE},
                 {ModifierMatcher.Mode.FINAL, Opcodes.ACC_FINAL},
+                {ModifierMatcher.Mode.INTERFACE, Opcodes.ACC_INTERFACE},
                 {ModifierMatcher.Mode.NATIVE, Opcodes.ACC_NATIVE},
                 {ModifierMatcher.Mode.PRIVATE, Opcodes.ACC_PRIVATE},
                 {ModifierMatcher.Mode.PROTECTED, Opcodes.ACC_PROTECTED},

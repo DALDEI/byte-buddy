@@ -1,7 +1,7 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.attribute.annotation.AnnotationList;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.annotation.AnnotationList;
+import net.bytebuddy.description.type.TypeDescription;
 
 /**
  * An element matcher that matches the list of inherited annotations of a type description.
@@ -32,7 +32,7 @@ public class InheritedAnnotationMatcher<T extends TypeDescription> extends Eleme
     @Override
     public boolean equals(Object other) {
         return this == other || !(other == null || getClass() != other.getClass())
-                && annotationMatcher.equals(((InheritedAnnotationMatcher) other).annotationMatcher);
+                && annotationMatcher.equals(((InheritedAnnotationMatcher<?>) other).annotationMatcher);
     }
 
     @Override

@@ -1,6 +1,6 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
-import net.bytebuddy.instrumentation.method.MethodDescription;
+import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.test.utility.MockitoRule;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Rule;
@@ -10,7 +10,6 @@ import org.mockito.Mock;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.fail;
 
 public class MethodRebaseResolverResolutionPreservedTest {
 
@@ -18,19 +17,18 @@ public class MethodRebaseResolverResolutionPreservedTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private MethodDescription methodDescription, otherMethodDescription;
+    private MethodDescription.InDefinedShape methodDescription;
 
     @Test
     public void testPreservation() throws Exception {
         MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Resolution.Preserved(methodDescription);
         assertThat(resolution.isRebased(), is(false));
         assertThat(resolution.getResolvedMethod(), is(methodDescription));
-        try {
-            resolution.getAdditionalArguments();
-            fail();
-        } catch (IllegalStateException ignored) {
-            // expected
-        }
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void testPreservationCannotAppendArguments() throws Exception {
+        new MethodRebaseResolver.Resolution.Preserved(methodDescription).getAdditionalArguments();
     }
 
     @Test

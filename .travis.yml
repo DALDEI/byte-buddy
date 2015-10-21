@@ -1,5 +1,9 @@
 language: java
 
+sudo: false
+
+script: mvn test -Pintegration
+
 branches:
   only:
     - master
@@ -11,4 +15,4 @@ jdk:
   - openjdk6
 
 after_success:
-  - mvn clean cobertura:cobertura coveralls:report
+  - mvn clean cobertura:cobertura coveralls:report -Pintegration

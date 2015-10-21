@@ -1,567 +1,490 @@
 package net.bytebuddy.dynamic.scaffold.subclass;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.ClassFileVersion;
-import net.bytebuddy.NamingStrategy;
-import net.bytebuddy.asm.ClassVisitorWrapper;
-import net.bytebuddy.dynamic.ClassLoadingStrategy;
-import net.bytebuddy.dynamic.scaffold.BridgeMethodResolver;
-import net.bytebuddy.dynamic.scaffold.FieldRegistry;
-import net.bytebuddy.dynamic.scaffold.MethodRegistry;
-import net.bytebuddy.instrumentation.Instrumentation;
-import net.bytebuddy.instrumentation.LoadedTypeInitializer;
-import net.bytebuddy.instrumentation.SuperMethodCall;
-import net.bytebuddy.instrumentation.attribute.FieldAttributeAppender;
-import net.bytebuddy.instrumentation.attribute.MethodAttributeAppender;
-import net.bytebuddy.instrumentation.attribute.TypeAttributeAppender;
-import net.bytebuddy.instrumentation.field.FieldDescription;
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.method.MethodLookupEngine;
-import net.bytebuddy.instrumentation.method.bytecode.ByteCodeAppender;
-import net.bytebuddy.instrumentation.method.bytecode.stack.constant.TextConstant;
-import net.bytebuddy.instrumentation.type.InstrumentedType;
-import net.bytebuddy.instrumentation.type.TypeDescription;
-import net.bytebuddy.instrumentation.type.TypeList;
-import net.bytebuddy.modifier.Ownership;
-import net.bytebuddy.modifier.Visibility;
-import net.bytebuddy.test.utility.MockitoRule;
+import net.bytebuddy.description.annotation.AnnotationDescription;
+import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.description.type.PackageDescription;
+import net.bytebuddy.dynamic.AbstractDynamicTypeBuilderTest;
+import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ByteArrayClassLoader;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.dynamic.loading.PackageDefinitionStrategy;
+import net.bytebuddy.implementation.FixedValue;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.MethodDelegation;
+import net.bytebuddy.implementation.StubMethod;
+import net.bytebuddy.implementation.bytecode.constant.TextConstant;
+import net.bytebuddy.implementation.bytecode.member.MethodReturn;
+import net.bytebuddy.test.scope.GenericType;
+import net.bytebuddy.test.utility.ClassFileExtraction;
+import net.bytebuddy.test.utility.JavaVersionRule;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TestRule;
-import org.mockito.Mock;
-import org.mockito.asm.Type;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
-import org.objectweb.asm.MethodVisitor;
+import org.junit.rules.MethodRule;
 import org.objectweb.asm.Opcodes;
 
-import java.io.IOException;
-import java.io.Serializable;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.Arrays;
+import java.lang.annotation.Annotation;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.reflect.*;
+import java.security.AccessController;
+import java.security.ProtectionDomain;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static net.bytebuddy.matcher.ElementMatchers.*;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
+import static junit.framework.TestCase.assertEquals;
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
+import static net.bytebuddy.matcher.ElementMatchers.named;
+import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.IsCollectionContaining.hasItem;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.*;
+import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertNotEquals;
 
-public class SubclassDynamicTypeBuilderTest {
+public class SubclassDynamicTypeBuilderTest extends AbstractDynamicTypeBuilderTest {
 
-    private static final String BOOLEAN_FIELD = "booleanField";
-    private static final String BYTE_FIELD = "byteField";
-    private static final String SHORT_FIELD = "shortField";
-    private static final String CHARACTER_FIELD = "charField";
-    private static final String INTEGER_FIELD = "intField";
-    private static final String LONG_FIELD = "longField";
-    private static final String LONG_FIELD_FROM_INT = "longFieldFromInt";
-    private static final String FLOAT_FIELD = "floatField";
-    private static final String DOUBLE_FIELD = "doubleField";
-    private static final String STRING_FIELD = "stringField";
+    private static final ProtectionDomain DEFAULT_PROTECTION_DOMAIN = null;
 
-    private static final boolean BOOLEAN_VALUE = true;
-    private static final byte BYTE_VALUE = 42;
-    private static final short SHORT_VALUE = 42;
-    private static final char CHARACTER_VALUE = '@';
-    private static final int INTEGER_VALUE = 42;
-    private static final long LONG_VALUE = 42L;
-    private static final float FLOAT_VALUE = 42f;
-    private static final double DOUBLE_VALUE = 42d;
+    private static final String FOO = "foo", BAR = "bar", QUX = "qux";
 
-    private static final String FOO = "foo", BAR = "bar", QUX = "qux", BAZ = "baz";
+    private static final String DEFAULT_METHOD_INTERFACE = "net.bytebuddy.test.precompiled.SingleDefaultMethodInterface";
+
+    private static final String PARAMETER_NAME_CLASS = "net.bytebuddy.test.precompiled.ParameterNames";
+
+    private static final Object STATIC_FIELD = null;
+
+    private static final String INTERFACE_STATIC_FIELD_NAME = "FOO";
 
     @Rule
-    public TestRule mockitoRule = new MockitoRule(this);
+    public MethodRule javaVersionRule = new JavaVersionRule();
 
-    @Mock
-    private Instrumentation simpleInstrumentation,
-            preparingInstrumentation,
-            typeInitializerInstrumentation,
-            fieldCacheInstrumentation;
-    @Mock
-    private ByteCodeAppender byteCodeAppender, typeInitializerAppender, fieldCacheAppender;
-    @Mock
-    private LoadedTypeInitializer loadedTypeInitializer;
+    @Override
+    protected DynamicType.Builder<?> createPlain() {
+        return new ByteBuddy().subclass(Object.class);
+    }
 
-    @Before
-    public void setUp() throws Exception {
-        when(simpleInstrumentation.prepare(any(InstrumentedType.class))).then(new Answer<InstrumentedType>() {
-            @Override
-            public InstrumentedType answer(InvocationOnMock invocation) throws Throwable {
-                return (InstrumentedType) invocation.getArguments()[0];
-            }
-        });
-        when(simpleInstrumentation.appender(any(Instrumentation.Target.class))).thenReturn(byteCodeAppender);
-        when(byteCodeAppender.appendsCode()).thenReturn(true);
-        when(byteCodeAppender.apply(any(MethodVisitor.class), any(Instrumentation.Context.class), any(MethodDescription.class)))
-                .thenAnswer(new Answer<ByteCodeAppender.Size>() {
-                    @Override
-                    public ByteCodeAppender.Size answer(InvocationOnMock invocation) throws Throwable {
-                        MethodVisitor methodVisitor = (MethodVisitor) invocation.getArguments()[0];
-                        MethodDescription methodDescription = (MethodDescription) invocation.getArguments()[2];
-                        methodVisitor.visitInsn(Opcodes.ICONST_0);
-                        methodVisitor.visitInsn(Opcodes.IRETURN);
-                        return new ByteCodeAppender.Size(1, methodDescription.getStackSize());
-                    }
-                });
-        when(preparingInstrumentation.prepare(any(InstrumentedType.class))).then(new Answer<InstrumentedType>() {
-            @Override
-            public InstrumentedType answer(InvocationOnMock invocation) throws Throwable {
-                return ((InstrumentedType) invocation.getArguments()[0])
-                        .withField(BAZ,
-                                new TypeDescription.ForLoadedType(Object.class),
-                                0)
-                        .withMethod(QUX,
-                                new TypeDescription.ForLoadedType(int.class),
-                                Collections.<TypeDescription>emptyList(),
-                                Collections.<TypeDescription>emptyList(),
-                                0)
-                        .withInitializer(loadedTypeInitializer);
-            }
-        });
-        when(preparingInstrumentation.appender(any(Instrumentation.Target.class))).thenReturn(byteCodeAppender);
-        when(typeInitializerInstrumentation.prepare(any(InstrumentedType.class))).then(new Answer<InstrumentedType>() {
-            @Override
-            public InstrumentedType answer(InvocationOnMock invocation) throws Throwable {
-                return (InstrumentedType) invocation.getArguments()[0];
-            }
-        });
-        when(typeInitializerInstrumentation.appender(any(Instrumentation.Target.class))).thenReturn(typeInitializerAppender);
-        when(typeInitializerAppender.appendsCode()).thenReturn(true);
-        when(typeInitializerAppender.apply(any(MethodVisitor.class), any(Instrumentation.Context.class), any(MethodDescription.class)))
-                .thenAnswer(new Answer<ByteCodeAppender.Size>() {
-                    @Override
-                    public ByteCodeAppender.Size answer(InvocationOnMock invocation) throws Throwable {
-                        MethodVisitor methodVisitor = (MethodVisitor) invocation.getArguments()[0];
-                        MethodDescription methodDescription = (MethodDescription) invocation.getArguments()[2];
-                        methodVisitor.visitInsn(Opcodes.ICONST_1);
-                        methodVisitor.visitFieldInsn(Opcodes.PUTSTATIC,
-                                Type.getInternalName(Foo.class),
-                                FOO,
-                                Type.getDescriptor(int.class));
-                        methodVisitor.visitInsn(Opcodes.RETURN);
-                        return new ByteCodeAppender.Size(1, methodDescription.getStackSize());
-                    }
-                });
-        when(fieldCacheInstrumentation.prepare(any(InstrumentedType.class))).then(new Answer<InstrumentedType>() {
-            @Override
-            public InstrumentedType answer(InvocationOnMock invocation) throws Throwable {
-                return (InstrumentedType) invocation.getArguments()[0];
-            }
-        });
-        when(fieldCacheInstrumentation.appender(any(Instrumentation.Target.class))).thenReturn(fieldCacheAppender);
-        when(fieldCacheAppender.appendsCode()).thenReturn(true);
-        when(fieldCacheAppender.apply(any(MethodVisitor.class), any(Instrumentation.Context.class), any(MethodDescription.class)))
-                .thenAnswer(new Answer<ByteCodeAppender.Size>() {
-                    @Override
-                    public ByteCodeAppender.Size answer(InvocationOnMock invocation) throws Throwable {
-                        MethodVisitor methodVisitor = (MethodVisitor) invocation.getArguments()[0];
-                        Instrumentation.Context instrumentationContext = (Instrumentation.Context) invocation.getArguments()[1];
-                        MethodDescription methodDescription = (MethodDescription) invocation.getArguments()[2];
-                        FieldDescription fieldDescription = instrumentationContext.cache(new TextConstant(BAR),
-                                new TypeDescription.ForLoadedType(String.class));
-                        methodVisitor.visitFieldInsn(Opcodes.GETSTATIC,
-                                fieldDescription.getDeclaringType().getInternalName(),
-                                fieldDescription.getInternalName(),
-                                fieldDescription.getDescriptor());
-                        methodVisitor.visitInsn(Opcodes.ARETURN);
-                        return new ByteCodeAppender.Size(1, methodDescription.getStackSize());
-                    }
-                });
+    protected DynamicType.Builder<?> create(Class<?> type) {
+        return new ByteBuddy().subclass(type);
     }
 
     @Test
-    public void testPlainSubclass() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
+    public void testSimpleSubclass() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredMethods().length, is(0));
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(0));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
-        assertThat(loaded.getDeclaredConstructor().newInstance(), notNullValue());
+        assertThat(type.getDeclaredMethods().length, is(0));
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredConstructor(), notNullValue(Constructor.class));
+        assertThat(Object.class.isAssignableFrom(type), is(true));
+        assertNotEquals(Object.class, type);
+        assertThat(type.newInstance(), notNullValue(Object.class));
+        assertThat(type.isInterface(), is(false));
+        assertThat(type.isAnnotation(), is(false));
     }
 
     @Test
-    public void testSubclassWithDefinedField() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineField(BAR, long.class, Visibility.PUBLIC)
+    public void testSimpleSubclassWithoutConstructor() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class, ConstructorStrategy.Default.NO_CONSTRUCTORS)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredMethods().length, is(0));
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(1));
-        Field field = loaded.getDeclaredFields()[0];
-        assertThat(field.getName(), is(BAR));
-        assertThat(field.getDeclaredAnnotations().length, is(0));
-        assertEquals(long.class, field.getType());
-        assertThat(field.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
-        assertThat(loaded.getDeclaredConstructor().newInstance(), notNullValue());
+        assertThat(type.getDeclaredMethods().length, is(0));
+        assertThat(type.getDeclaredConstructors().length, is(0));
+        assertThat(Object.class.isAssignableFrom(type), is(true));
+        assertNotEquals(Object.class, type);
+        assertThat(type.isInterface(), is(false));
+        assertThat(type.isAnnotation(), is(false));
     }
 
     @Test
-    public void testSubclassWithDefinedMethod() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineMethod(BAR, int.class, Arrays.<Class<?>>asList(long.class, Object.class), Visibility.PUBLIC)
-                .intercept(simpleInstrumentation)
+    public void testSimpleSubclassWithDefaultConstructor() throws Exception {
+        Class<? extends DefaultConstructor> type = new ByteBuddy()
+                .subclass(DefaultConstructor.class, ConstructorStrategy.Default.DEFAULT_CONSTRUCTOR)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(0));
-        assertThat(loaded.getDeclaredMethods().length, is(1));
-        Method method = loaded.getDeclaredMethod(BAR, long.class, Object.class);
-        assertThat(method.getName(), is(BAR));
-        assertThat(method.getDeclaredAnnotations().length, is(0));
-        assertEquals(int.class, method.getReturnType());
-        assertThat(method.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
-        assertThat(loaded.getDeclaredConstructor().newInstance(), notNullValue());
-        verify(simpleInstrumentation).prepare(any(InstrumentedType.class));
-        verify(simpleInstrumentation).appender(any(Instrumentation.Target.class));
-        verifyNoMoreInteractions(simpleInstrumentation);
-        verify(byteCodeAppender).appendsCode();
-        verify(byteCodeAppender).apply(any(MethodVisitor.class), any(Instrumentation.Context.class), any(MethodDescription.class));
-        verifyNoMoreInteractions(byteCodeAppender);
+        assertThat(type.getDeclaredMethods().length, is(0));
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredConstructor(), notNullValue(Constructor.class));
+        assertThat(DefaultConstructor.class.isAssignableFrom(type), is(true));
+        assertNotEquals(DefaultConstructor.class, type);
+        assertThat(type.newInstance(), notNullValue(DefaultConstructor.class));
+        assertThat(type.isInterface(), is(false));
+        assertThat(type.isAnnotation(), is(false));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testNonExtendableIsIllegal() throws Exception {
+        new ByteBuddy().subclass(String.class);
     }
 
     @Test
-    public void testSubclassWithDefinedAbstractMethod() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineMethod(BAR, int.class, Arrays.<Class<?>>asList(long.class, Object.class), Visibility.PUBLIC)
-                .throwing(IOException.class)
+    public void testInterfaceDefinition() throws Exception {
+        Class<? extends SimpleInterface> type = new ByteBuddy()
+                .makeInterface(SimpleInterface.class)
+                .defineMethod(FOO, void.class, Collections.<Class<?>>singletonList(Void.class), Visibility.PUBLIC)
                 .withoutCode()
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(0));
-        assertThat(loaded.getDeclaredMethods().length, is(1));
-        Method method = loaded.getDeclaredMethod(BAR, long.class, Object.class);
-        assertThat(method.getName(), is(BAR));
-        assertThat(method.getExceptionTypes().length, is(1));
-        assertThat(Arrays.asList(method.getExceptionTypes()), hasItem(IOException.class));
-        assertThat(method.getDeclaredAnnotations().length, is(0));
-        assertEquals(int.class, method.getReturnType());
-        assertThat(method.getModifiers(), is(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredMethods().length, is(1));
+        assertThat(type.getDeclaredMethod(FOO, Void.class), notNullValue(Method.class));
+        assertThat(type.getDeclaredConstructors().length, is(0));
+        assertThat(SimpleInterface.class.isAssignableFrom(type), is(true));
+        assertNotEquals(SimpleInterface.class, type);
+        assertThat(type.isInterface(), is(true));
+        assertThat(type.isAnnotation(), is(false));
     }
 
     @Test
-    public void testSubclassWithDefinedConstructor() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.NO_CONSTRUCTORS)
-                .defineConstructor(Arrays.<Class<?>>asList(), Visibility.PUBLIC)
-                .throwing(IOException.class)
-                .intercept(SuperMethodCall.INSTANCE)
+    public void testAnnotationDefinition() throws Exception {
+        Class<? extends Annotation> type = new ByteBuddy()
+                .makeAnnotation()
+                .defineMethod(FOO, int.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .withoutCode()
+                .defineMethod(BAR, String.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .withDefaultValue(FOO)
+                .defineMethod(QUX, SimpleEnum.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .withDefaultValue(SimpleEnum.FIRST, SimpleEnum.class)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(0));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
-        Constructor<?> constructor = loaded.getDeclaredConstructor();
-        assertThat(constructor.getExceptionTypes().length, is(1));
-        assertThat(Arrays.asList(constructor.getExceptionTypes()), hasItem(IOException.class));
-        assertThat(constructor.getDeclaredAnnotations().length, is(0));
-        assertThat(constructor.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertThat(loaded.getDeclaredMethods().length, is(0));
+        assertThat(type.getDeclaredMethods().length, is(3));
+        assertThat(type.getDeclaredMethod(FOO), notNullValue(Method.class));
+        assertThat(type.getDeclaredMethod(BAR).getDefaultValue(), is((Object) FOO));
+        assertThat(type.getDeclaredMethod(QUX).getDefaultValue(), is((Object) SimpleEnum.FIRST));
+        assertThat(type.getDeclaredConstructors().length, is(0));
+        assertThat(Annotation.class.isAssignableFrom(type), is(true));
+        assertNotEquals(Annotation.class, type);
+        assertThat(type.isInterface(), is(true));
+        assertThat(type.isAnnotation(), is(true));
     }
 
     @Test
-    public void testSubclassWithDefinedInstrumentationPreparation() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineMethod(BAR, int.class, Arrays.<Class<?>>asList(long.class, Object.class), Visibility.PUBLIC)
-                .intercept(preparingInstrumentation)
+    @SuppressWarnings("unchecked")
+    public void testEnumerationDefinition() throws Exception {
+        Class<? extends Enum<?>> type = new ByteBuddy()
+                .makeEnumeration(FOO, BAR)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(loaded.getName(), is(FOO));
-        assertThat(loaded.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        assertEquals(Object.class, loaded.getSuperclass());
-        assertThat(loaded.getInterfaces().length, is(1));
-        assertThat(loaded.getClassLoader().getParent(), is(getClass().getClassLoader()));
-        assertEquals(Serializable.class, loaded.getInterfaces()[0]);
-        assertThat(loaded.getDeclaredAnnotations().length, is(0));
-        assertThat(loaded.getDeclaredFields().length, is(1));
-        Field field = loaded.getDeclaredField(BAZ);
-        assertThat(field.getModifiers(), is(0));
-        assertThat(loaded.getDeclaredMethods().length, is(2));
-        Method method = loaded.getDeclaredMethod(BAR, long.class, Object.class);
-        assertThat(method.getDeclaredAnnotations().length, is(0));
-        assertEquals(int.class, method.getReturnType());
-        assertThat(method.getModifiers(), is(Opcodes.ACC_PUBLIC));
-        Method preparedMethod = loaded.getDeclaredMethod(QUX);
-        assertThat(preparedMethod.getDeclaredAnnotations().length, is(0));
-        assertEquals(int.class, preparedMethod.getReturnType());
-        assertThat(preparedMethod.getModifiers(), is(0));
-        assertThat(loaded.getDeclaredConstructors().length, is(1));
-        assertThat(loaded.getDeclaredConstructor().newInstance(), notNullValue());
-        verify(preparingInstrumentation).prepare(any(InstrumentedType.class));
-        verify(preparingInstrumentation).appender(any(Instrumentation.Target.class));
-        verifyNoMoreInteractions(preparingInstrumentation);
-        verify(byteCodeAppender, times(2)).appendsCode();
-        verify(byteCodeAppender, times(2)).apply(any(MethodVisitor.class), any(Instrumentation.Context.class), any(MethodDescription.class));
-        verifyNoMoreInteractions(byteCodeAppender);
-        verify(loadedTypeInitializer).onLoad(loaded);
-        verifyNoMoreInteractions(loadedTypeInitializer);
+        assertThat(type.getDeclaredMethods().length, is(2));
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredFields().length, is(3));
+        assertThat(Enum.class.isAssignableFrom(type), is(true));
+        assertNotEquals(Enum.class, type);
+        assertThat(type.isInterface(), is(false));
+        assertThat(type.isAnnotation(), is(false));
+        assertThat(type.isEnum(), is(true));
+        Enum foo = Enum.valueOf((Class) type, FOO);
+        assertThat(foo.name(), is(FOO));
+        assertThat(foo.ordinal(), is(0));
+        Enum bar = Enum.valueOf((Class) type, BAR);
+        assertThat(bar.name(), is(BAR));
+        assertThat(bar.ordinal(), is(1));
     }
 
     @Test
-    public void testFieldWithDefaultValue() throws Exception {
-        Class<?> loaded = new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineField(BOOLEAN_FIELD, boolean.class, Ownership.STATIC).value(BOOLEAN_VALUE)
-                .defineField(BYTE_FIELD, byte.class, Ownership.STATIC).value(BYTE_VALUE)
-                .defineField(SHORT_FIELD, short.class, Ownership.STATIC).value(SHORT_VALUE)
-                .defineField(CHARACTER_FIELD, char.class, Ownership.STATIC).value(CHARACTER_VALUE)
-                .defineField(INTEGER_FIELD, int.class, Ownership.STATIC).value(INTEGER_VALUE)
-                .defineField(LONG_FIELD, long.class, Ownership.STATIC).value(LONG_VALUE)
-                .defineField(LONG_FIELD_FROM_INT, long.class, Ownership.STATIC).value(INTEGER_VALUE)
-                .defineField(FLOAT_FIELD, float.class, Ownership.STATIC).value(FLOAT_VALUE)
-                .defineField(DOUBLE_FIELD, double.class, Ownership.STATIC).value(DOUBLE_VALUE)
-                .defineField(STRING_FIELD, String.class, Ownership.STATIC).value(FOO)
+    public void testPackageDefinition() throws Exception {
+        Class<?> packageType = new ByteBuddy()
+                .makePackage(FOO)
+                .annotateType(AnnotationDescription.Builder.forType(Foo.class).make())
                 .make()
-                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
                 .getLoaded();
-        Field booleanField = loaded.getDeclaredField(BOOLEAN_FIELD);
-        booleanField.setAccessible(true);
-        assertThat(booleanField.get(null), is((Object) BOOLEAN_VALUE));
-        Field byteField = loaded.getDeclaredField(BYTE_FIELD);
-        byteField.setAccessible(true);
-        assertThat(byteField.get(null), is((Object) BYTE_VALUE));
-        Field shortField = loaded.getDeclaredField(SHORT_FIELD);
-        shortField.setAccessible(true);
-        assertThat(shortField.get(null), is((Object) SHORT_VALUE));
-        Field characterField = loaded.getDeclaredField(CHARACTER_FIELD);
-        characterField.setAccessible(true);
-        assertThat(characterField.get(null), is((Object) CHARACTER_VALUE));
-        Field integerField = loaded.getDeclaredField(INTEGER_FIELD);
-        integerField.setAccessible(true);
-        assertThat(integerField.get(null), is((Object) INTEGER_VALUE));
-        Field longField = loaded.getDeclaredField(LONG_FIELD);
-        longField.setAccessible(true);
-        assertThat(longField.get(null), is((Object) LONG_VALUE));
-        Field longFieldFromInt = loaded.getDeclaredField(LONG_FIELD_FROM_INT);
-        longFieldFromInt.setAccessible(true);
-        assertThat(longFieldFromInt.get(null), is((Object) (long) INTEGER_VALUE));
-        Field floatField = loaded.getDeclaredField(FLOAT_FIELD);
-        floatField.setAccessible(true);
-        assertThat(floatField.get(null), is((Object) FLOAT_VALUE));
-        Field doubleField = loaded.getDeclaredField(DOUBLE_FIELD);
-        doubleField.setAccessible(true);
-        assertThat(doubleField.get(null), is((Object) DOUBLE_VALUE));
-        Field stringField = loaded.getDeclaredField(STRING_FIELD);
-        stringField.setAccessible(true);
-        assertThat(stringField.get(null), is((Object) FOO));
+        assertThat(packageType.getSimpleName(), is(PackageDescription.PACKAGE_CLASS_NAME));
+        assertThat(packageType.getName(), is(FOO + "." + PackageDescription.PACKAGE_CLASS_NAME));
+        assertThat(packageType.getModifiers(), is(PackageDescription.PACKAGE_MODIFIERS));
+        assertThat(packageType.getDeclaredFields().length, is(0));
+        assertThat(packageType.getDeclaredMethods().length, is(0));
+        assertThat(packageType.getDeclaredAnnotations().length, is(1));
+        assertThat(packageType.getAnnotation(Foo.class), notNullValue(Foo.class));
     }
 
     @Test(expected = IllegalArgumentException.class)
-    public void testDefineStaticConstructorThrowsException() throws Exception {
-        new SubclassDynamicTypeBuilder<Object>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Object.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .defineConstructor(Collections.<TypeDescription>emptyList(), Ownership.STATIC);
+    public void testEnumWithoutValuesIsIllegal() throws Exception {
+        new ByteBuddy().makeEnumeration();
     }
 
     @Test
-    public void testInterceptTypeInitializerWithoutFieldCache() throws Exception {
-        Foo.foo = 0;
-        new SubclassDynamicTypeBuilder<Foo>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Foo.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .invokable(isTypeInitializer()).intercept(typeInitializerInstrumentation)
+    @JavaVersionRule.Enforce(8)
+    public void testDefaultMethodNonOverridden() throws Exception {
+        Class<?> interfaceType = Class.forName(DEFAULT_METHOD_INTERFACE);
+        Object interfaceMarker = interfaceType.getDeclaredField(INTERFACE_STATIC_FIELD_NAME).get(STATIC_FIELD);
+        Method interfaceMethod = interfaceType.getDeclaredMethod(FOO);
+        Class<?> dynamicType = new ByteBuddy()
+                .subclass(interfaceType)
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-                .getLoaded().newInstance(); // make sure type initializer is executed
-        assertThat(Foo.foo, is(1));
+                .getLoaded();
+        assertThat(dynamicType.getDeclaredFields().length, is(0));
+        assertThat(dynamicType.getDeclaredMethods().length, is(0));
+        assertThat(interfaceMethod.invoke(dynamicType.newInstance()), is(interfaceMarker));
     }
 
     @Test
-    public void testInterceptTypeInitializerWithFieldCache() throws Exception {
-        Foo.foo = 0;
-        assertThat(new SubclassDynamicTypeBuilder<Foo>(ClassFileVersion.forCurrentJavaVersion(),
-                new NamingStrategy.Fixed(FOO),
-                new TypeDescription.ForLoadedType(Foo.class),
-                new TypeList.ForLoadedType(Arrays.<Class<?>>asList(Serializable.class)),
-                Opcodes.ACC_PUBLIC,
-                TypeAttributeAppender.NoOp.INSTANCE,
-                none(),
-                BridgeMethodResolver.Simple.Factory.FAIL_FAST,
-                new ClassVisitorWrapper.Chain(),
-                new FieldRegistry.Default(),
-                new MethodRegistry.Default(),
-                MethodLookupEngine.Default.Factory.INSTANCE,
-                FieldAttributeAppender.NoOp.INSTANCE,
-                MethodAttributeAppender.NoOp.INSTANCE,
-                ConstructorStrategy.Default.IMITATE_SUPER_TYPE)
-                .method(isToString()).intercept(fieldCacheInstrumentation)
-                .invokable(isTypeInitializer()).intercept(typeInitializerInstrumentation)
+    @JavaVersionRule.Enforce(8)
+    public void testDefaultMethodOverridden() throws Exception {
+        Class<?> interfaceType = Class.forName(DEFAULT_METHOD_INTERFACE);
+        Method interfaceMethod = interfaceType.getDeclaredMethod(FOO);
+        Class<?> dynamicType = new ByteBuddy()
+                .subclass(interfaceType)
+                .method(isDeclaredBy(interfaceType)).intercept(FixedValue.value(BAR))
                 .make()
                 .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-                .getLoaded().newInstance().toString(), is(BAR)); // make sure type initializer is executed
-        assertThat(Foo.foo, is(1));
+                .getLoaded();
+        assertThat(dynamicType.getDeclaredFields().length, is(0));
+        assertThat(dynamicType.getDeclaredMethods().length, is(1));
+        assertThat(interfaceMethod.invoke(dynamicType.newInstance()), is((Object) BAR));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testParameterMetaDataSubclassForLoaded() throws Exception {
+        Class<?> dynamicType = new ByteBuddy()
+                .subclass(Class.forName(PARAMETER_NAME_CLASS))
+                .method(named(FOO)).intercept(StubMethod.INSTANCE)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(dynamicType.getDeclaredMethods().length, is(1));
+        Class<?> executable = Class.forName("java.lang.reflect.Executable");
+        Method getParameters = executable.getDeclaredMethod("getParameters");
+        Class<?> parameter = Class.forName("java.lang.reflect.Parameter");
+        Method getName = parameter.getDeclaredMethod("getName");
+        Method getModifiers = parameter.getDeclaredMethod("getModifiers");
+        Method first = dynamicType.getDeclaredMethod("foo", String.class, long.class, int.class);
+        Object[] methodParameter = (Object[]) getParameters.invoke(first);
+        assertThat(getName.invoke(methodParameter[0]), is((Object) "first"));
+        assertThat(getName.invoke(methodParameter[1]), is((Object) "second"));
+        assertThat(getName.invoke(methodParameter[2]), is((Object) "third"));
+        assertThat(getModifiers.invoke(methodParameter[0]), is((Object) Opcodes.ACC_FINAL));
+        assertThat(getModifiers.invoke(methodParameter[1]), is((Object) 0));
+        assertThat(getModifiers.invoke(methodParameter[2]), is((Object) 0));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testDefaultInterfaceSubInterface() throws Exception {
+        Class<?> interfaceType = Class.forName(DEFAULT_METHOD_INTERFACE);
+        Class<?> dynamicInterfaceType = new ByteBuddy()
+                .subclass(interfaceType)
+                .modifiers(Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)
+                .method(named(FOO)).intercept(MethodDelegation.to(InterfaceOverrideInterceptor.class))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        Class<?> dynamicClassType = new ByteBuddy()
+                .subclass(dynamicInterfaceType)
+                .make()
+                .load(dynamicInterfaceType.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(dynamicClassType.getMethod(FOO).invoke(dynamicClassType.newInstance()), is((Object) (FOO + BAR)));
+        assertThat(dynamicInterfaceType.getDeclaredMethods().length, is(2));
+        assertThat(dynamicClassType.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testDoesNotOverrideMethodWithPackagePrivateReturnType() throws Exception {
+        Class<?> type = create(PackagePrivateReturnType.class)
+                .name("net.bytebuddy.test.generated." + FOO)
+                .method(isDeclaredBy(PackagePrivateReturnType.class))
+                .intercept(StubMethod.INSTANCE)
+                .make()
+                .load(new ByteArrayClassLoader(null,
+                        ClassFileExtraction.of(PackagePrivateReturnType.class, PackagePrivateReturnType.Argument.class),
+                        DEFAULT_PROTECTION_DOMAIN,
+                        AccessController.getContext(),
+                        ByteArrayClassLoader.PersistenceHandler.LATENT,
+                        PackageDefinitionStrategy.NoOp.INSTANCE), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testDoesNotOverrideMethodWithPackagePrivateArgumentType() throws Exception {
+        Class<?> type = create(PackagePrivateArgumentType.class)
+                .name("net.bytebuddy.test.generated." + FOO)
+                .method(isDeclaredBy(PackagePrivateArgumentType.class))
+                .intercept(StubMethod.INSTANCE)
+                .make()
+                .load(new ByteArrayClassLoader(null,
+                        ClassFileExtraction.of(PackagePrivateArgumentType.class, PackagePrivateArgumentType.Argument.class),
+                        DEFAULT_PROTECTION_DOMAIN,
+                        AccessController.getContext(),
+                        ByteArrayClassLoader.PersistenceHandler.LATENT,
+                        PackageDefinitionStrategy.NoOp.INSTANCE), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testDoesNotOverridePrivateMethod() throws Exception {
+        Class<?> type = create(PrivateMethod.class)
+                .method(isDeclaredBy(PrivateMethod.class))
+                .intercept(StubMethod.INSTANCE)
+                .make()
+                .load(new ByteArrayClassLoader(null,
+                        ClassFileExtraction.of(PrivateMethod.class),
+                        DEFAULT_PROTECTION_DOMAIN,
+                        AccessController.getContext(),
+                        ByteArrayClassLoader.PersistenceHandler.LATENT,
+                        PackageDefinitionStrategy.NoOp.INSTANCE), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testGenericType() throws Exception {
+        Class<?> dynamicType = create(GenericType.Inner.class)
+                .method(named(FOO).or(named("call"))).intercept(StubMethod.INSTANCE)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+        assertThat(dynamicType.getTypeParameters().length, is(0));
+        assertThat(dynamicType.getGenericSuperclass(), instanceOf(Class.class));
+        assertThat(dynamicType.getGenericSuperclass(), is((Type) GenericType.Inner.class));
+        assertThat(dynamicType.getGenericInterfaces().length, is(0));
+        Method foo = dynamicType.getDeclaredMethod(FOO, String.class);
+        assertThat(foo.getTypeParameters().length, is(2));
+        assertThat(foo.getTypeParameters()[0].getName(), is("V"));
+        assertThat(foo.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(foo.getTypeParameters()[0].getBounds()[0], is((Type) String.class));
+        assertThat(foo.getTypeParameters()[1].getName(), is("W"));
+        assertThat(foo.getTypeParameters()[1].getBounds().length, is(1));
+        assertThat(foo.getTypeParameters()[1].getBounds()[0], is((Type) Exception.class));
+        assertThat(foo.getGenericReturnType(), instanceOf(ParameterizedType.class));
+        assertThat(((ParameterizedType) foo.getGenericReturnType()).getActualTypeArguments().length, is(1));
+        Type parameterType = ((ParameterizedType) foo.getGenericReturnType()).getActualTypeArguments()[0];
+        // Before Java 7, non-generic array types returned from methods of the generic reflection API returned generic arrays.
+        if (ClassFileVersion.forCurrentJavaVersion().compareTo(ClassFileVersion.JAVA_V7) < 0) {
+            assertThat(parameterType, instanceOf(GenericArrayType.class));
+            assertThat(((GenericArrayType) parameterType).getGenericComponentType(), is((Type) String.class));
+        } else {
+            assertThat(parameterType, is((Type) String[].class));
+        }
+        assertThat(foo.getGenericParameterTypes().length, is(1));
+        assertThat(foo.getGenericParameterTypes()[0], is((Type) foo.getTypeParameters()[0]));
+        assertThat(foo.getGenericExceptionTypes().length, is(1));
+        assertThat(foo.getGenericExceptionTypes()[0], is((Type) foo.getTypeParameters()[1]));
+        Method call = dynamicType.getDeclaredMethod("call");
+        assertThat(call.getGenericReturnType(), is(((ParameterizedType) GenericType.Inner.class.getGenericInterfaces()[0]).getActualTypeArguments()[0]));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testBridgeMethodCreation() throws Exception {
+        Class<?> dynamicType = create(BridgeRetention.Inner.class)
+                .method(named(FOO)).intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertEquals(String.class, dynamicType.getDeclaredMethod(FOO).getReturnType());
+        assertThat(dynamicType.getDeclaredMethod(FOO).getGenericReturnType(), is((Type) String.class));
+        BridgeRetention<String> bridgeRetention = (BridgeRetention<String>) dynamicType.newInstance();
+        assertThat(bridgeRetention.foo(), is(FOO));
+        bridgeRetention.assertZeroCalls();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testBridgeMethodCreationForExistingBridgeMethod() throws Exception {
+        Class<?> dynamicType = create(CallSuperMethod.Inner.class)
+                .method(named(FOO)).intercept(net.bytebuddy.implementation.SuperMethodCall.INSTANCE)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(dynamicType.getDeclaredMethods().length, is(2));
+        assertEquals(String.class, dynamicType.getDeclaredMethod(FOO, String.class).getReturnType());
+        assertThat(dynamicType.getDeclaredMethod(FOO, String.class).getGenericReturnType(), is((Type) String.class));
+        assertThat(dynamicType.getDeclaredMethod(FOO, String.class).isBridge(), is(false));
+        assertEquals(Object.class, dynamicType.getDeclaredMethod(FOO, Object.class).getReturnType());
+        assertThat(dynamicType.getDeclaredMethod(FOO, Object.class).getGenericReturnType(), is((Type) Object.class));
+        assertThat(dynamicType.getDeclaredMethod(FOO, Object.class).isBridge(), is(true));
+        CallSuperMethod<String> callSuperMethod = (CallSuperMethod<String>) dynamicType.newInstance();
+        assertThat(callSuperMethod.foo(FOO), is(FOO));
+        callSuperMethod.assertOnlyCall(FOO);
+    }
+
+    @Test
+    public void testBridgeMethodForAbstractMethod() throws Exception {
+        Class<?> dynamicType = create(AbstractGenericType.Inner.class)
+                .modifiers(Opcodes.ACC_ABSTRACT | Opcodes.ACC_PUBLIC)
+                .method(named(FOO)).withoutCode()
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(dynamicType.getDeclaredMethods().length, is(2));
+        assertEquals(Void.class, dynamicType.getDeclaredMethod(FOO, Void.class).getReturnType());
+        assertThat(dynamicType.getDeclaredMethod(FOO, Void.class).getGenericReturnType(), is((Type) Void.class));
+        assertThat(dynamicType.getDeclaredMethod(FOO, Void.class).isBridge(), is(false));
+        assertThat(Modifier.isAbstract(dynamicType.getDeclaredMethod(FOO, Void.class).getModifiers()), is(true));
+        assertEquals(Object.class, dynamicType.getDeclaredMethod(FOO, Object.class).getReturnType());
+        assertThat(dynamicType.getDeclaredMethod(FOO, Object.class).getGenericReturnType(), is((Type) Object.class));
+        assertThat(dynamicType.getDeclaredMethod(FOO, Object.class).isBridge(), is(true));
+        assertThat(Modifier.isAbstract(dynamicType.getDeclaredMethod(FOO, Object.class).getModifiers()), is(false));
+    }
+
+    @Test
+    public void testVisibilityBridge() throws Exception {
+        Class<?> type = create(VisibilityBridge.class)
+                .modifiers(Opcodes.ACC_PUBLIC)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredMethods().length, is(2));
+        Method foo = type.getDeclaredMethod(FOO, String.class);
+        assertThat(foo.isBridge(), is(true));
+        assertThat(foo.getDeclaredAnnotations().length, is(1));
+        assertThat(foo.getAnnotation(Foo.class), notNullValue(Foo.class));
+        assertThat(foo.invoke(type.newInstance(), BAR), is((Object) (FOO + BAR)));
+        Method bar = type.getDeclaredMethod(BAR, List.class);
+        assertThat(bar.isBridge(), is(true));
+        assertThat(bar.getDeclaredAnnotations().length, is(0));
+        List<?> list = new ArrayList<Object>();
+        assertThat(bar.invoke(type.newInstance(), list), sameInstance((Object) list));
+        assertThat(bar.getGenericReturnType(), instanceOf(Class.class));
+        assertThat(bar.getGenericParameterTypes()[0], instanceOf(Class.class));
+        assertThat(bar.getGenericExceptionTypes()[0], instanceOf(Class.class));
+    }
+
+    @Test
+    public void testNoVisibilityBridgeForNonPublicType() throws Exception {
+        Class<?> type = create(VisibilityBridge.class)
+                .modifiers(0)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testNoVisibilityBridgeForInheritedType() throws Exception {
+        Class<?> type = create(VisibilityBridgeExtension.class)
+                .modifiers(Opcodes.ACC_PUBLIC)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredMethods().length, is(0));
+    }
+
+    @Test
+    public void testNoVisibilityBridgeForAbstractMethod() throws Exception {
+        Class<?> type = create(VisibilityBridgeAbstractMethod.class)
+                .modifiers(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+        assertThat(type.getDeclaredConstructors().length, is(1));
+        assertThat(type.getDeclaredMethods().length, is(0));
     }
 
     @Test
@@ -569,13 +492,110 @@ public class SubclassDynamicTypeBuilderTest {
         ObjectPropertyAssertion.of(SubclassDynamicTypeBuilder.class).create(new ObjectPropertyAssertion.Creator<List<?>>() {
             @Override
             public List<?> create() {
-                return Arrays.asList(mock(TypeDescription.class));
+                return Collections.singletonList(new Object());
             }
         }).apply();
     }
 
-    public static class Foo {
+    @SuppressWarnings("unused")
+    public enum SimpleEnum {
+        FIRST,
+        SECOND
+    }
 
-        public static int foo = 0;
+    public interface SimpleInterface {
+
+        void bar(Void arg);
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface Foo {
+        /* empty */
+    }
+
+    @SuppressWarnings("unused")
+    public static class DefaultConstructor {
+
+        public DefaultConstructor() {
+            /* empty */
+        }
+
+        public DefaultConstructor(Void arg) {
+            /* empty */
+        }
+    }
+
+    public static class PackagePrivateReturnType {
+
+        public Argument foo() {
+            return null;
+        }
+
+        static class Argument {
+            /* empty */
+        }
+    }
+
+    @SuppressWarnings("unused")
+    public static class PackagePrivateArgumentType {
+
+        public void foo(Argument argument) {
+            /* empty */
+        }
+
+        static class Argument {
+            /* empty */
+        }
+    }
+
+    @SuppressWarnings("unused")
+    public static class PrivateMethod {
+
+        private void foo() {
+            /* empty */
+        }
+    }
+
+    @SuppressWarnings("unused")
+    static class VisibilityBridge {
+
+        @Foo
+        public String foo(@Foo String value) {
+            return FOO + value;
+        }
+
+        public <T extends Exception> List<String> bar(List<String> value) throws T {
+            return value;
+        }
+
+        void qux() {
+            /* empty */
+        }
+
+        protected void baz() {
+            /* empty */
+        }
+
+        public final void foobar() {
+            /* empty */
+        }
+    }
+
+    abstract static class VisibilityBridgeAbstractMethod {
+
+        public abstract void foo();
+    }
+
+    public static class VisibilityBridgeExtension extends VisibilityBridge {
+        /* empty */
+    }
+
+    public abstract static class AbstractGenericType<T> {
+
+        public abstract T foo(T t);
+
+        public abstract static class Inner extends AbstractGenericType<Void> {
+            /* empty */
+        }
     }
 }

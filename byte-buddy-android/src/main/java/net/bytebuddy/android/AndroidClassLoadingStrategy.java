@@ -7,8 +7,9 @@ import com.android.dx.dex.cf.CfOptions;
 import com.android.dx.dex.cf.CfTranslator;
 import com.android.dx.dex.file.DexFile;
 import dalvik.system.DexClassLoader;
-import net.bytebuddy.dynamic.ClassLoadingStrategy;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.utility.RandomString;
 
 import java.io.*;
@@ -33,7 +34,7 @@ import java.util.logging.Logger;
  * {@code getCodeCacheDir} directory which is exposed for Android API versions 21 or higher.
  * </p>
  * <p>
- * By default, this Android {@link net.bytebuddy.dynamic.ClassLoadingStrategy} uses the Android SDK's dex compiler in
+ * By default, this Android {@link net.bytebuddy.dynamic.loading.ClassLoadingStrategy} uses the Android SDK's dex compiler in
  * <i>version 1.7</i> which requires the Java class files in version {@link net.bytebuddy.ClassFileVersion#JAVA_V6} as
  * its input. This version is slightly outdated but newer versions are not available in Maven Central which is why this
  * outdated version is included with this class loading strategy. Newer version can however be easily adapted by
@@ -91,7 +92,7 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
      *                         generated classes and their processed forms.
      */
     public AndroidClassLoadingStrategy(File privateDirectory) {
-        this(privateDirectory, new DexProcessor.ForSdkCompiler(new DexOptions(), new CfOptions()));
+        this(privateDirectory, DexProcessor.ForSdkCompiler.makeDefault());
     }
 
     /**
@@ -134,13 +135,13 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
             for (TypeDescription typeDescription : types.keySet()) {
                 try {
                     loadedTypes.put(typeDescription, dexClassLoader.loadClass(typeDescription.getName()));
-                } catch (ClassNotFoundException e) {
-                    throw new IllegalStateException("Cannot load " + typeDescription, e);
+                } catch (ClassNotFoundException exception) {
+                    throw new IllegalStateException("Cannot load " + typeDescription, exception);
                 }
             }
             return loadedTypes;
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot write to zip file " + zipFile, e);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot write to zip file " + zipFile, exception);
         } finally {
             if (!zipFile.delete()) {
                 Logger.getAnonymousLogger().warning("Could not delete " + zipFile);
@@ -160,7 +161,7 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
     /**
      * A dex processor is responsible for converting a collection of Java class files into a Android dex file.
      */
-    public static interface DexProcessor {
+    public interface DexProcessor {
 
         /**
          * Creates a new conversion process which allows to store several Java class files in the created dex
@@ -184,7 +185,7 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
         /**
          * Represents an ongoing conversion of several Java class files into an Android dex file.
          */
-        static interface Conversion {
+        interface Conversion {
 
             /**
              * Adds a Java class to the generated dex file.
@@ -207,7 +208,23 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
          * An implementation of a dex processor based on the Android SDK's <i>dx.jar</i> with an API that is
          * compatible to version 1.7.
          */
-        static class ForSdkCompiler implements DexProcessor {
+        class ForSdkCompiler implements DexProcessor {
+
+            /**
+             * An API version for a DEX file that ensures compatibility to the underlying compiler.
+             */
+            private static final int DEX_COMPATIBLE_API_VERSION = 13;
+
+            /**
+             * Creates a default dex processor that ensures API version compatibility.
+             *
+             * @return A dex processor using an SDK compiler that ensures compatibility.
+             */
+            protected static DexProcessor makeDefault() {
+                DexOptions dexOptions = new DexOptions();
+                dexOptions.targetApiLevel = DEX_COMPATIBLE_API_VERSION;
+                return new ForSdkCompiler(dexOptions, new CfOptions());
+            }
 
             /**
              * The file name extension of a Java class file.
@@ -251,11 +268,9 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
             }
 
             @Override
+            @SuppressFBWarnings(value = "DP_CREATE_CLASSLOADER_INSIDE_DO_PRIVILEGED", justification = "Android discourages the use access controllers")
             public ClassLoader makeClassLoader(File zipFile, File privateDirectory, ClassLoader parentClassLoader) {
-                return new DexClassLoader(zipFile.getAbsolutePath(),
-                        privateDirectory.getAbsolutePath(),
-                        EMPTY_LIBRARY_PATH,
-                        parentClassLoader);
+                return new DexClassLoader(zipFile.getAbsolutePath(), privateDirectory.getAbsolutePath(), EMPTY_LIBRARY_PATH, parentClassLoader);
             }
 
             @Override

@@ -1,6 +1,6 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.ModifierReviewable;
+import net.bytebuddy.description.ModifierReviewable;
 import org.objectweb.asm.Opcodes;
 
 /**
@@ -48,7 +48,7 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
     /**
      * Determines the type of modifier to be matched by a {@link net.bytebuddy.matcher.ModifierMatcher}.
      */
-    public static enum Mode {
+    public enum Mode {
 
         /**
          * Matches an element that is considered {@code public}.
@@ -103,7 +103,17 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
         /**
          * Matches an element that is considered a bridge method.
          */
-        BRIDGE(Opcodes.ACC_BRIDGE, "isBridge()");
+        BRIDGE(Opcodes.ACC_BRIDGE, "isBridge()"),
+
+        /**
+         * Matches an element that is considered {@code abstract}.
+         */
+        ABSTRACT(Opcodes.ACC_ABSTRACT, "isAbstract()"),
+
+        /**
+         * Matches a type that is considered an interface.
+         */
+        INTERFACE(Opcodes.ACC_INTERFACE, "isInterface()");
 
         /**
          * The mask of the modifier to match.
@@ -121,7 +131,7 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
          * @param modifiers   The mask of the modifier to match.
          * @param description The textual representation of this instance's matching mode.
          */
-        private Mode(int modifiers, String description) {
+        Mode(int modifiers, String description) {
             this.modifiers = modifiers;
             this.description = description;
         }
@@ -142,6 +152,11 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
          */
         protected int getModifiers() {
             return modifiers;
+        }
+
+        @Override
+        public String toString() {
+            return "ModifierMatcher.Mode." + name();
         }
     }
 }

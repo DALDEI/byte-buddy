@@ -1,8 +1,6 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.method.MethodDescription;
-
-import static net.bytebuddy.matcher.ElementMatchers.*;
+import net.bytebuddy.description.method.MethodDescription;
 
 /**
  * Matches a method description by its general characteristics which are represented as a
@@ -50,7 +48,7 @@ public class MethodSortMatcher<T extends MethodDescription> extends ElementMatch
     /**
      * Represents a specific characteristic of a method description.
      */
-    public static enum Sort {
+    public enum Sort {
 
         /**
          * Matches method descriptions that represent methods, not constructors or the type initializer.
@@ -86,24 +84,10 @@ public class MethodSortMatcher<T extends MethodDescription> extends ElementMatch
         /**
          * Matches method descriptions that are overridable.
          */
-        OVERRIDABLE("isOverridable()") {
+        VIRTUAL("isVirtual()") {
             @Override
             protected boolean isSort(MethodDescription target) {
-                return target.isOverridable();
-            }
-        },
-
-        /**
-         * Matches method descriptions that represent bridge methods that are implemented in order to increase
-         * a method's visibility in a subtype.
-         */
-        VISIBILITY_BRIDGE("isVisibilityBridge()") {
-            @Override
-            protected boolean isSort(MethodDescription target) {
-                return target.isBridge() && target.getDeclaringType()
-                        .getDeclaredMethods()
-                        .filter(isMethod().and(not(is(target))).and(isSpecializationOf(target)))
-                        .size() == 0;
+                return target.isVirtual();
             }
         },
 
@@ -127,7 +111,7 @@ public class MethodSortMatcher<T extends MethodDescription> extends ElementMatch
          *
          * @param description A textual representation of the method sort that is represented by this instance.
          */
-        private Sort(String description) {
+        Sort(String description) {
             this.description = description;
         }
 
@@ -146,6 +130,11 @@ public class MethodSortMatcher<T extends MethodDescription> extends ElementMatch
          */
         protected String getDescription() {
             return description;
+        }
+
+        @Override
+        public String toString() {
+            return "MethodSortMatcher.Sort." + name();
         }
     }
 }

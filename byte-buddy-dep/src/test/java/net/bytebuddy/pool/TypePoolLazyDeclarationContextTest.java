@@ -1,11 +1,11 @@
 package net.bytebuddy.pool;
 
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.method.MethodList;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.type.TypeDescription;
 import org.junit.Test;
 
-import java.util.Arrays;
+import java.util.Collections;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
@@ -84,6 +84,7 @@ public class TypePoolLazyDeclarationContextTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void testDeclaredInMethodGetMethodIsNull() throws Exception {
         MethodDescription methodDescription = mock(MethodDescription.class);
         when(methodDescription.getSourceCodeName()).thenReturn(BAR);
@@ -91,7 +92,8 @@ public class TypePoolLazyDeclarationContextTest {
         TypeDescription typeDescription = mock(TypeDescription.class);
         TypePool typePool = mock(TypePool.class);
         when(typePool.describe(FOO)).thenReturn(new TypePool.Resolution.Simple(typeDescription));
-        when(typeDescription.getDeclaredMethods()).thenReturn(new MethodList.Explicit(Arrays.asList(methodDescription)));
+        when(typeDescription.getDeclaredMethods())
+                .thenReturn((MethodList) new MethodList.Explicit<MethodDescription>(Collections.singletonList(methodDescription)));
         assertThat(new TypePool.LazyTypeDescription.DeclarationContext.DeclaredInMethod(FOO_INTERNAL, BAR, QUX)
                 .getEnclosingMethod(typePool), is(methodDescription));
     }

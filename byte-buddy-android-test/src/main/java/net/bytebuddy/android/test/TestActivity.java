@@ -11,8 +11,8 @@ import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.ClassFileVersion;
 import net.bytebuddy.android.AndroidClassLoadingStrategy;
 import net.bytebuddy.dynamic.DynamicType;
-import net.bytebuddy.instrumentation.MethodDelegation;
-import net.bytebuddy.instrumentation.method.bytecode.bind.annotation.SuperCall;
+import net.bytebuddy.implementation.MethodDelegation;
+import net.bytebuddy.implementation.bind.annotation.SuperCall;
 import net.bytebuddy.utility.RandomString;
 
 import java.io.File;
@@ -49,8 +49,7 @@ public class TestActivity extends Activity {
                     byteBuddy = new ByteBuddy(ClassFileVersion.JAVA_V6);
                 } catch (Throwable e) {
                     Log.w(BYTE_BUDDY_TAG, e);
-                    Toast.makeText(TestActivity.this, "Failure: Could not create Byte Buddy instance. ("
-                            + e.getMessage() + ")", Toast.LENGTH_LONG).show();
+                    Toast.makeText(TestActivity.this, "Failure: Could not create Byte Buddy instance. (" + e.getMessage() + ")", Toast.LENGTH_LONG).show();
                     return;
                 }
                 try {
@@ -66,8 +65,7 @@ public class TestActivity extends Activity {
                                 .load(TestActivity.class.getClassLoader(), new AndroidClassLoadingStrategy(file));
                     } catch (Throwable e) {
                         Log.w(BYTE_BUDDY_TAG, e);
-                        Toast.makeText(TestActivity.this, "Failure: Could not load dynamic type. ("
-                                + e.getMessage() + ")", Toast.LENGTH_LONG).show();
+                        Toast.makeText(TestActivity.this, "Failure: Could not load dynamic type. (" + e.getMessage() + ")", Toast.LENGTH_LONG).show();
                         return;
                     }
                     try {
@@ -79,13 +77,11 @@ public class TestActivity extends Activity {
                                 Toast.LENGTH_LONG).show();
                     } catch (Throwable e) {
                         Log.w(BYTE_BUDDY_TAG, e);
-                        Toast.makeText(TestActivity.this, "Failure: Could create dynamic instance. ("
-                                + e.getMessage() + ")", Toast.LENGTH_LONG).show();
+                        Toast.makeText(TestActivity.this, "Failure: Could create dynamic instance. (" + e.getMessage() + ")", Toast.LENGTH_LONG).show();
                     }
                 } catch (Throwable e) {
                     Log.w(BYTE_BUDDY_TAG, e);
-                    Toast.makeText(TestActivity.this, "Failure: Could not create temporary file. ("
-                            + e.getMessage() + ")", Toast.LENGTH_LONG).show();
+                    Toast.makeText(TestActivity.this, "Failure: Could not create temporary file. (" + e.getMessage() + ")", Toast.LENGTH_LONG).show();
                 }
             }
         });
@@ -93,8 +89,8 @@ public class TestActivity extends Activity {
 
     /**
      * An interceptor to be used in the instrumentation of the {@link Object#toString()} method. Of course, this
-     * could also be achieved by using a {@link net.bytebuddy.instrumentation.FixedValue} instrumentation. However,
-     * the instrumentation should generate an {@link net.bytebuddy.instrumentation.type.auxiliary.AuxiliaryType}
+     * could also be achieved by using a {@link net.bytebuddy.implementation.FixedValue} instrumentation. However,
+     * the instrumentation should generate an {@link net.bytebuddy.implementation.auxiliary.AuxiliaryType}
      * to validate their functionality.
      */
     public static class Interceptor {

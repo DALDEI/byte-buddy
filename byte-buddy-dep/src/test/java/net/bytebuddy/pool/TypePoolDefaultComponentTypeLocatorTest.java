@@ -1,14 +1,13 @@
 package net.bytebuddy.pool;
 
-import net.bytebuddy.dynamic.ClassFileLocator;
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.method.MethodList;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import net.bytebuddy.utility.RandomString;
 import org.junit.Test;
 
-import java.util.Arrays;
+import java.util.Collections;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -29,22 +28,22 @@ public class TypePoolDefaultComponentTypeLocatorTest {
         TypePool typePool = mock(TypePool.class);
         TypeDescription typeDescription = mock(TypeDescription.class);
         when(typePool.describe(BAR)).thenReturn(new TypePool.Resolution.Simple(typeDescription));
-        MethodDescription methodDescription = mock(MethodDescription.class);
-        when(typeDescription.getDeclaredMethods()).thenReturn(new MethodList.Explicit(Arrays.asList(methodDescription)));
+        MethodDescription.InDefinedShape methodDescription = mock(MethodDescription.InDefinedShape.class);
+        when(typeDescription.getDeclaredMethods())
+                .thenReturn(new MethodList.Explicit<MethodDescription.InDefinedShape>(Collections.singletonList(methodDescription)));
         when(methodDescription.getSourceCodeName()).thenReturn(FOO);
         TypeDescription returnType = mock(TypeDescription.class);
+        when(returnType.asErasure()).thenReturn(returnType);
         when(methodDescription.getReturnType()).thenReturn(returnType);
         TypeDescription componentType = mock(TypeDescription.class);
         when(returnType.getComponentType()).thenReturn(componentType);
         when(componentType.getName()).thenReturn(QUX);
-        assertThat(new TypePool.Default.ComponentTypeLocator.ForAnnotationProperty(typePool, BAR_DESCRIPTOR)
-                .bind(FOO).lookup(), is(QUX));
+        assertThat(new TypePool.Default.ComponentTypeLocator.ForAnnotationProperty(typePool, BAR_DESCRIPTOR).bind(FOO).lookup(), is(QUX));
     }
 
     @Test
     public void testForArrayType() throws Exception {
-        assertThat(new TypePool.Default.ComponentTypeLocator.ForArrayType("()[" + BAR_DESCRIPTOR)
-                .bind(FOO).lookup(), is(BAR));
+        assertThat(new TypePool.Default.ComponentTypeLocator.ForArrayType("()[" + BAR_DESCRIPTOR).bind(FOO).lookup(), is(BAR));
     }
 
     @Test
@@ -57,24 +56,21 @@ public class TypePoolDefaultComponentTypeLocatorTest {
                 return "()L" + RandomString.make() + ";";
             }
         }).apply();
-        TypePool.Default.TypeExtractor typeExtractor = new TypePool.Default(mock(TypePool.CacheProvider.class), mock(ClassFileLocator.class))
-                .new TypeExtractor();
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.OnTypeCollector.class).apply(typeExtractor.new OnTypeCollector(FOO));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.class).apply(typeExtractor.new MethodExtractor(0, FOO, "()" + BAR_DESCRIPTOR, BAZ, null));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.OnMethodCollector.class).apply(typeExtractor
-                .new MethodExtractor(0, FOO, "()" + BAR_DESCRIPTOR, BAZ, null).new OnMethodCollector(FOO));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.OnMethodParameterCollector.class).apply(typeExtractor
-                .new MethodExtractor(0, FOO, "()" + BAR_DESCRIPTOR, BAZ, null).new OnMethodParameterCollector(FOO, 0));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.FieldExtractor.class).apply(typeExtractor.new FieldExtractor(0, FOO, BAR_DESCRIPTOR, BAZ));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.FieldExtractor.OnFieldCollector.class).apply(typeExtractor
-                .new FieldExtractor(0, FOO, BAR_DESCRIPTOR, BAZ).new OnFieldCollector(FOO));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.class).apply(typeExtractor
-                .new AnnotationExtractor(mock(TypePool.Default.AnnotationRegistrant.class), mock(TypePool.Default.ComponentTypeLocator.class)));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.ArrayLookup.class).apply(typeExtractor
-                .new AnnotationExtractor(mock(TypePool.Default.AnnotationRegistrant.class), mock(TypePool.Default.ComponentTypeLocator.class))
-                .new ArrayLookup(FOO, mock(TypePool.LazyTypeDescription.AnnotationValue.ForComplexArray.ComponentTypeReference.class)));
-        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.AnnotationLookup.class).apply(typeExtractor
-                .new AnnotationExtractor(mock(TypePool.Default.AnnotationRegistrant.class), mock(TypePool.Default.ComponentTypeLocator.class))
-                .new AnnotationLookup(FOO, BAR));
+        ObjectPropertyAssertion.of(TypePool.Default.ComponentTypeLocator.Illegal.class).apply();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.OnTypeCollector.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.class).create(new ObjectPropertyAssertion.Creator<String>() {
+            @Override
+            public String create() {
+                return "(LFoo;)LBar;";
+            }
+        }).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.ParameterBag.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.OnMethodCollector.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.MethodExtractor.OnMethodParameterCollector.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.FieldExtractor.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.FieldExtractor.OnFieldCollector.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.ArrayLookup.class).applyBasic();
+        ObjectPropertyAssertion.of(TypePool.Default.TypeExtractor.AnnotationExtractor.AnnotationLookup.class).applyBasic();
     }
 }

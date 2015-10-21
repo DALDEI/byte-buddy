@@ -1,7 +1,7 @@
 package net.bytebuddy.pool;
 
-import net.bytebuddy.instrumentation.field.AbstractFieldDescriptionTest;
-import net.bytebuddy.instrumentation.field.FieldDescription;
+import net.bytebuddy.description.field.AbstractFieldDescriptionTest;
+import net.bytebuddy.description.field.FieldDescription;
 import org.junit.After;
 import org.junit.Before;
 
@@ -25,7 +25,7 @@ public class TypePoolDefaultFieldDescriptionTest extends AbstractFieldDescriptio
     }
 
     @Override
-    protected FieldDescription describe(Field field) {
+    protected FieldDescription.InDefinedShape describe(Field field) {
         return typePool.describe(field.getDeclaringClass().getName())
                 .resolve()
                 .getDeclaredFields().filter(named(field.getName())).getOnly();

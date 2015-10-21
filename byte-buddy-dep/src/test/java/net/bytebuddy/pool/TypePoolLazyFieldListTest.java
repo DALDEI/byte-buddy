@@ -1,27 +1,23 @@
 package net.bytebuddy.pool;
 
-import net.bytebuddy.instrumentation.field.FieldDescription;
-import net.bytebuddy.instrumentation.field.FieldList;
+import net.bytebuddy.description.field.AbstractFieldListTest;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Test;
 
-import java.util.Arrays;
+import java.lang.reflect.Field;
+import java.util.List;
 
-import static net.bytebuddy.matcher.ElementMatchers.named;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
+import static net.bytebuddy.matcher.ElementMatchers.anyOf;
 
-public class TypePoolLazyFieldListTest {
-
-    private FieldList fieldList;
+public class TypePoolLazyFieldListTest extends AbstractFieldListTest<Field, FieldDescription.InDefinedShape> {
 
     private TypePool typePool;
 
     @Before
     public void setUp() throws Exception {
         typePool = TypePool.Default.ofClassPath();
-        fieldList = typePool.describe(Sample.class.getName()).resolve().getDeclaredFields();
     }
 
     @After
@@ -29,43 +25,23 @@ public class TypePoolLazyFieldListTest {
         typePool.clear();
     }
 
-    @Test
-    public void testFieldList() throws Exception {
-        assertThat(fieldList.size(), is(2));
-        assertThat(fieldList.get(0), is((FieldDescription) new FieldDescription.ForLoadedField(Sample.class.getDeclaredField("first"))));
-        assertThat(fieldList.get(1), is((FieldDescription) new FieldDescription.ForLoadedField(Sample.class.getDeclaredField("second"))));
+    @Override
+    protected Field getFirst() throws Exception {
+        return Foo.class.getDeclaredField("foo");
     }
 
-    @Test
-    public void testFieldListNamed() throws Exception {
-        FieldDescription fieldDescription = fieldList.filter(named("first")).getOnly();
-        assertThat(fieldDescription, is(is((FieldDescription) new FieldDescription.ForLoadedField(Sample.class.getDeclaredField("first")))));
+    @Override
+    protected Field getSecond() throws Exception {
+        return Foo.class.getDeclaredField("bar");
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testNamedIllegal() throws Exception {
-        fieldList.filter(named("foo")).getOnly();
+    @Override
+    protected FieldList<FieldDescription.InDefinedShape> asList(List<Field> elements) {
+        return typePool.describe(Foo.class.getName()).resolve().getDeclaredFields().filter(anyOf(elements.toArray(new Field[elements.size()])));
     }
 
-    @Test
-    public void testSubList() throws Exception {
-        assertThat(fieldList.subList(0, 1), is((FieldList) new FieldList.Explicit(Arrays.asList(fieldList.get(0)))));
-    }
-
-    @Test(expected = IndexOutOfBoundsException.class)
-    public void testSubListOutOfBounds() throws Exception {
-        fieldList.subList(0, 10);
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void testSubListIllegal() throws Exception {
-        fieldList.subList(1, 0);
-    }
-
-    public static class Sample {
-
-        int first;
-
-        Void second;
+    @Override
+    protected FieldDescription.InDefinedShape asElement(Field element) {
+        return new FieldDescription.ForLoadedField(element);
     }
 }

@@ -1,12 +1,16 @@
 package net.bytebuddy.agent.builder;
 
 import net.bytebuddy.agent.ByteBuddyAgent;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
-import net.bytebuddy.instrumentation.FixedValue;
-import net.bytebuddy.instrumentation.MethodDelegation;
-import net.bytebuddy.instrumentation.method.bytecode.bind.annotation.SuperCall;
-import net.bytebuddy.instrumentation.type.TypeDescription;
-import net.bytebuddy.test.utility.ToolsJarRule;
+import net.bytebuddy.dynamic.loading.ByteArrayClassLoader;
+import net.bytebuddy.dynamic.loading.PackageDefinitionStrategy;
+import net.bytebuddy.implementation.FixedValue;
+import net.bytebuddy.implementation.MethodDelegation;
+import net.bytebuddy.implementation.bind.annotation.SuperCall;
+import net.bytebuddy.matcher.ElementMatchers;
+import net.bytebuddy.test.utility.AgentAttachmentRule;
+import net.bytebuddy.test.utility.ClassFileExtraction;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -17,6 +21,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Method;
+import java.security.AccessController;
+import java.security.ProtectionDomain;
 import java.util.concurrent.Callable;
 
 import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
@@ -26,74 +32,92 @@ import static org.hamcrest.MatcherAssert.assertThat;
 
 public class AgentBuilderDefaultApplicationTest {
 
+    private static final ProtectionDomain DEFAULT_PROTECTION_DOMAIN = null;
+
     private static final String FOO = "foo", BAR = "bar", QUX = "qux";
 
     @Rule
-    public MethodRule toolsJarRule = new ToolsJarRule();
+    public MethodRule agentAttachmentRule = new AgentAttachmentRule();
+
+    private ClassLoader classLoader;
 
     @Before
     public void setUp() throws Exception {
-        assertThat(ByteBuddyAgent.installOnOpenJDK(), instanceOf(Instrumentation.class));
+        classLoader = new ByteArrayClassLoader.ChildFirst(getClass().getClassLoader(),
+                ClassFileExtraction.of(Foo.class, Bar.class, Qux.class, Baz.class),
+                DEFAULT_PROTECTION_DOMAIN,
+                AccessController.getContext(),
+                ByteArrayClassLoader.PersistenceHandler.MANIFEST,
+                PackageDefinitionStrategy.NoOp.INSTANCE);
     }
 
     @Test
-    @ToolsJarRule.Enforce
+    @AgentAttachmentRule.Enforce
     public void testAgentWithoutSelfInitialization() throws Exception {
+        assertThat(ByteBuddyAgent.install(), instanceOf(Instrumentation.class));
         ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
                 .disableSelfInitialization()
-                .rebase(isAnnotatedWith(ShouldRebase.class)).transform(new FooTransformer())
+                .type(isAnnotatedWith(ShouldRebase.class), ElementMatchers.is(classLoader)).transform(new FooTransformer())
                 .installOnByteBuddyAgent();
         try {
-            assertThat(new Foo().foo(), is(BAR));
+            Class<?> type = classLoader.loadClass(Foo.class.getName());
+            assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) BAR));
         } finally {
             ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
         }
     }
 
     @Test
-    @ToolsJarRule.Enforce
+    @AgentAttachmentRule.Enforce
+    public void testAgentSelfInitialization() throws Exception {
+        assertThat(ByteBuddyAgent.install(), instanceOf(Instrumentation.class));
+        ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
+                .type(isAnnotatedWith(ShouldRebase.class), ElementMatchers.is(classLoader)).transform(new BarTransformer())
+                .installOnByteBuddyAgent();
+        try {
+            Class<?> type = classLoader.loadClass(Bar.class.getName());
+            assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) BAR));
+        } finally {
+            ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
+        }
+    }
+
+    @Test
+    @AgentAttachmentRule.Enforce
+    public void testAgentSelfInitializationAuxiliaryTypes() throws Exception {
+        assertThat(ByteBuddyAgent.install(), instanceOf(Instrumentation.class));
+        ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
+                .type(isAnnotatedWith(ShouldRebase.class), ElementMatchers.is(classLoader)).transform(new QuxTransformer())
+                .installOnByteBuddyAgent();
+        try {
+            Class<?> type = classLoader.loadClass(Qux.class.getName());
+            assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) (FOO + BAR)));
+        } finally {
+            ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
+        }
+    }
+
+    @Test
+    @AgentAttachmentRule.Enforce
     public void testAgentWithoutSelfInitializationWithNativeMethodPrefix() throws Exception {
+        assertThat(ByteBuddyAgent.install(), instanceOf(Instrumentation.class));
         ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
                 .disableSelfInitialization()
                 .withNativeMethodPrefix(QUX)
-                .rebase(isAnnotatedWith(ShouldRebase.class)).transform(new FooTransformer())
+                .type(isAnnotatedWith(ShouldRebase.class), ElementMatchers.is(classLoader)).transform(new FooTransformer())
                 .installOnByteBuddyAgent();
         try {
-            assertThat(new Baz().foo(), is(BAR));
-            assertThat(Baz.class.getDeclaredMethod(QUX + FOO), notNullValue(Method.class));
-        } finally {
-            ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
-        }
-    }
-
-    @Test
-    @ToolsJarRule.Enforce
-    public void testAgentSelfInitialization() throws Exception {
-        ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
-                .rebase(isAnnotatedWith(ShouldRebase.class)).transform(new BarTransformer())
-                .installOnByteBuddyAgent();
-        try {
-            assertThat(new Bar().foo(), is(BAR));
-        } finally {
-            ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
-        }
-    }
-
-    @Test
-    @ToolsJarRule.Enforce
-    public void testAgentSelfInitializationAuxiliaryTypes() throws Exception {
-        ClassFileTransformer classFileTransformer = new AgentBuilder.Default()
-                .rebase(isAnnotatedWith(ShouldRebase.class)).transform(new QuxTransformer())
-                .installOnByteBuddyAgent();
-        try {
-            assertThat(new Qux().foo(), is(FOO + BAR));
+            Class<?> type = classLoader.loadClass(Baz.class.getName());
+            assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) BAR));
+            assertThat(type.getDeclaredMethod(QUX + FOO), notNullValue(Method.class));
         } finally {
             ByteBuddyAgent.getInstrumentation().removeTransformer(classFileTransformer);
         }
     }
 
     @Retention(RetentionPolicy.RUNTIME)
-    private static @interface ShouldRebase {
+    private @interface ShouldRebase {
+
     }
 
     private static class FooTransformer implements AgentBuilder.Transformer {
@@ -105,7 +129,7 @@ public class AgentBuilderDefaultApplicationTest {
     }
 
     @ShouldRebase
-    private static class Foo {
+    public static class Foo {
 
         public String foo() {
             return FOO;
@@ -113,7 +137,7 @@ public class AgentBuilderDefaultApplicationTest {
     }
 
     @ShouldRebase
-    private static class Baz {
+    public static class Baz {
 
         public String foo() {
             return FOO;
@@ -124,7 +148,11 @@ public class AgentBuilderDefaultApplicationTest {
 
         @Override
         public DynamicType.Builder<?> transform(DynamicType.Builder<?> builder, TypeDescription typeDescription) {
-            return builder.method(named(FOO)).intercept(MethodDelegation.to(new BarTransformer.Interceptor()));
+            try {
+                return builder.method(named(FOO)).intercept(MethodDelegation.to(new Interceptor()));
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
         }
 
         public static class Interceptor {
@@ -136,7 +164,7 @@ public class AgentBuilderDefaultApplicationTest {
     }
 
     @ShouldRebase
-    private static class Bar {
+    public static class Bar {
 
         public String foo() {
             return FOO;
@@ -147,7 +175,11 @@ public class AgentBuilderDefaultApplicationTest {
 
         @Override
         public DynamicType.Builder<?> transform(DynamicType.Builder<?> builder, TypeDescription typeDescription) {
-            return builder.method(named(FOO)).intercept(MethodDelegation.to(new QuxTransformer.Interceptor()));
+            try {
+                return builder.method(named(FOO)).intercept(MethodDelegation.to(new Interceptor()));
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
         }
 
         public static class Interceptor {
@@ -159,7 +191,7 @@ public class AgentBuilderDefaultApplicationTest {
     }
 
     @ShouldRebase
-    private static class Qux {
+    public static class Qux {
 
         public String foo() {
             return FOO;

@@ -1,6 +1,6 @@
 package net.bytebuddy.dynamic;
 
-import org.hamcrest.MatcherAssert;
+import net.bytebuddy.utility.ByteBuddyCommons;
 import org.junit.Test;
 
 import java.lang.reflect.Constructor;
@@ -15,32 +15,21 @@ import static org.junit.Assert.fail;
 public class TargetTypeTest {
 
     @Test
-    public void testIsFinal() throws Exception {
-        assertThat(Modifier.isFinal(TargetType.class.getModifiers()), is(true));
-    }
-
-    @Test
-    public void testMemberInaccessibility() throws Exception {
-        // Fails in Cobertura due to added methods but is ignored there.
-        assertThat(TargetType.class.getDeclaredMethods().length, is(0));
-    }
-
-    @Test
     public void testConstructorIsHidden() throws Exception {
-        MatcherAssert.assertThat(TargetType.class.getDeclaredConstructors().length, is(1));
+        assertThat(TargetType.class.getDeclaredConstructors().length, is(1));
         Constructor<?> constructor = TargetType.class.getDeclaredConstructor();
-        MatcherAssert.assertThat(Modifier.isPrivate(constructor.getModifiers()), is(true));
+        assertThat(Modifier.isPrivate(constructor.getModifiers()), is(true));
         constructor.setAccessible(true);
         try {
             constructor.newInstance();
             fail();
-        } catch (InvocationTargetException e) {
-            assertEquals(UnsupportedOperationException.class, e.getCause().getClass());
+        } catch (InvocationTargetException exception) {
+            assertEquals(UnsupportedOperationException.class, exception.getCause().getClass());
         }
     }
 
     @Test
-    public void testDescription() throws Exception {
-        assertThat(TargetType.DESCRIPTION.represents(TargetType.class), is(true));
+    public void testTypeIsFinal() throws Exception {
+        assertThat(Modifier.isFinal(ByteBuddyCommons.class.getModifiers()), is(true));
     }
 }

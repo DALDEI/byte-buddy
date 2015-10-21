@@ -6,6 +6,7 @@ import org.junit.Test;
 import org.mockito.Mock;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.hamcrest.CoreMatchers.is;
@@ -15,7 +16,9 @@ import static org.mockito.Mockito.*;
 public class CollectionOneToOneMatcherTest extends AbstractElementMatcherTest<CollectionOneToOneMatcher<?>> {
 
     private Iterable<Object> iterable;
+
     private Object first, second;
+
     @Mock
     private ElementMatcher<Object> firstMatcher, secondMatcher;
 
@@ -68,7 +71,7 @@ public class CollectionOneToOneMatcherTest extends AbstractElementMatcherTest<Co
     @Test
     @SuppressWarnings("unchecked")
     public void testNoMatchSize() throws Exception {
-        assertThat(new CollectionOneToOneMatcher<Object>(Arrays.asList(firstMatcher, secondMatcher)).matches(Arrays.asList(firstMatcher)), is(false));
+        assertThat(new CollectionOneToOneMatcher<Object>(Arrays.asList(firstMatcher, secondMatcher)).matches(Collections.singletonList(firstMatcher)), is(false));
         verifyZeroInteractions(firstMatcher);
         verifyZeroInteractions(secondMatcher);
     }

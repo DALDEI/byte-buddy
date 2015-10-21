@@ -1,6 +1,6 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.ByteCodeElement;
+import net.bytebuddy.description.ByteCodeElement;
 
 /**
  * An element matcher that matches a Java descriptor.
@@ -31,7 +31,7 @@ public class DescriptorMatcher<T extends ByteCodeElement> extends ElementMatcher
     @Override
     public boolean equals(Object other) {
         return this == other || !(other == null || getClass() != other.getClass())
-                && descriptorMatcher.equals(((DescriptorMatcher) other).descriptorMatcher);
+                && descriptorMatcher.equals(((DescriptorMatcher<?>) other).descriptorMatcher);
     }
 
     @Override

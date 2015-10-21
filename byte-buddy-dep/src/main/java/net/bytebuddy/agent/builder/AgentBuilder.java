@@ -1,37 +1,41 @@
 package net.bytebuddy.agent.builder;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.dynamic.DynamicType;
-import net.bytebuddy.dynamic.loading.ClassLoaderByteArrayInjector;
+import net.bytebuddy.dynamic.loading.ClassInjector;
+import net.bytebuddy.dynamic.loading.PackageDefinitionStrategy;
+import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.dynamic.scaffold.inline.MethodRebaseResolver;
-import net.bytebuddy.instrumentation.LoadedTypeInitializer;
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.method.bytecode.ByteCodeAppender;
-import net.bytebuddy.instrumentation.method.bytecode.stack.Removal;
-import net.bytebuddy.instrumentation.method.bytecode.stack.StackManipulation;
-import net.bytebuddy.instrumentation.method.bytecode.stack.collection.ArrayFactory;
-import net.bytebuddy.instrumentation.method.bytecode.stack.constant.ClassConstant;
-import net.bytebuddy.instrumentation.method.bytecode.stack.constant.NullConstant;
-import net.bytebuddy.instrumentation.method.bytecode.stack.constant.TextConstant;
-import net.bytebuddy.instrumentation.method.bytecode.stack.member.MethodInvocation;
-import net.bytebuddy.instrumentation.type.InstrumentedType;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.LoadedTypeInitializer;
+import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
+import net.bytebuddy.implementation.bytecode.Removal;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.collection.ArrayFactory;
+import net.bytebuddy.implementation.bytecode.constant.ClassConstant;
+import net.bytebuddy.implementation.bytecode.constant.NullConstant;
+import net.bytebuddy.implementation.bytecode.constant.TextConstant;
+import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.utility.StreamDrainer;
 import org.objectweb.asm.MethodVisitor;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
+import java.lang.instrument.UnmodifiableClassException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.security.AccessControlContext;
+import java.security.AccessController;
 import java.security.ProtectionDomain;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -42,13 +46,13 @@ import static net.bytebuddy.utility.ByteBuddyCommons.nonNull;
 /**
  * <p>
  * An agent builder provides a convenience API for defining a
- * <a href="http://docs.oracle.com/javase/6/docs/api/java/lang/instrument/package-summary.html">Java agent</a> using
- * Byte Buddy's
- * {@link net.bytebuddy.ByteBuddy#rebase(net.bytebuddy.instrumentation.type.TypeDescription, net.bytebuddy.dynamic.ClassFileLocator)}.
+ * <a href="http://docs.oracle.com/javase/6/docs/api/java/lang/instrument/package-summary.html">Java agent</a>. By default,
+ * this transformation is applied by rebasing the type if not specified otherwise by setting a
+ * {@link net.bytebuddy.agent.builder.AgentBuilder.DefinitionHandler}.
  * </p>
  * <p>
  * When defining several {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s, the agent builder always
- * applies the transformers that were supplied with the last applicable matcher. Therefore, more general transfromers
+ * applies the transformers that were supplied with the last applicable matcher. Therefore, more general transformers
  * should be defined first.
  * </p>
  */
@@ -65,7 +69,7 @@ public interface AgentBuilder {
      * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s to be applied when the given {@code matcher}
      * indicates a match.
      */
-    Identified rebase(RawMatcher matcher);
+    Identified type(RawMatcher matcher);
 
     /**
      * Matches a type being loaded in order to apply the supplied
@@ -79,7 +83,7 @@ public interface AgentBuilder {
      * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s to be applied when the given {@code typeMatcher}
      * indicates a match.
      */
-    Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher);
+    Identified type(ElementMatcher<? super TypeDescription> typeMatcher);
 
     /**
      * Matches a type being loaded in order to apply the supplied
@@ -97,8 +101,7 @@ public interface AgentBuilder {
      * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s to be applied when both the given
      * {@code typeMatcher} and {@code classLoaderMatcher} indicate a match.
      */
-    Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher,
-                      ElementMatcher<? super ClassLoader> classLoaderMatcher);
+    Identified type(ElementMatcher<? super TypeDescription> typeMatcher, ElementMatcher<? super ClassLoader> classLoaderMatcher);
 
     /**
      * Defines the given {@link net.bytebuddy.ByteBuddy} instance to be used by the created agent.
@@ -128,6 +131,14 @@ public interface AgentBuilder {
     AgentBuilder withBinaryLocator(BinaryLocator binaryLocator);
 
     /**
+     * Defines the use of the given definition handler that determines if a type should be rebased or redefined.
+     *
+     * @param definitionHandler The definition handler to use.
+     * @return A new instance of this agent builder which uses the given definition handler.
+     */
+    AgentBuilder withDefinitionHandler(DefinitionHandler definitionHandler);
+
+    /**
      * Enables the use of the given native method prefix for instrumented methods. Note that this prefix is also
      * applied when preserving non-native methods. The use of this prefix is also registered when installing the
      * final agent with an {@link java.lang.instrument.Instrumentation}.
@@ -138,17 +149,25 @@ public interface AgentBuilder {
     AgentBuilder withNativeMethodPrefix(String prefix);
 
     /**
+     * Defines classes to be loaded using the given access control context.
+     *
+     * @param accessControlContext The access control context to be used for loading classes.
+     * @return A new instance of this agent builder which uses the given access control context for class loading.
+     */
+    AgentBuilder withAccessControlContext(AccessControlContext accessControlContext);
+
+    /**
      * <p>
-     * Disables the execution of any {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}s that are registered
+     * Disables the execution of any {@link net.bytebuddy.implementation.LoadedTypeInitializer}s that are registered
      * with a {@link net.bytebuddy.dynamic.DynamicType}. This might cause the dynamic type to malfunction if the
-     * {@link net.bytebuddy.instrumentation.LoadedTypeInitializer} are not executed elsewhere before an instrumented
+     * {@link net.bytebuddy.implementation.LoadedTypeInitializer} are not executed elsewhere before an instrumented
      * type is put in use for the first time.
      * </p>
      * <p>
      * In order to execute a self initialization, Byte Buddy adds a call back into any dynamic type's type initializer.
      * This call back requires the injection of a call back dispatcher into the system class loader what might not
      * be a feasible solution on distributed applications where classes are shared among different JVMs where a
-     * different strategy for executing {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}s might be
+     * different strategy for executing {@link net.bytebuddy.implementation.LoadedTypeInitializer}s might be
      * more appropriate.
      * </p>
      *
@@ -157,12 +176,22 @@ public interface AgentBuilder {
     AgentBuilder disableSelfInitialization();
 
     /**
-     * Enables retransformation when this agent is installed. Note that retransformation on does not currently allow
-     * for adding or removing fields or methods on the Hot Spot Virtual machine.
+     * Enables retransformation when this agent is installed. Note that retransformation does not currently allow
+     * for adding or removing fields or methods on the HotSpot Virtual machine.
      *
-     * @return A new instance of this agent builder which does not apply self initialization.
+     * @return A new instance of this agent builder which allows for retransformation.
      */
     AgentBuilder allowRetransformation();
+
+    /**
+     * Enables class injection of auxiliary classes into the bootstrap class loader.
+     *
+     * @param folder          The folder in which jar files of the injected classes are to be stored.
+     * @param instrumentation The instrumentation instance that is used for appending jar files to the
+     *                        bootstrap class path.
+     * @return An agent builder with bootstrap class loader class injection enabled.
+     */
+    AgentBuilder enableBootstrapInjection(File folder, Instrumentation instrumentation);
 
     /**
      * Creates a {@link java.lang.instrument.ClassFileTransformer} that implements the configuration of this
@@ -174,7 +203,8 @@ public interface AgentBuilder {
 
     /**
      * Creates and installs a {@link java.lang.instrument.ClassFileTransformer} that implements the configuration of
-     * this agent builder with a given {@link java.lang.instrument.Instrumentation}.
+     * this agent builder with a given {@link java.lang.instrument.Instrumentation}. If retransformation is enabled,
+     * the installation also causes all loaded types to be retransformed.
      *
      * @param instrumentation The instrumentation on which this agent builder's configuration is to be installed.
      * @return The installed class file transformer.
@@ -194,7 +224,7 @@ public interface AgentBuilder {
      * types to instrumented in order to supply one or several
      * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s.
      */
-    static interface Identified {
+    interface Identified {
 
         /**
          * Applies the given transformer for the already supplied matcher.
@@ -210,7 +240,7 @@ public interface AgentBuilder {
          * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer} to applied when a matcher identifies a type
          * to be instrumented. Any subsequent transformers are applied in the order they are registered.
          */
-        static interface Extendable extends AgentBuilder, Identified {
+        interface Extendable extends AgentBuilder, Identified {
             /* this is merely a unionizing interface that does not declare methods */
         }
     }
@@ -220,7 +250,7 @@ public interface AgentBuilder {
      * should be applied during the execution of a {@link java.lang.instrument.ClassFileTransformer} that was
      * generated by an {@link net.bytebuddy.agent.builder.AgentBuilder}.
      */
-    static interface RawMatcher {
+    interface RawMatcher {
 
         /**
          * Decides if the given {@code typeDescription} should be instrumented with the entailed
@@ -229,7 +259,7 @@ public interface AgentBuilder {
          * @param typeDescription     A description of the type to be instrumented.
          * @param classLoader         The class loader of the instrumented type. Might be {@code null} if this class
          *                            loader represents the bootstrap class loader.
-         * @param classBeingRedefined The class being redefined which is only not {@code null} if a retransofmration
+         * @param classBeingRedefined The class being redefined which is only not {@code null} if a retransformation
          *                            is applied.
          * @param protectionDomain    The protection domain of the type being transformed.
          * @return {@code true} if the entailed {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s should
@@ -241,14 +271,14 @@ public interface AgentBuilder {
                         ProtectionDomain protectionDomain);
 
         /**
-         * A raw matcher implementation that checks a {@link net.bytebuddy.instrumentation.type.TypeDescription}
+         * A raw matcher implementation that checks a {@link TypeDescription}
          * and its {@link java.lang.ClassLoader} against two suitable matchers in order to determine if the matched
          * type should be instrumented.
          */
-        static class ForElementMatcherPair implements RawMatcher {
+        class ForElementMatcherPair implements RawMatcher {
 
             /**
-             * The type matcher to apply to a {@link net.bytebuddy.instrumentation.type.TypeDescription}.
+             * The type matcher to apply to a {@link TypeDescription}.
              */
             private final ElementMatcher<? super TypeDescription> typeMatcher;
 
@@ -259,12 +289,12 @@ public interface AgentBuilder {
 
             /**
              * Creates a new {@link net.bytebuddy.agent.builder.AgentBuilder.RawMatcher} that only matches the
-             * supplied {@link net.bytebuddy.instrumentation.type.TypeDescription} and its
+             * supplied {@link TypeDescription} and its
              * {@link java.lang.ClassLoader} against two matcher in order to decied if an instrumentation should
              * be conducted.
              *
              * @param typeMatcher        The type matcher to apply to a
-             *                           {@link net.bytebuddy.instrumentation.type.TypeDescription}.
+             *                           {@link TypeDescription}.
              * @param classLoaderMatcher The class loader to apply to a {@link java.lang.ClassLoader}.
              */
             public ForElementMatcherPair(ElementMatcher<? super TypeDescription> typeMatcher,
@@ -306,10 +336,67 @@ public interface AgentBuilder {
     }
 
     /**
+     * A definition handler is responsible for creating a type builder for a type that is being instrumented.
+     */
+    interface DefinitionHandler {
+
+        /**
+         * Creates a type builder for a given type.
+         *
+         * @param typeDescription       The type being instrumented.
+         * @param byteBuddy             The Byte Buddy configuration.
+         * @param classFileLocator      The class file locator to use.
+         * @param methodNameTransformer The method name transformer to use.
+         * @return A type builder for the given arguments.
+         */
+        DynamicType.Builder<?> builder(TypeDescription typeDescription,
+                                       ByteBuddy byteBuddy,
+                                       ClassFileLocator classFileLocator,
+                                       MethodRebaseResolver.MethodNameTransformer methodNameTransformer);
+
+        /**
+         * A default implementation of a definition handler.
+         */
+        enum Default implements DefinitionHandler {
+
+            /**
+             * A definition handler that performs a rebasing for all types.
+             */
+            REBASE {
+                @Override
+                public DynamicType.Builder<?> builder(TypeDescription typeDescription,
+                                                      ByteBuddy byteBuddy,
+                                                      ClassFileLocator classFileLocator,
+                                                      MethodRebaseResolver.MethodNameTransformer methodNameTransformer) {
+                    return byteBuddy.rebase(typeDescription, classFileLocator, methodNameTransformer);
+                }
+            },
+
+            /**
+             * A definition handler that performas a redefition for all types.
+             */
+            REDEFINE {
+                @Override
+                public DynamicType.Builder<?> builder(TypeDescription typeDescription,
+                                                      ByteBuddy byteBuddy,
+                                                      ClassFileLocator classFileLocator,
+                                                      MethodRebaseResolver.MethodNameTransformer methodNameTransformer) {
+                    return byteBuddy.redefine(typeDescription, classFileLocator);
+                }
+            };
+
+            @Override
+            public String toString() {
+                return "AgentBuilder.DefinitionHandler.Default." + name();
+            }
+        }
+    }
+
+    /**
      * A transformer allows to apply modifications to a {@link net.bytebuddy.dynamic.DynamicType}. Such a modification
      * is then applied to any instrumented type that was matched by the preceding matcher.
      */
-    static interface Transformer {
+    interface Transformer {
 
         /**
          * Allows for a transformation of a {@link net.bytebuddy.dynamic.DynamicType.Builder}.
@@ -324,7 +411,7 @@ public interface AgentBuilder {
          * A no-op implementation of a {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer} that does
          * not modify the supplied dynamic type.
          */
-        static enum NoOp implements Transformer {
+        enum NoOp implements Transformer {
 
             /**
              * The singleton instance.
@@ -335,13 +422,18 @@ public interface AgentBuilder {
             public DynamicType.Builder<?> transform(DynamicType.Builder<?> builder, TypeDescription typeDescription) {
                 return builder;
             }
+
+            @Override
+            public String toString() {
+                return "AgentBuilder.Transformer.NoOp." + name();
+            }
         }
 
         /**
          * A compound transformer that allows to group several
          * {@link net.bytebuddy.agent.builder.AgentBuilder.Transformer}s as a single transformer.
          */
-        static class Compound implements Transformer {
+        class Compound implements Transformer {
 
             /**
              * The transformers to apply in their application order.
@@ -389,7 +481,7 @@ public interface AgentBuilder {
      * A binary locator allows to specify how binary data is located by an
      * {@link net.bytebuddy.agent.builder.AgentBuilder}.
      */
-    static interface BinaryLocator {
+    interface BinaryLocator {
 
         /**
          * Initializes this binary locator.
@@ -408,7 +500,7 @@ public interface AgentBuilder {
          * {@link net.bytebuddy.pool.TypePool.CacheProvider.Simple} and a
          * {@link net.bytebuddy.dynamic.ClassFileLocator.ForClassLoader}.
          */
-        static enum Default implements BinaryLocator {
+        enum Default implements BinaryLocator {
 
             /**
              * The singleton instance.
@@ -416,13 +508,13 @@ public interface AgentBuilder {
             INSTANCE;
 
             @Override
-            public BinaryLocator.Initialized initialize(String typeName,
-                                                        byte[] binaryRepresentation,
-                                                        ClassLoader classLoader) {
-                return new Initialized(typeName,
-                        binaryRepresentation,
-                        new TypePool.CacheProvider.Simple(),
-                        ClassFileLocator.ForClassLoader.of(classLoader));
+            public BinaryLocator.Initialized initialize(String typeName, byte[] binaryRepresentation, ClassLoader classLoader) {
+                return Initialized.of(typeName, binaryRepresentation, new TypePool.CacheProvider.Simple(), ClassFileLocator.ForClassLoader.of(classLoader));
+            }
+
+            @Override
+            public String toString() {
+                return "AgentBuilder.BinaryLocator.Default." + name();
             }
 
             /**
@@ -454,17 +546,37 @@ public interface AgentBuilder {
                  * Creates a new initialized form of a default binary locator.
                  *
                  * @param typeName             The binary name of the type that is being instrumented.
-                 * @param binaryRepresentation The binary representation of the instrumented type.
+                 * @param binaryRepresentation The binary representation of the instrumented type. The provided array must not be modified.
                  * @param cacheProvider        The cache provider to use.
                  * @param classFileLocator     The class file locator to use.
+                 * @return An initialized binary locator.
                  */
-                public Initialized(String typeName,
-                                   byte[] binaryRepresentation,
-                                   TypePool.CacheProvider cacheProvider,
-                                   ClassFileLocator classFileLocator) {
+                public static BinaryLocator.Initialized of(String typeName,
+                                                           byte[] binaryRepresentation,
+                                                           TypePool.CacheProvider cacheProvider,
+                                                           ClassFileLocator classFileLocator) {
+                    return new Initialized(typeName,
+                            binaryRepresentation,
+                            new TypePool.LazyFacade(new TypePool.Default(cacheProvider, classFileLocator)),
+                            classFileLocator);
+                }
+
+                /**
+                 * Creates a new initialized form of a default binary locator.
+                 *
+                 * @param typeName             The binary name of the type that is being instrumented.
+                 * @param binaryRepresentation The binary representation of the instrumented type. The provided array must not be modified.
+                 * @param typePool             The type pool to use.
+                 * @param classFileLocator     The class file locator to use.
+                 */
+                @SuppressFBWarnings(value = "EI_EXPOSE_REP2", justification = "The received array must be immutable by contract")
+                protected Initialized(String typeName,
+                                      byte[] binaryRepresentation,
+                                      TypePool typePool,
+                                      ClassFileLocator classFileLocator) {
                     this.typeName = typeName;
                     this.binaryRepresentation = binaryRepresentation;
-                    typePool = new TypePool.Default(cacheProvider, classFileLocator);
+                    this.typePool = typePool;
                     this.classFileLocator = classFileLocator;
                 }
 
@@ -480,7 +592,7 @@ public interface AgentBuilder {
 
                 @Override
                 public ClassFileLocator.Resolution locate(String typeName) throws IOException {
-                    return typeName.equals(typeName)
+                    return this.typeName.equals(typeName)
                             ? new ClassFileLocator.Resolution.Explicit(binaryRepresentation)
                             : classFileLocator.locate(typeName);
                 }
@@ -520,7 +632,7 @@ public interface AgentBuilder {
         /**
          * A {@link net.bytebuddy.agent.builder.AgentBuilder.BinaryLocator} in initialized state.
          */
-        static interface Initialized {
+        interface Initialized {
 
             /**
              * Returns the type pool to be used of an {@link net.bytebuddy.agent.builder.AgentBuilder}.
@@ -541,13 +653,13 @@ public interface AgentBuilder {
     /**
      * A listener that is informed about events that occur during an instrumentation process.
      */
-    static interface Listener {
+    interface Listener {
 
         /**
          * Invoked right before a successful transformation is applied.
          *
          * @param typeDescription The type that is being transformed.
-         * @param dynamicType The dynamic type that was created.
+         * @param dynamicType     The dynamic type that was created.
          */
         void onTransformation(TypeDescription typeDescription, DynamicType dynamicType);
 
@@ -576,7 +688,7 @@ public interface AgentBuilder {
         /**
          * A no-op implementation of a {@link net.bytebuddy.agent.builder.AgentBuilder.Listener}.
          */
-        static enum NoOp implements Listener {
+        enum NoOp implements Listener {
 
             /**
              * The singleton instance.
@@ -602,12 +714,17 @@ public interface AgentBuilder {
             public void onComplete(String typeName) {
                 /* do nothing */
             }
+
+            @Override
+            public String toString() {
+                return "AgentBuilder.Listener.NoOp." + name();
+            }
         }
 
         /**
          * A compound listener that allows to group several listeners in one instance.
          */
-        static class Compound implements Listener {
+        class Compound implements Listener {
 
             /**
              * The listeners that are represented by this compound listener in their application order.
@@ -674,25 +791,29 @@ public interface AgentBuilder {
     /**
      * The default implementation of an {@link net.bytebuddy.agent.builder.AgentBuilder}.
      */
-    static class Default implements AgentBuilder {
+    class Default implements AgentBuilder {
 
         /**
          * The string value that is used to indicate that no name prefix for native methods should be used.
          * This value is not a valid prefix.
          */
         protected static final String NO_NATIVE_PREFIX = "";
+
         /**
          * The name of the Byte Buddy agent class.
          */
         private static final String BYTE_BUDDY_AGENT_TYPE = "net.bytebuddy.agent.ByteBuddyAgent";
+
         /**
          * The name of the {@code ByteBuddyAgent} class's method for obtaining an instrumentation.
          */
         private static final String GET_INSTRUMENTATION_METHOD = "getInstrumentation";
+
         /**
          * Base for access to a reflective member to make the code more readable.
          */
         private static final Object STATIC_METHOD = null;
+
         /**
          * The value that is to be returned from a {@link java.lang.instrument.ClassFileTransformer} to indicate
          * that no class file transformation is to be applied.
@@ -710,6 +831,11 @@ public interface AgentBuilder {
         private final BinaryLocator binaryLocator;
 
         /**
+         * The definition handler to use.
+         */
+        private final DefinitionHandler definitionHandler;
+
+        /**
          * The listener to notify on transformations.
          */
         private final Listener listener;
@@ -722,8 +848,13 @@ public interface AgentBuilder {
         private final String nativeMethodPrefix;
 
         /**
+         * The access control context to use for loading classes.
+         */
+        private final AccessControlContext accessControlContext;
+
+        /**
          * {@code true} if generated types should not create a callback inside their type initializer in order
-         * to call their potential {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}.
+         * to call their potential {@link net.bytebuddy.implementation.LoadedTypeInitializer}.
          */
         private final boolean disableSelfInitialization;
 
@@ -734,9 +865,14 @@ public interface AgentBuilder {
         private final boolean retransformation;
 
         /**
+         * The injection strategy for injecting classes into the bootstrap class loader.
+         */
+        private final BootstrapInjectionStrategy bootstrapInjectionStrategy;
+
+        /**
          * The list of transformation entries that are registered with this agent builder.
          */
-        private final List<Transformation> entries;
+        private final List<Transformation> transformations;
 
         /**
          * Creates a new default agent builder that uses a default {@link net.bytebuddy.ByteBuddy} instance for
@@ -747,101 +883,135 @@ public interface AgentBuilder {
         }
 
         /**
-         * Creates a new default agent builder.
+         * Creates a new agent builder with default settings.
          *
          * @param byteBuddy The Byte Buddy instance to be used.
          */
         public Default(ByteBuddy byteBuddy) {
             this(nonNull(byteBuddy),
                     BinaryLocator.Default.INSTANCE,
+                    DefinitionHandler.Default.REBASE,
                     Listener.NoOp.INSTANCE,
                     NO_NATIVE_PREFIX,
+                    AccessController.getContext(),
                     false,
                     false,
+                    BootstrapInjectionStrategy.Disabled.INSTANCE,
                     Collections.<Transformation>emptyList());
         }
 
         /**
          * Creates a new default agent builder.
          *
-         * @param byteBuddy                 The Byte Buddy instance to be used.
-         * @param binaryLocator             The binary locator to use.
-         * @param listener                  The listener to notify on transformations.
-         * @param nativeMethodPrefix        The native method prefix to use which might also represent
-         *                                  {@link net.bytebuddy.agent.builder.AgentBuilder.Default#NO_NATIVE_PREFIX}
-         *                                  to indicate that no prefix should be added but rather a random suffix.
-         * @param disableSelfInitialization {@code true} if generated types should not create a callback inside their
-         *                                  type initializer in order to call their potential
-         *                                  {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}.
-         * @param retransformation          {@code true} if the generated
-         *                                  {@link java.lang.instrument.ClassFileTransformer} should also apply
-         *                                  for retransformations.
-         * @param entries                   The list of transformation entries that are registered with this
-         *                                  agent builder.
+         * @param byteBuddy                  The Byte Buddy instance to be used.
+         * @param binaryLocator              The binary locator to use.
+         * @param definitionHandler          The definition handler to use.
+         * @param listener                   The listener to notify on transformations.
+         * @param nativeMethodPrefix         The native method prefix to use which might also represent
+         *                                   {@link net.bytebuddy.agent.builder.AgentBuilder.Default#NO_NATIVE_PREFIX}
+         *                                   to indicate that no prefix should be added but rather a random suffix.
+         * @param accessControlContext       The access control context to use for loading classes.
+         * @param disableSelfInitialization  {@code true} if generated types should not create a callback inside their
+         *                                   type initializer in order to call their potential
+         *                                   {@link net.bytebuddy.implementation.LoadedTypeInitializer}.
+         * @param retransformation           {@code true} if the generated
+         *                                   {@link java.lang.instrument.ClassFileTransformer} should also apply
+         *                                   for retransformations.
+         * @param bootstrapInjectionStrategy The injection strategy for injecting classes into the bootstrap class loader.
+         * @param transformations            The list of transformation entries that are registered with this
+         *                                   agent builder.
          */
         protected Default(ByteBuddy byteBuddy,
                           BinaryLocator binaryLocator,
+                          DefinitionHandler definitionHandler,
                           Listener listener,
                           String nativeMethodPrefix,
+                          AccessControlContext accessControlContext,
                           boolean disableSelfInitialization,
                           boolean retransformation,
-                          List<Transformation> entries) {
+                          BootstrapInjectionStrategy bootstrapInjectionStrategy,
+                          List<Transformation> transformations) {
             this.byteBuddy = byteBuddy;
             this.binaryLocator = binaryLocator;
+            this.definitionHandler = definitionHandler;
             this.listener = listener;
             this.nativeMethodPrefix = nativeMethodPrefix;
+            this.accessControlContext = accessControlContext;
             this.disableSelfInitialization = disableSelfInitialization;
             this.retransformation = retransformation;
-            this.entries = entries;
+            this.bootstrapInjectionStrategy = bootstrapInjectionStrategy;
+            this.transformations = transformations;
         }
 
         @Override
-        public Identified rebase(RawMatcher matcher) {
+        public Identified type(RawMatcher matcher) {
             return new Matched(nonNull(matcher), Transformer.NoOp.INSTANCE);
         }
 
         @Override
-        public Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher) {
-            return rebase(typeMatcher, any());
+        public Identified type(ElementMatcher<? super TypeDescription> typeMatcher) {
+            return type(typeMatcher, any());
         }
 
         @Override
-        public Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher,
-                                 ElementMatcher<? super ClassLoader> classLoaderMatcher) {
-            return rebase(new RawMatcher.ForElementMatcherPair(nonNull(typeMatcher), nonNull(classLoaderMatcher)));
+        public Identified type(ElementMatcher<? super TypeDescription> typeMatcher, ElementMatcher<? super ClassLoader> classLoaderMatcher) {
+            return type(new RawMatcher.ForElementMatcherPair(nonNull(typeMatcher), nonNull(classLoaderMatcher)));
         }
 
         @Override
         public AgentBuilder withByteBuddy(ByteBuddy byteBuddy) {
             return new Default(nonNull(byteBuddy),
                     binaryLocator,
+                    definitionHandler,
                     listener,
                     nativeMethodPrefix,
+                    accessControlContext,
                     disableSelfInitialization,
                     retransformation,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
         }
 
         @Override
         public AgentBuilder withListener(Listener listener) {
             return new Default(byteBuddy,
                     binaryLocator,
+                    definitionHandler,
                     new Listener.Compound(this.listener, nonNull(listener)),
                     nativeMethodPrefix,
+                    accessControlContext,
                     disableSelfInitialization,
                     retransformation,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
+        }
+
+        @Override
+        public AgentBuilder withDefinitionHandler(DefinitionHandler definitionHandler) {
+            return new Default(byteBuddy,
+                    binaryLocator,
+                    nonNull(definitionHandler),
+                    listener,
+                    nativeMethodPrefix,
+                    accessControlContext,
+                    disableSelfInitialization,
+                    retransformation,
+                    bootstrapInjectionStrategy,
+                    transformations);
         }
 
         @Override
         public AgentBuilder withBinaryLocator(BinaryLocator binaryLocator) {
             return new Default(byteBuddy,
                     nonNull(binaryLocator),
+                    definitionHandler,
                     listener,
                     nativeMethodPrefix,
+                    accessControlContext,
                     disableSelfInitialization,
                     retransformation,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
         }
 
         @Override
@@ -851,33 +1021,70 @@ public interface AgentBuilder {
             }
             return new Default(byteBuddy,
                     binaryLocator,
+                    definitionHandler,
                     listener,
                     prefix,
+                    accessControlContext,
                     disableSelfInitialization,
                     retransformation,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
+        }
+
+        @Override
+        public AgentBuilder withAccessControlContext(AccessControlContext accessControlContext) {
+            return new Default(byteBuddy,
+                    binaryLocator,
+                    definitionHandler,
+                    listener,
+                    nativeMethodPrefix,
+                    accessControlContext,
+                    disableSelfInitialization,
+                    retransformation,
+                    bootstrapInjectionStrategy,
+                    transformations);
         }
 
         @Override
         public AgentBuilder allowRetransformation() {
             return new Default(byteBuddy,
                     binaryLocator,
+                    definitionHandler,
                     listener,
                     nativeMethodPrefix,
+                    accessControlContext,
                     disableSelfInitialization,
                     true,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
         }
 
         @Override
         public AgentBuilder disableSelfInitialization() {
             return new Default(byteBuddy,
                     binaryLocator,
+                    definitionHandler,
                     listener,
                     nativeMethodPrefix,
+                    accessControlContext,
                     true,
                     retransformation,
-                    entries);
+                    bootstrapInjectionStrategy,
+                    transformations);
+        }
+
+        @Override
+        public AgentBuilder enableBootstrapInjection(File folder, Instrumentation instrumentation) {
+            return new Default(byteBuddy,
+                    binaryLocator,
+                    definitionHandler,
+                    listener,
+                    nativeMethodPrefix,
+                    accessControlContext,
+                    true,
+                    retransformation,
+                    new BootstrapInjectionStrategy.Enabled(nonNull(folder), nonNull(instrumentation)),
+                    transformations);
         }
 
         @Override
@@ -892,6 +1099,25 @@ public interface AgentBuilder {
             if (!NO_NATIVE_PREFIX.equals(nonNull(nativeMethodPrefix))) {
                 instrumentation.setNativeMethodPrefix(classFileTransformer, nativeMethodPrefix);
             }
+            if (retransformation) {
+                List<Class<?>> retransformedTypes = new LinkedList<Class<?>>();
+                for (Class<?> type : instrumentation.getAllLoadedClasses()) {
+                    // The list of all loaded types can be significant what can crash the JVM such that this preselection becomes  necessary.
+                    for (Transformation transformation : transformations) {
+                        if (transformation.matches(new TypeDescription.ForLoadedType(type), type.getClassLoader(), type, type.getProtectionDomain())) {
+                            retransformedTypes.add(type);
+                            break;
+                        }
+                    }
+                }
+                if (retransformedTypes.size() > 0) {
+                    try {
+                        instrumentation.retransformClasses(retransformedTypes.toArray(new Class<?>[retransformedTypes.size()]));
+                    } catch (UnmodifiableClassException exception) {
+                        throw new IllegalStateException("Cannot retransform classes: " + retransformedTypes, exception);
+                    }
+                }
+            }
             return classFileTransformer;
         }
 
@@ -902,8 +1128,10 @@ public interface AgentBuilder {
                         .loadClass(BYTE_BUDDY_AGENT_TYPE)
                         .getDeclaredMethod(GET_INSTRUMENTATION_METHOD)
                         .invoke(STATIC_METHOD));
-            } catch (Exception e) {
-                throw new IllegalStateException("The Byte Buddy agent is not installed or not accessible", e);
+            } catch (RuntimeException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                throw new IllegalStateException("The Byte Buddy agent is not installed or not accessible", exception);
             }
         }
 
@@ -916,9 +1144,12 @@ public interface AgentBuilder {
                     && byteBuddy.equals(aDefault.byteBuddy)
                     && listener.equals(aDefault.listener)
                     && nativeMethodPrefix.equals(aDefault.nativeMethodPrefix)
+                    && definitionHandler.equals(aDefault.definitionHandler)
+                    && accessControlContext.equals(aDefault.accessControlContext)
                     && disableSelfInitialization == aDefault.disableSelfInitialization
                     && retransformation == aDefault.retransformation
-                    && entries.equals(aDefault.entries);
+                    && bootstrapInjectionStrategy.equals(aDefault.bootstrapInjectionStrategy)
+                    && transformations.equals(aDefault.transformations);
 
         }
 
@@ -927,10 +1158,13 @@ public interface AgentBuilder {
             int result = byteBuddy.hashCode();
             result = 31 * result + binaryLocator.hashCode();
             result = 31 * result + listener.hashCode();
+            result = 31 * result + definitionHandler.hashCode();
             result = 31 * result + nativeMethodPrefix.hashCode();
+            result = 31 * result + accessControlContext.hashCode();
             result = 31 * result + (disableSelfInitialization ? 1 : 0);
             result = 31 * result + (retransformation ? 1 : 0);
-            result = 31 * result + entries.hashCode();
+            result = 31 * result + bootstrapInjectionStrategy.hashCode();
+            result = 31 * result + transformations.hashCode();
             return result;
         }
 
@@ -939,19 +1173,22 @@ public interface AgentBuilder {
             return "AgentBuilder.Default{" +
                     "byteBuddy=" + byteBuddy +
                     ", binaryLocator=" + binaryLocator +
+                    ", definitionHandler=" + definitionHandler +
                     ", listener=" + listener +
                     ", nativeMethodPrefix=" + nativeMethodPrefix +
+                    ", accessControlContext=" + accessControlContext +
                     ", disableSelfInitialization=" + disableSelfInitialization +
                     ", retransformation=" + retransformation +
-                    ", entries=" + entries +
+                    ", bootstrapInjectionStrategy=" + bootstrapInjectionStrategy +
+                    ", transformations=" + transformations +
                     '}';
         }
 
         /**
          * An initialization strategy which determines the handling of
-         * {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}s.
+         * {@link net.bytebuddy.implementation.LoadedTypeInitializer}s.
          */
-        public static interface InitializationStrategy {
+        public interface InitializationStrategy {
 
             /**
              * Determines if and how a loaded type initializer is to be applied to a loaded type.
@@ -983,7 +1220,7 @@ public interface AgentBuilder {
             /**
              * A non-initializing initialization strategy.
              */
-            static enum NoOp implements InitializationStrategy {
+            enum NoOp implements InitializationStrategy {
 
                 /**
                  * The singleton instance.
@@ -1004,14 +1241,18 @@ public interface AgentBuilder {
                 public void register(String name, ClassLoader classLoader, LoadedTypeInitializer loadedTypeInitializer) {
                     /* do nothing */
                 }
+
+                @Override
+                public String toString() {
+                    return "AgentBuilder.Default.InitializationStrategy.NoOp." + name();
+                }
             }
 
             /**
              * An initialization strategy that adds a code block to an instrumented type's type initializer which
              * then calls a specific class that is responsible for the explicit initialization.
              */
-            static class SelfInjection implements InitializationStrategy,
-                    net.bytebuddy.instrumentation.Instrumentation, ByteCodeAppender {
+            class SelfInjection implements InitializationStrategy, Implementation, ByteCodeAppender {
 
                 /**
                  * An accessor for the initialization nexus that makes sure that the Nexus is loaded by the
@@ -1042,17 +1283,12 @@ public interface AgentBuilder {
                 }
 
                 @Override
-                public ByteCodeAppender appender(Target instrumentationTarget) {
+                public ByteCodeAppender appender(Target implementationTarget) {
                     return this;
                 }
 
                 @Override
-                public boolean appendsCode() {
-                    return true;
-                }
-
-                @Override
-                public Size apply(MethodVisitor methodVisitor, Context instrumentationContext, MethodDescription instrumentedMethod) {
+                public Size apply(MethodVisitor methodVisitor, Context implementationContext, MethodDescription instrumentedMethod) {
                     throw new IllegalStateException("Initialization strategy illegally applied to " + instrumentedMethod);
                 }
 
@@ -1084,7 +1320,7 @@ public interface AgentBuilder {
                 /**
                  * <p>
                  * This nexus is a global dispatcher for initializing classes with
-                 * {@link net.bytebuddy.instrumentation.LoadedTypeInitializer}s. To do so, this class is to be loaded
+                 * {@link net.bytebuddy.implementation.LoadedTypeInitializer}s. To do so, this class is to be loaded
                  * by the system class loader in an explicit manner. Any instrumented class is then injected a code
                  * block into its static type initializer that makes a call to this very same nexus which had the
                  * loaded type initializer registered before hand.
@@ -1101,14 +1337,16 @@ public interface AgentBuilder {
 
                     /**
                      * A map of keys identifying a loaded type by its name and class loader mapping their
-                     * potential {@link net.bytebuddy.instrumentation.LoadedTypeInitializer} where the class
+                     * potential {@link net.bytebuddy.implementation.LoadedTypeInitializer} where the class
                      * loader of these initializers is however irrelevant.
                      */
                     private static final ConcurrentMap<Nexus, Object> TYPE_INITIALIZERS = new ConcurrentHashMap<Nexus, Object>();
+
                     /**
                      * The name of a type for which a loaded type initializer is registered.
                      */
                     private final String name;
+
                     /**
                      * The class loader for which a loaded type initializer is registered.
                      */
@@ -1141,7 +1379,6 @@ public interface AgentBuilder {
                      * @param type The loaded type to initialize.
                      * @throws Exception If an exception occurs.
                      */
-                    @SuppressWarnings("unused")
                     public static void initialize(Class<?> type) throws Exception {
                         Object typeInitializer = TYPE_INITIALIZERS.remove(new Nexus(type));
                         if (typeInitializer != null) {
@@ -1153,10 +1390,9 @@ public interface AgentBuilder {
                      * @param name            The name of the type for the loaded type initializer.
                      * @param classLoader     The class loader of the type for the loaded type initializer.
                      * @param typeInitializer The type initializer to register. The initializer must be an instance
-                     *                        of {@link net.bytebuddy.instrumentation.LoadedTypeInitializer} where
+                     *                        of {@link net.bytebuddy.implementation.LoadedTypeInitializer} where
                      *                        it does however not matter which class loader loaded this latter type.
                      */
-                    @SuppressWarnings("unused")
                     public static void register(String name, ClassLoader classLoader, Object typeInitializer) {
                         TYPE_INITIALIZERS.put(new Nexus(name, classLoader), typeInitializer);
                     }
@@ -1190,7 +1426,7 @@ public interface AgentBuilder {
                      * {@link net.bytebuddy.agent.builder.AgentBuilder.Default.InitializationStrategy.SelfInjection.Nexus}
                      * is loaded by the system class loader.
                      */
-                    protected static enum Accessor {
+                    protected enum Accessor {
 
                         /**
                          * The singleton instance.
@@ -1231,12 +1467,13 @@ public interface AgentBuilder {
                         /**
                          * Creates the singleton accessor.
                          */
-                        private Accessor() {
+                        Accessor() {
                             try {
-                                ClassLoader classLoader = ClassLoader.getSystemClassLoader();
-                                ClassLoaderByteArrayInjector injector = new ClassLoaderByteArrayInjector(classLoader);
-                                Class<?> nexus = injector.inject(Nexus.class.getName(), new StreamDrainer().drain(classLoader
-                                        .getResourceAsStream(Nexus.class.getName().replace('.', '/') + ".class")));
+                                TypeDescription nexusType = new TypeDescription.ForLoadedType(Nexus.class);
+                                Class<?> nexus = new ClassInjector.UsingReflection(ClassLoader.getSystemClassLoader())
+                                        .inject(Collections.singletonMap(nexusType, new StreamDrainer()
+                                                .drain(getClass().getClassLoader().getResourceAsStream(Nexus.class.getName().replace('.', '/') + ".class"))))
+                                        .get(nexusType);
                                 registration = nexus.getDeclaredMethod("register", String.class, ClassLoader.class, Object.class);
                                 systemClassLoader = new TypeDescription.ForLoadedType(ClassLoader.class).getDeclaredMethods()
                                         .filter(named("getSystemClassLoader")).getOnly();
@@ -1246,8 +1483,10 @@ public interface AgentBuilder {
                                         .filter(named("getDeclaredMethod").and(takesArguments(String.class, Class[].class))).getOnly();
                                 invokeMethod = new TypeDescription.ForLoadedType(Method.class).getDeclaredMethods()
                                         .filter(named("invoke").and(takesArguments(Object.class, Object[].class))).getOnly();
-                            } catch (Exception e) {
-                                throw new IllegalStateException("Cannot create type initialization accessor", e);
+                            } catch (RuntimeException exception) {
+                                throw exception;
+                            } catch (Exception exception) {
+                                throw new IllegalStateException("Cannot create type initialization accessor", exception);
                             }
                         }
 
@@ -1261,10 +1500,10 @@ public interface AgentBuilder {
                         public void register(String name, ClassLoader classLoader, Object typeInitializer) {
                             try {
                                 registration.invoke(STATIC_METHOD, name, classLoader, typeInitializer);
-                            } catch (IllegalAccessException e) {
-                                throw new IllegalStateException("Cannot register type initializer for " + name, e);
-                            } catch (InvocationTargetException e) {
-                                throw new IllegalStateException("Cannot register type initializer for " + name, e.getCause());
+                            } catch (IllegalAccessException exception) {
+                                throw new IllegalStateException("Cannot register type initializer for " + name, exception);
+                            } catch (InvocationTargetException exception) {
+                                throw new IllegalStateException("Cannot register type initializer for " + name, exception.getCause());
                             }
                         }
 
@@ -1273,25 +1512,120 @@ public interface AgentBuilder {
                          * calling the system class loader's nexus in order to apply a self-initialization.
                          *
                          * @param instrumentedType The instrumented type for which the code block is to be injected.
-                         * @return A stack manipulation that implements the self-initialization.
+                         * @return A byte code appender that implements the self-initialization.
                          */
-                        public StackManipulation initializerFor(TypeDescription instrumentedType) {
-                            return new StackManipulation.Compound(
+                        public ByteCodeAppender initializerFor(TypeDescription instrumentedType) {
+                            return new ByteCodeAppender.Simple(new StackManipulation.Compound(
                                     MethodInvocation.invoke(systemClassLoader),
                                     new TextConstant(Nexus.class.getName()),
                                     MethodInvocation.invoke(loadClass),
                                     new TextConstant("initialize"),
-                                    ArrayFactory.targeting(new TypeDescription.ForLoadedType(Class.class))
-                                            .withValues(Collections.singletonList(ClassConstant.of(new TypeDescription.ForLoadedType(Class.class)))),
+                                    ArrayFactory.forType(TypeDescription.CLASS)
+                                            .withValues(Collections.singletonList(ClassConstant.of(TypeDescription.CLASS))),
                                     MethodInvocation.invoke(getDeclaredMethod),
                                     NullConstant.INSTANCE,
-                                    ArrayFactory.targeting(new TypeDescription.ForLoadedType(Object.class))
+                                    ArrayFactory.forType(TypeDescription.OBJECT)
                                             .withValues(Collections.singletonList(ClassConstant.of(instrumentedType))),
                                     MethodInvocation.invoke(invokeMethod),
                                     Removal.SINGLE
-                            );
+                            ));
+                        }
+
+                        @Override
+                        public String toString() {
+                            return "AgentBuilder.Default.InitializationStrategy.SelfInjection.Nexus.Accessor." + name();
                         }
                     }
+                }
+            }
+        }
+
+        /**
+         * An injection strategy for injecting classes into the bootstrap class loader.
+         */
+        protected interface BootstrapInjectionStrategy {
+
+            /**
+             * Creates an injector for the bootstrap class loader.
+             *
+             * @param protectionDomain The protection domain to be used.
+             * @return A class injector for the bootstrap class loader.
+             */
+            ClassInjector make(ProtectionDomain protectionDomain);
+
+            /**
+             * A disabled bootstrap injection strategy.
+             */
+            enum Disabled implements BootstrapInjectionStrategy {
+
+                /**
+                 * The singleton instance.
+                 */
+                INSTANCE;
+
+                @Override
+                public ClassInjector make(ProtectionDomain protectionDomain) {
+                    throw new IllegalStateException("Injecting classes into the bootstrap class loader was not enabled");
+                }
+
+                @Override
+                public String toString() {
+                    return "AgentBuilder.Default.BootstrapInjectionStrategy.Disabled." + name();
+                }
+            }
+
+            /**
+             * An enabled bootstrap injection strategy.
+             */
+            class Enabled implements BootstrapInjectionStrategy {
+
+                /**
+                 * The folder in which jar files are to be saved.
+                 */
+                private final File folder;
+
+                /**
+                 * The instrumentation to use for appending jar files.
+                 */
+                private final Instrumentation instrumentation;
+
+                /**
+                 * Creates a new enabled bootstrap class loader injection strategy.
+                 *
+                 * @param folder          The folder in which jar files are to be saved.
+                 * @param instrumentation The instrumentation to use for appending jar files.
+                 */
+                public Enabled(File folder, Instrumentation instrumentation) {
+                    this.folder = folder;
+                    this.instrumentation = instrumentation;
+                }
+
+                @Override
+                public ClassInjector make(ProtectionDomain protectionDomain) {
+                    return ClassInjector.UsingInstrumentation.of(folder, ClassInjector.UsingInstrumentation.Target.BOOTSTRAP, instrumentation);
+                }
+
+                @Override
+                public boolean equals(Object other) {
+                    if (this == other) return true;
+                    if (other == null || getClass() != other.getClass()) return false;
+                    Enabled enabled = (Enabled) other;
+                    return folder.equals(enabled.folder) && instrumentation.equals(enabled.instrumentation);
+                }
+
+                @Override
+                public int hashCode() {
+                    int result = folder.hashCode();
+                    result = 31 * result + instrumentation.hashCode();
+                    return result;
+                }
+
+                @Override
+                public String toString() {
+                    return "AgentBuilder.Default.BootstrapInjectionStrategy.Enabled{" +
+                            "folder=" + folder +
+                            ", instrumentation=" + instrumentation +
+                            '}';
                 }
             }
         }
@@ -1381,7 +1715,7 @@ public interface AgentBuilder {
              */
             public ExecutingTransformer() {
                 methodNameTransformer = NO_NATIVE_PREFIX.equals(nativeMethodPrefix)
-                        ? new MethodRebaseResolver.MethodNameTransformer.Suffixing()
+                        ? MethodRebaseResolver.MethodNameTransformer.Suffixing.withRandomSuffix()
                         : new MethodRebaseResolver.MethodNameTransformer.Prefixing(nativeMethodPrefix);
                 initializationStrategy = disableSelfInitialization
                         ? InitializationStrategy.NoOp.INSTANCE
@@ -1398,23 +1732,22 @@ public interface AgentBuilder {
                 try {
                     BinaryLocator.Initialized initialized = binaryLocator.initialize(binaryTypeName, binaryRepresentation, classLoader);
                     TypeDescription typeDescription = initialized.getTypePool().describe(binaryTypeName).resolve();
-                    for (Transformation transformation : entries) {
+                    for (Transformation transformation : transformations) {
                         if (transformation.matches(typeDescription, classLoader, classBeingRedefined, protectionDomain)) {
                             DynamicType.Unloaded<?> dynamicType = initializationStrategy.apply(
-                                    transformation.transform(byteBuddy.rebase(typeDescription,
+                                    transformation.transform(definitionHandler.builder(typeDescription, byteBuddy,
                                             initialized.getClassFileLocator(),
                                             methodNameTransformer), typeDescription)).make();
                             Map<TypeDescription, LoadedTypeInitializer> loadedTypeInitializers = dynamicType.getLoadedTypeInitializers();
                             if (loadedTypeInitializers.size() > 1) {
-                                ClassLoaderByteArrayInjector injector = new ClassLoaderByteArrayInjector(classLoader, protectionDomain);
-                                for (Map.Entry<TypeDescription, byte[]> auxiliary : dynamicType.getRawAuxiliaryTypes().entrySet()) {
-                                    Class<?> type = injector.inject(auxiliary.getKey().getName(), auxiliary.getValue());
-                                    initializationStrategy.initialize(type, loadedTypeInitializers.get(auxiliary.getKey()));
+                                ClassInjector classInjector = classLoader == null
+                                        ? bootstrapInjectionStrategy.make(protectionDomain)
+                                        : new ClassInjector.UsingReflection(classLoader, protectionDomain, accessControlContext, PackageDefinitionStrategy.NoOp.INSTANCE, true);
+                                for (Map.Entry<TypeDescription, Class<?>> auxiliary : classInjector.inject(dynamicType.getRawAuxiliaryTypes()).entrySet()) {
+                                    initializationStrategy.initialize(auxiliary.getValue(), loadedTypeInitializers.get(auxiliary.getKey()));
                                 }
                             }
-                            initializationStrategy.register(binaryTypeName,
-                                    classLoader,
-                                    loadedTypeInitializers.get(dynamicType.getTypeDescription()));
+                            initializationStrategy.register(binaryTypeName, classLoader, loadedTypeInitializers.get(dynamicType.getTypeDescription()));
                             listener.onTransformation(typeDescription, dynamicType);
                             return dynamicType.getBytes();
                         }
@@ -1462,8 +1795,7 @@ public interface AgentBuilder {
              * @param rawMatcher  The supplied raw matcher.
              * @param transformer The supplied transformer.
              */
-            protected Matched(RawMatcher rawMatcher,
-                              Transformer transformer) {
+            protected Matched(RawMatcher rawMatcher, Transformer transformer) {
                 this.rawMatcher = rawMatcher;
                 this.transformer = transformer;
             }
@@ -1474,19 +1806,19 @@ public interface AgentBuilder {
             }
 
             @Override
-            public Identified rebase(RawMatcher matcher) {
-                return materialize().rebase(matcher);
+            public Identified type(RawMatcher matcher) {
+                return materialize().type(matcher);
             }
 
             @Override
-            public Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher) {
-                return materialize().rebase(typeMatcher);
+            public Identified type(ElementMatcher<? super TypeDescription> typeMatcher) {
+                return materialize().type(typeMatcher);
             }
 
             @Override
-            public Identified rebase(ElementMatcher<? super TypeDescription> typeMatcher,
-                                     ElementMatcher<? super ClassLoader> classLoaderMatcher) {
-                return materialize().rebase(typeMatcher, classLoaderMatcher);
+            public Identified type(ElementMatcher<? super TypeDescription> typeMatcher,
+                                   ElementMatcher<? super ClassLoader> classLoaderMatcher) {
+                return materialize().type(typeMatcher, classLoaderMatcher);
             }
 
             @Override
@@ -1500,6 +1832,11 @@ public interface AgentBuilder {
             }
 
             @Override
+            public AgentBuilder withDefinitionHandler(DefinitionHandler definitionHandler) {
+                return materialize().withDefinitionHandler(definitionHandler);
+            }
+
+            @Override
             public AgentBuilder withBinaryLocator(BinaryLocator binaryLocator) {
                 return materialize().withBinaryLocator(binaryLocator);
             }
@@ -1510,6 +1847,11 @@ public interface AgentBuilder {
             }
 
             @Override
+            public AgentBuilder withAccessControlContext(AccessControlContext accessControlContext) {
+                return materialize().withAccessControlContext(accessControlContext);
+            }
+
+            @Override
             public AgentBuilder disableSelfInitialization() {
                 return materialize().disableSelfInitialization();
             }
@@ -1517,6 +1859,11 @@ public interface AgentBuilder {
             @Override
             public AgentBuilder allowRetransformation() {
                 return materialize().allowRetransformation();
+            }
+
+            @Override
+            public AgentBuilder enableBootstrapInjection(File folder, Instrumentation instrumentation) {
+                return materialize().enableBootstrapInjection(folder, instrumentation);
             }
 
             @Override
@@ -1542,11 +1889,14 @@ public interface AgentBuilder {
             protected AgentBuilder materialize() {
                 return new Default(byteBuddy,
                         binaryLocator,
+                        definitionHandler,
                         listener,
                         nativeMethodPrefix,
+                        accessControlContext,
                         disableSelfInitialization,
                         retransformation,
-                        join(new Transformation(rawMatcher, transformer), entries));
+                        bootstrapInjectionStrategy,
+                        join(new Transformation(rawMatcher, transformer), transformations));
             }
 
             /**

@@ -9,9 +9,29 @@ import java.util.List;
 /**
  * A class visitor wrapper is used in order to register an intermediate ASM {@link org.objectweb.asm.ClassVisitor} which
  * is applied to the main type created by a {@link net.bytebuddy.dynamic.DynamicType.Builder} but not
- * to any {@link net.bytebuddy.instrumentation.type.auxiliary.AuxiliaryType}s, if any.
+ * to any {@link net.bytebuddy.implementation.auxiliary.AuxiliaryType}s, if any.
  */
 public interface ClassVisitorWrapper {
+
+    /**
+     * Defines a hint that is provided to any {@code ClassWriter} when writing a class. Typically, this gives opportunity to instruct ASM
+     * to compute stack map frames or the size of the local variables array and the operand stack. If no specific hints are required for
+     * applying this wrapper, the given value is to be returned.
+     *
+     * @param hint The current hint. This value should be merged (e.g. {@code hint | foo}) into the value that is returned by this wrapper.
+     * @return The hint to be provided to the ASM {@code ClassWriter}.
+     */
+    int mergeWriter(int hint);
+
+    /**
+     * Defines a hint that is provided to any {@code ClassReader} when reading a class if applicable. Typically, this gives opportunity to
+     * instruct ASM to expand or skip frames and to skip code and debug information. If no specific hints are required for applying this
+     * wrapper, the given value is to be returned.
+     *
+     * @param hint The current hint. This value should be merged (e.g. {@code hint | foo}) into the value that is returned by this wrapper.
+     * @return The hint to be provided to the ASM {@code ClassReader}.
+     */
+    int mergeReader(int hint);
 
     /**
      * Applies a {@code ClassVisitorWrapper} to the creation of a {@link net.bytebuddy.dynamic.DynamicType}.
@@ -25,7 +45,7 @@ public interface ClassVisitorWrapper {
     /**
      * An ordered, immutable chain of {@link net.bytebuddy.asm.ClassVisitorWrapper}s.
      */
-    static class Chain implements ClassVisitorWrapper {
+    class Chain implements ClassVisitorWrapper {
 
         /**
          * The class visitor wrappers that are represented by this chain in their order. This list must not be mutated.
@@ -77,6 +97,22 @@ public interface ClassVisitorWrapper {
             appendedList.addAll(classVisitorWrappers);
             appendedList.add(classVisitorWrapper);
             return new Chain(appendedList);
+        }
+
+        @Override
+        public int mergeWriter(int hint) {
+            for (ClassVisitorWrapper classVisitorWrapper : classVisitorWrappers) {
+                hint = classVisitorWrapper.mergeWriter(hint);
+            }
+            return hint;
+        }
+
+        @Override
+        public int mergeReader(int hint) {
+            for (ClassVisitorWrapper classVisitorWrapper : classVisitorWrappers) {
+                hint = classVisitorWrapper.mergeReader(hint);
+            }
+            return hint;
         }
 
         @Override

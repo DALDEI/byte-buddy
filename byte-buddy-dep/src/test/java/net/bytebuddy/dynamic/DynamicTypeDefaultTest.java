@@ -1,7 +1,7 @@
 package net.bytebuddy.dynamic;
 
-import net.bytebuddy.instrumentation.LoadedTypeInitializer;
-import net.bytebuddy.instrumentation.type.TypeDescription;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.LoadedTypeInitializer;
 import net.bytebuddy.test.utility.MockitoRule;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import net.bytebuddy.utility.RandomString;
@@ -33,13 +33,18 @@ public class DynamicTypeDefaultTest {
     private static final String CLASS_FILE_EXTENSION = ".class";
 
     private static final String FOOBAR = "foo/bar", QUXBAZ = "qux/baz", BARBAZ = "bar/baz", FOO = "foo", BAR = "bar", TEMP = "tmp";
+
     @Rule
     public TestRule mockitoRule = new MockitoRule(this);
+
     private byte[] BINARY_FIRST = new byte[]{1, 2, 3}, BINARY_SECOND = new byte[]{4, 5, 6}, BINARY_THIRD = new byte[]{7, 8, 9};
+
     @Mock
     private LoadedTypeInitializer mainLoadedTypeInitializer, auxiliaryLoadedTypeInitializer;
+
     @Mock
     private DynamicType auxiliaryType;
+
     @Mock
     private TypeDescription typeDescription, auxiliaryTypeDescription;
 
@@ -169,6 +174,29 @@ public class DynamicTypeDefaultTest {
     @Test
     public void testJarCreation() throws Exception {
         File file = File.createTempFile(FOO, TEMP);
+        assertThat(file.delete(), is(true));
+        boolean fileDeletion;
+        try {
+            assertThat(dynamicType.toJar(file), is(file));
+            assertThat(file.exists(), is(true));
+            assertThat(file.isFile(), is(true));
+            assertThat(file.length() > 0L, is(true));
+            Map<String, byte[]> bytes = new HashMap<String, byte[]>();
+            bytes.put(FOOBAR + CLASS_FILE_EXTENSION, BINARY_FIRST);
+            bytes.put(QUXBAZ + CLASS_FILE_EXTENSION, BINARY_SECOND);
+            Manifest manifest = new Manifest();
+            manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            assertJarFile(file, manifest, bytes);
+        } finally {
+            fileDeletion = file.delete();
+        }
+        assertThat(fileDeletion, is(true));
+    }
+
+    @Test
+    public void testJarWithExplicitManifestCreation() throws Exception {
+        File file = File.createTempFile(FOO, TEMP);
+        assertThat(file.delete(), is(true));
         boolean fileDeletion;
         try {
             Manifest manifest = new Manifest();
@@ -204,6 +232,7 @@ public class DynamicTypeDefaultTest {
             jarOutputStream.close();
         }
         File file = File.createTempFile(FOO, TEMP);
+        assertThat(file.delete(), is(true));
         boolean fileDeletion;
         try {
             assertThat(dynamicType.inject(sourceFile, file), is(file));

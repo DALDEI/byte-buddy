@@ -1,7 +1,7 @@
 package net.bytebuddy.pool;
 
-import net.bytebuddy.instrumentation.method.AbstractMethodDescriptionTest;
-import net.bytebuddy.instrumentation.method.MethodDescription;
+import net.bytebuddy.description.method.AbstractMethodDescriptionTest;
+import net.bytebuddy.description.method.MethodDescription;
 import org.junit.After;
 import org.junit.Before;
 
@@ -26,16 +26,21 @@ public class TypePoolDefaultMethodDescriptionTest extends AbstractMethodDescript
     }
 
     @Override
-    protected MethodDescription describe(Method method) {
+    protected MethodDescription.InDefinedShape describe(Method method) {
         return typePool.describe(method.getDeclaringClass().getName())
                 .resolve()
                 .getDeclaredMethods().filter(is(method)).getOnly();
     }
 
     @Override
-    protected MethodDescription describe(Constructor<?> constructor) {
+    protected MethodDescription.InDefinedShape describe(Constructor<?> constructor) {
         return typePool.describe(constructor.getDeclaringClass().getName())
                 .resolve()
                 .getDeclaredMethods().filter(is(constructor)).getOnly();
+    }
+
+    @Override
+    protected boolean canReadDebugInformation() {
+        return true;
     }
 }

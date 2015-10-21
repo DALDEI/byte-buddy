@@ -1,8 +1,8 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.type.TypeDescription;
-import net.bytebuddy.instrumentation.type.TypeList;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.type.generic.GenericTypeDescription;
+import net.bytebuddy.description.type.generic.GenericTypeList;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -16,11 +16,13 @@ import static org.mockito.Mockito.*;
 public class MethodExceptionTypeMatcherTest extends AbstractElementMatcherTest<MethodExceptionTypeMatcher<?>> {
 
     @Mock
-    private ElementMatcher<? super List<? extends TypeDescription>> parameterMatcher;
+    private ElementMatcher<? super List<? extends GenericTypeDescription>> exceptionMatcher;
+
     @Mock
     private MethodDescription methodDescription;
+
     @Mock
-    private TypeList typeList;
+    private GenericTypeList typeList;
 
     @SuppressWarnings("unchecked")
     public MethodExceptionTypeMatcherTest() {
@@ -34,17 +36,17 @@ public class MethodExceptionTypeMatcherTest extends AbstractElementMatcherTest<M
 
     @Test
     public void testMatch() throws Exception {
-        when(parameterMatcher.matches(typeList)).thenReturn(true);
-        assertThat(new MethodExceptionTypeMatcher<MethodDescription>(parameterMatcher).matches(methodDescription), is(true));
-        verify(parameterMatcher).matches(typeList);
-        verifyNoMoreInteractions(parameterMatcher);
+        when(exceptionMatcher.matches(typeList)).thenReturn(true);
+        assertThat(new MethodExceptionTypeMatcher<MethodDescription>(exceptionMatcher).matches(methodDescription), is(true));
+        verify(exceptionMatcher).matches(typeList);
+        verifyNoMoreInteractions(exceptionMatcher);
     }
 
     @Test
     public void testNoMatch() throws Exception {
-        when(parameterMatcher.matches(typeList)).thenReturn(false);
-        assertThat(new MethodExceptionTypeMatcher<MethodDescription>(parameterMatcher).matches(methodDescription), is(false));
-        verify(parameterMatcher).matches(typeList);
-        verifyNoMoreInteractions(parameterMatcher);
+        when(exceptionMatcher.matches(typeList)).thenReturn(false);
+        assertThat(new MethodExceptionTypeMatcher<MethodDescription>(exceptionMatcher).matches(methodDescription), is(false));
+        verify(exceptionMatcher).matches(typeList);
+        verifyNoMoreInteractions(exceptionMatcher);
     }
 }

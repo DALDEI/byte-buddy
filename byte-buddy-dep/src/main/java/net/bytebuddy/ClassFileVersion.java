@@ -12,39 +12,52 @@ public class ClassFileVersion implements Comparable<ClassFileVersion> {
      * The class file version of Java 1.
      */
     public static final ClassFileVersion JAVA_V1 = new ClassFileVersion(Opcodes.V1_1);
+
     /**
      * The class file version of Java 2.
      */
     public static final ClassFileVersion JAVA_V2 = new ClassFileVersion(Opcodes.V1_2);
+
     /**
      * The class file version of Java 3.
      */
     public static final ClassFileVersion JAVA_V3 = new ClassFileVersion(Opcodes.V1_3);
+
     /**
      * The class file version of Java 4.
      */
     public static final ClassFileVersion JAVA_V4 = new ClassFileVersion(Opcodes.V1_4);
+
     /**
      * The class file version of Java 5.
      */
     public static final ClassFileVersion JAVA_V5 = new ClassFileVersion(Opcodes.V1_5);
+
     /**
      * The class file version of Java 6.
      */
     public static final ClassFileVersion JAVA_V6 = new ClassFileVersion(Opcodes.V1_6);
+
     /**
      * The class file version of Java 7.
      */
     public static final ClassFileVersion JAVA_V7 = new ClassFileVersion(Opcodes.V1_7);
+
     /**
      * The class file version of Java 8.
      */
     public static final ClassFileVersion JAVA_V8 = new ClassFileVersion(Opcodes.V1_8);
 
     /**
+     * The class file version of Java 9.
+     */
+    public static final ClassFileVersion JAVA_V9 = JAVA_V8;
+
+    /**
      * The system property for this JVM's Java version.
      */
     private static final String JAVA_VERSION_PROPERTY = "java.version";
+
     /**
      * The version number that is represented by this class file version instance.
      */
@@ -85,6 +98,8 @@ public class ClassFileVersion implements Comparable<ClassFileVersion> {
                 return JAVA_V7;
             case 8:
                 return JAVA_V8;
+            case 9:
+                return JAVA_V9;
             default:
                 throw new IllegalArgumentException("Unknown Java version: " + javaVersion);
         }
@@ -126,26 +141,51 @@ public class ClassFileVersion implements Comparable<ClassFileVersion> {
      *
      * @return The minor-major release number of this class file version.
      */
-    public int getVersionNumber() {
+    public int getVersion() {
         return versionNumber;
     }
 
     /**
-     * Checks if this class file version supports interface default methods. Such methods were introduced by Java 8.
+     * Returns the major version this instance represents.
      *
-     * @return {@code true} if this class file version supports interface default methods.
+     * @return The major version this instance represents.
      */
-    public boolean isSupportsDefaultMethods() {
-        return versionNumber > Opcodes.V1_7 && versionNumber != Opcodes.V1_1;
+    public int getMajorVersion() {
+        return versionNumber & 0xFF;
+    }
+
+    /**
+     * Returns the minor version this instance represents.
+     *
+     * @return The minor version this instance represents.
+     */
+    public int getMinorVersion() {
+        return versionNumber >> 16;
+    }
+
+    /**
+     * Checks if this class file version supports interface default methods and type annotations. (Java 8+)
+     *
+     * @return {@code true} if this class file version supports interface default methods and type annotations.
+     */
+    public boolean isAtLeastJava8() {
+        return compareTo(ClassFileVersion.JAVA_V8) > -1;
+    }
+
+    /**
+     * Checks if this class file version supports generic types and annotation types. (Java 5+)
+     *
+     * @return {@code true} if this class file version supports generic types and annotation types.
+     */
+    public boolean isAtLeastJava5() {
+        return compareTo(ClassFileVersion.JAVA_V5) > -1;
     }
 
     @Override
     public int compareTo(ClassFileVersion other) {
-        return other.versionNumber == versionNumber
-                ? 0 : versionNumber == Opcodes.V1_1
-                ? -1 : other.versionNumber == Opcodes.V1_1
-                ? 1 : versionNumber < other.versionNumber
-                ? -1 : 1;
+        return Integer.signum(getMajorVersion() == other.getMajorVersion()
+                ? getMinorVersion() - other.getMinorVersion()
+                : getMajorVersion() - other.getMajorVersion());
     }
 
     @Override

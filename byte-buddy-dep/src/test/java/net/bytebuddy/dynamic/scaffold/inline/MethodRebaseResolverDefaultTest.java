@@ -1,11 +1,12 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
-import net.bytebuddy.instrumentation.Instrumentation;
-import net.bytebuddy.instrumentation.method.MethodDescription;
-import net.bytebuddy.instrumentation.method.bytecode.stack.StackManipulation;
-import net.bytebuddy.instrumentation.type.TypeDescription;
-import net.bytebuddy.instrumentation.type.TypeList;
-import net.bytebuddy.matcher.ElementMatcher;
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.method.ParameterList;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.implementation.auxiliary.AuxiliaryType;
 import net.bytebuddy.test.utility.MockitoRule;
 import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
@@ -13,154 +14,99 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
-import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
-import java.util.Arrays;
+import java.util.Collections;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.*;
+import static org.hamcrest.CoreMatchers.not;
+import static org.junit.Assert.assertThat;
+import static org.mockito.Mockito.when;
 
 public class MethodRebaseResolverDefaultTest {
 
-    private static final String FOO = "foo", BAR = "bar";
+    private static final String FOO = "foo", BAR = "bar", QUX = "qux";
 
     @Rule
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private ElementMatcher<? super MethodDescription> methodMatcher;
+    private MethodDescription.InDefinedShape methodDescription, otherMethod;
+
     @Mock
-    private TypeDescription instrumentedType, placeholderType, returnType;
+    private MethodRebaseResolver.Resolution resolution;
+
     @Mock
-    private MethodRebaseResolver.MethodNameTransformer methodNameTransformer, otherMethodNameTransformer;
+    private DynamicType dynamicType;
+
     @Mock
-    private MethodDescription methodDescription;
+    private TypeDescription instrumentedType;
+
     @Mock
-    private MethodVisitor methodVisitor;
+    private ClassFileVersion classFileVersion;
+
     @Mock
-    private Instrumentation.Context instrumentationContext;
+    private AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy;
+
+    @Mock
+    private MethodRebaseResolver.MethodNameTransformer methodNameTransformer;
 
     @Before
     public void setUp() throws Exception {
-        when(methodDescription.getDeclaringType()).thenReturn(instrumentedType);
-        when(methodDescription.getParameterTypes()).thenReturn(new TypeList.Empty());
-        when(methodDescription.getReturnType()).thenReturn(returnType);
+        when(methodDescription.asDefined()).thenReturn(methodDescription);
+        when(methodDescription.getParameters()).thenReturn(new ParameterList.Empty());
+        when(methodDescription.getReturnType()).thenReturn(TypeDescription.VOID);
         when(methodDescription.getInternalName()).thenReturn(FOO);
-        when(methodNameTransformer.transform(FOO)).thenReturn(BAR);
+        when(methodNameTransformer.transform(methodDescription)).thenReturn(BAR);
+        when(auxiliaryTypeNamingStrategy.name(instrumentedType)).thenReturn(QUX);
+        when(classFileVersion.getVersion()).thenReturn(Opcodes.V1_6);
     }
 
     @Test
-    public void testNonIgnoredMethodIsRebased() throws Exception {
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
+    public void testResolutionLookup() throws Exception {
+        MethodRebaseResolver methodRebaseResolver = new MethodRebaseResolver.Default(Collections.singletonMap(methodDescription, resolution),
+                Collections.singletonList(dynamicType));
+        assertThat(methodRebaseResolver.resolve(methodDescription), is(resolution));
+        assertThat(methodRebaseResolver.resolve(otherMethod).isRebased(), is(false));
+        assertThat(methodRebaseResolver.resolve(otherMethod).getResolvedMethod(), is(otherMethod));
+    }
+
+    @Test
+    public void testAuxiliaryTypes() throws Exception {
+        MethodRebaseResolver methodRebaseResolver = new MethodRebaseResolver.Default(Collections.singletonMap(methodDescription, resolution),
+                Collections.singletonList(dynamicType));
+        assertThat(methodRebaseResolver.getAuxiliaryTypes().size(), is(1));
+        assertThat(methodRebaseResolver.getAuxiliaryTypes().contains(dynamicType), is(true));
+    }
+
+    @Test
+    public void testCreationWithoutConstructor() throws Exception {
+        MethodRebaseResolver methodRebaseResolver = MethodRebaseResolver.Default.make(instrumentedType,
+                new MethodList.Explicit<MethodDescription.InDefinedShape>(Collections.singletonList(methodDescription)),
+                classFileVersion,
+                auxiliaryTypeNamingStrategy,
+                methodNameTransformer);
+        assertThat(methodRebaseResolver.getAuxiliaryTypes().size(), is(0));
+        MethodRebaseResolver.Resolution resolution = methodRebaseResolver.resolve(methodDescription);
         assertThat(resolution.isRebased(), is(true));
-        assertThat(resolution.getResolvedMethod().getInternalName(), is(BAR));
-        assertThat(resolution.getResolvedMethod().getModifiers(), is(MethodRebaseResolver.REBASED_METHOD_MODIFIER));
-        assertThat(resolution.getResolvedMethod().getDeclaringType(), is(instrumentedType));
-        assertThat(resolution.getResolvedMethod().getParameterTypes(), is((TypeList) new TypeList.Empty()));
-        assertThat(resolution.getResolvedMethod().getReturnType(), is(returnType));
-        assertThat(resolution.getAdditionalArguments().isValid(), is(true));
-        StackManipulation.Size size = resolution.getAdditionalArguments().apply(methodVisitor, instrumentationContext);
-        assertThat(size.getSizeImpact(), is(0));
-        assertThat(size.getMaximalSize(), is(0));
-        verifyZeroInteractions(methodVisitor);
-        verifyZeroInteractions(instrumentationContext);
+        assertThat(resolution.getResolvedMethod(), not(methodDescription));
+        assertThat(resolution.getResolvedMethod().isConstructor(), is(false));
     }
 
     @Test
-    public void testNonIgnoredStaticMethodIsRebased() throws Exception {
-        when(methodDescription.isStatic()).thenReturn(true);
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
-        assertThat(resolution.isRebased(), is(true));
-        assertThat(resolution.getResolvedMethod().getInternalName(), is(BAR));
-        assertThat(resolution.getResolvedMethod().getModifiers(), is(MethodRebaseResolver.REBASED_METHOD_MODIFIER | Opcodes.ACC_STATIC));
-        assertThat(resolution.getResolvedMethod().getDeclaringType(), is(instrumentedType));
-        assertThat(resolution.getResolvedMethod().getParameterTypes(), is((TypeList) new TypeList.Empty()));
-        assertThat(resolution.getResolvedMethod().getReturnType(), is(returnType));
-        assertThat(resolution.getAdditionalArguments().isValid(), is(true));
-        StackManipulation.Size size = resolution.getAdditionalArguments().apply(methodVisitor, instrumentationContext);
-        assertThat(size.getSizeImpact(), is(0));
-        assertThat(size.getMaximalSize(), is(0));
-        verifyZeroInteractions(methodVisitor);
-        verifyZeroInteractions(instrumentationContext);
-    }
-
-    @Test
-    public void testNonIgnoredNativeMethodIsRebased() throws Exception {
-        when(methodDescription.isNative()).thenReturn(true);
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
-        assertThat(resolution.isRebased(), is(true));
-        assertThat(resolution.getResolvedMethod().getInternalName(), is(BAR));
-        assertThat(resolution.getResolvedMethod().getModifiers(), is(MethodRebaseResolver.REBASED_METHOD_MODIFIER | Opcodes.ACC_NATIVE));
-        assertThat(resolution.getResolvedMethod().getDeclaringType(), is(instrumentedType));
-        assertThat(resolution.getResolvedMethod().getParameterTypes(), is((TypeList) new TypeList.Empty()));
-        assertThat(resolution.getResolvedMethod().getReturnType(), is(returnType));
-        assertThat(resolution.getAdditionalArguments().isValid(), is(true));
-        StackManipulation.Size size = resolution.getAdditionalArguments().apply(methodVisitor, instrumentationContext);
-        assertThat(size.getSizeImpact(), is(0));
-        assertThat(size.getMaximalSize(), is(0));
-        verifyZeroInteractions(methodVisitor);
-        verifyZeroInteractions(instrumentationContext);
-    }
-
-    @Test
-    public void testNonIgnoredStaticNativeMethodIsRebased() throws Exception {
-        when(methodDescription.isStatic()).thenReturn(true);
-        when(methodDescription.isNative()).thenReturn(true);
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
-        assertThat(resolution.isRebased(), is(true));
-        assertThat(resolution.getResolvedMethod().getInternalName(), is(BAR));
-        assertThat(resolution.getResolvedMethod().getModifiers(), is(MethodRebaseResolver.REBASED_METHOD_MODIFIER | Opcodes.ACC_NATIVE | Opcodes.ACC_STATIC));
-        assertThat(resolution.getResolvedMethod().getDeclaringType(), is(instrumentedType));
-        assertThat(resolution.getResolvedMethod().getParameterTypes(), is((TypeList) new TypeList.Empty()));
-        assertThat(resolution.getResolvedMethod().getReturnType(), is(returnType));
-        assertThat(resolution.getAdditionalArguments().isValid(), is(true));
-        StackManipulation.Size size = resolution.getAdditionalArguments().apply(methodVisitor, instrumentationContext);
-        assertThat(size.getSizeImpact(), is(0));
-        assertThat(size.getMaximalSize(), is(0));
-        verifyZeroInteractions(methodVisitor);
-        verifyZeroInteractions(instrumentationContext);
-    }
-
-    @Test
-    public void testNonIgnoredConstructorIsRebased() throws Exception {
+    public void testCreationWithConstructor() throws Exception {
         when(methodDescription.isConstructor()).thenReturn(true);
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
+        MethodRebaseResolver methodRebaseResolver = MethodRebaseResolver.Default.make(instrumentedType,
+                new MethodList.Explicit<MethodDescription.InDefinedShape>(Collections.singletonList(methodDescription)),
+                classFileVersion,
+                auxiliaryTypeNamingStrategy,
+                methodNameTransformer);
+        assertThat(methodRebaseResolver.getAuxiliaryTypes().size(), is(1));
+        assertThat(methodRebaseResolver.getAuxiliaryTypes().get(0).getTypeDescription().getName(), is(QUX));
+        MethodRebaseResolver.Resolution resolution = methodRebaseResolver.resolve(methodDescription);
         assertThat(resolution.isRebased(), is(true));
-        assertThat(resolution.getResolvedMethod().getInternalName(), is(FOO));
-        assertThat(resolution.getResolvedMethod().getModifiers(), is(MethodRebaseResolver.REBASED_METHOD_MODIFIER));
-        assertThat(resolution.getResolvedMethod().getDeclaringType(), is(instrumentedType));
-        assertThat(resolution.getResolvedMethod().getParameterTypes(), is((TypeList) new TypeList.Explicit(Arrays.asList(placeholderType))));
-        assertThat(resolution.getResolvedMethod().getReturnType(), is(returnType));
-        assertThat(resolution.getAdditionalArguments().isValid(), is(true));
-        StackManipulation.Size size = resolution.getAdditionalArguments().apply(methodVisitor, instrumentationContext);
-        assertThat(size.getSizeImpact(), is(1));
-        assertThat(size.getMaximalSize(), is(1));
-        verify(methodVisitor).visitInsn(Opcodes.ACONST_NULL);
-        verifyNoMoreInteractions(methodVisitor);
-        verifyZeroInteractions(instrumentationContext);
-    }
-
-    @Test
-    public void testIgnoredMethodIsNotRebased() throws Exception {
-        when(methodMatcher.matches(methodDescription)).thenReturn(true);
-        MethodRebaseResolver.Resolution resolution = new MethodRebaseResolver.Default(methodMatcher, placeholderType, methodNameTransformer)
-                .resolve(methodDescription);
-        assertThat(resolution.isRebased(), is(false));
-        assertThat(resolution.getResolvedMethod(), is(methodDescription));
-        try {
-            resolution.getAdditionalArguments();
-            fail();
-        } catch (IllegalStateException ignored) {
-            // expected
-        }
+        assertThat(resolution.getResolvedMethod(), not(methodDescription));
+        assertThat(resolution.getResolvedMethod().isConstructor(), is(true));
     }
 
     @Test
