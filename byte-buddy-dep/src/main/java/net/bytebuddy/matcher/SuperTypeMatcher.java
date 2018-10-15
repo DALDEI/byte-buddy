@@ -1,5 +1,6 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.type.TypeDescription;
 
 /**
@@ -7,6 +8,7 @@ import net.bytebuddy.description.type.TypeDescription;
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class SuperTypeMatcher<T extends TypeDescription> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
@@ -23,23 +25,16 @@ public class SuperTypeMatcher<T extends TypeDescription> extends ElementMatcher.
         this.typeDescription = typeDescription;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         return target.isAssignableFrom(typeDescription);
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && typeDescription.equals(((SuperTypeMatcher) other).typeDescription);
-    }
-
-    @Override
-    public int hashCode() {
-        return typeDescription.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return "isSuperTypeOf(" + typeDescription + ')';
     }

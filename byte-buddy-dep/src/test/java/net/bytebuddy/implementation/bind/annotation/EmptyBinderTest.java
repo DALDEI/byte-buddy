@@ -3,6 +3,7 @@ package net.bytebuddy.implementation.bind.annotation;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -20,7 +21,7 @@ import static org.mockito.Mockito.*;
 @RunWith(Parameterized.class)
 public class EmptyBinderTest extends AbstractAnnotationBinderTest<Empty> {
 
-    private final TypeDescription typeDescription;
+    private final TypeDescription.Generic typeDescription;
 
     private final int opcode;
 
@@ -32,7 +33,7 @@ public class EmptyBinderTest extends AbstractAnnotationBinderTest<Empty> {
 
     public EmptyBinderTest(Class<?> type, int opcode) {
         super(Empty.class);
-        typeDescription = new TypeDescription.ForLoadedType(type);
+        typeDescription = TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(type);
         this.opcode = opcode;
     }
 
@@ -51,7 +52,6 @@ public class EmptyBinderTest extends AbstractAnnotationBinderTest<Empty> {
         });
     }
 
-    @Override
     protected TargetMethodAnnotationDrivenBinder.ParameterBinder<Empty> getSimpleBinder() {
         return Empty.Binder.INSTANCE;
     }
@@ -64,7 +64,8 @@ public class EmptyBinderTest extends AbstractAnnotationBinderTest<Empty> {
                         source,
                         target,
                         implementationTarget,
-                        assigner);
+                        assigner,
+                        Assigner.Typing.STATIC);
         assertThat(binding.isValid(), is(true));
         StackManipulation.Size size = binding.apply(methodVisitor, implementationContext);
         assertThat(size.getSizeImpact(), is(typeDescription.getStackSize().getSize()));

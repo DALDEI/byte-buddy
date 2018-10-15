@@ -1,10 +1,13 @@
 package net.bytebuddy.implementation.bytecode.member;
 
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.description.type.TypeList;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.StackSize;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.MethodVisitor;
@@ -20,32 +23,42 @@ public enum MethodInvocation {
     /**
      * A virtual method invocation.
      */
-    VIRTUAL(Opcodes.INVOKEVIRTUAL, Opcodes.H_INVOKEVIRTUAL),
+    VIRTUAL(Opcodes.INVOKEVIRTUAL, Opcodes.H_INVOKEVIRTUAL, Opcodes.INVOKEVIRTUAL, Opcodes.H_INVOKEVIRTUAL),
 
     /**
      * An interface-typed virtual method invocation.
      */
-    INTERFACE(Opcodes.INVOKEINTERFACE, Opcodes.H_INVOKEINTERFACE),
+    INTERFACE(Opcodes.INVOKEINTERFACE, Opcodes.H_INVOKEINTERFACE, Opcodes.INVOKEINTERFACE, Opcodes.H_INVOKEINTERFACE),
 
     /**
      * A static method invocation.
      */
-    STATIC(Opcodes.INVOKESTATIC, Opcodes.H_INVOKESTATIC),
+    STATIC(Opcodes.INVOKESTATIC, Opcodes.H_INVOKESTATIC, Opcodes.INVOKESTATIC, Opcodes.H_INVOKESTATIC),
 
     /**
      * A specialized pseudo-virtual method invocation for a non-constructor.
      */
-    SPECIAL(Opcodes.INVOKESPECIAL, Opcodes.H_INVOKESPECIAL),
+    SPECIAL(Opcodes.INVOKESPECIAL, Opcodes.H_INVOKESPECIAL, Opcodes.INVOKESPECIAL, Opcodes.H_INVOKESPECIAL),
 
     /**
      * A specialized pseudo-virtual method invocation for a constructor.
      */
-    SPECIAL_CONSTRUCTOR(Opcodes.INVOKESPECIAL, Opcodes.H_NEWINVOKESPECIAL);
+    SPECIAL_CONSTRUCTOR(Opcodes.INVOKESPECIAL, Opcodes.H_NEWINVOKESPECIAL, Opcodes.INVOKESPECIAL, Opcodes.H_NEWINVOKESPECIAL),
+
+    /**
+     * A private method call that is potentially virtual.
+     */
+    VIRTUAL_PRIVATE(Opcodes.INVOKEVIRTUAL, Opcodes.H_INVOKEVIRTUAL, Opcodes.INVOKESPECIAL, Opcodes.H_INVOKESPECIAL),
+
+    /**
+     * A private method call that is potentially virtual on an interface type.
+     */
+    INTERFACE_PRIVATE(Opcodes.INVOKEINTERFACE, Opcodes.H_INVOKEINTERFACE, Opcodes.INVOKESPECIAL, Opcodes.H_INVOKESPECIAL);
 
     /**
      * The opcode for invoking a method.
      */
-    private final int invocationOpcode;
+    private final int opcode;
 
     /**
      * The handle being used for a dynamic method invocation.
@@ -53,14 +66,28 @@ public enum MethodInvocation {
     private final int handle;
 
     /**
+     * The opcode for invoking a method before Java 11.
+     */
+    private final int legacyOpcode;
+
+    /**
+     * The handle being used for a dynamic method invocation before Java 11.
+     */
+    private final int legacyHandle;
+
+    /**
      * Creates a new type of method invocation.
      *
-     * @param callOpcode The opcode for invoking a method.
-     * @param handle     The handle being used for a dynamic method invocation.
+     * @param opcode       The opcode for invoking a method.
+     * @param handle       The handle being used for a dynamic method invocation.
+     * @param legacyOpcode The opcode for invoking a method before Java 11.
+     * @param legacyHandle The handle being used for a dynamic method invocation before Java 11.
      */
-    MethodInvocation(int callOpcode, int handle) {
-        this.invocationOpcode = callOpcode;
+    MethodInvocation(int opcode, int handle, int legacyOpcode, int legacyHandle) {
+        this.opcode = opcode;
         this.handle = handle;
+        this.legacyOpcode = legacyOpcode;
+        this.legacyHandle = legacyHandle;
     }
 
     /**
@@ -77,8 +104,10 @@ public enum MethodInvocation {
         } else if (methodDescription.isConstructor()) {
             return SPECIAL_CONSTRUCTOR.new Invocation(methodDescription); // Check this property second, constructors might be private
         } else if (methodDescription.isPrivate()) {
-            return SPECIAL.new Invocation(methodDescription);
-        } else if (methodDescription.getDeclaringType().asErasure().isInterface()) { // Check this property last, default methods must be called by INVOKESPECIAL
+            return (methodDescription.getDeclaringType().isInterface()
+                    ? INTERFACE_PRIVATE
+                    : VIRTUAL_PRIVATE).new Invocation(methodDescription);
+        } else if (methodDescription.getDeclaringType().isInterface()) { // Check this property last, default methods must be called by INVOKESPECIAL
             return INTERFACE.new Invocation(methodDescription);
         } else {
             return VIRTUAL.new Invocation(methodDescription);
@@ -99,11 +128,6 @@ public enum MethodInvocation {
                 : OfGenericMethod.of(methodDescription, invoke(declaredMethod));
     }
 
-    @Override
-    public String toString() {
-        return "MethodInvocation." + name();
-    }
-
     /**
      * An illegal implicit method invocation.
      */
@@ -114,17 +138,23 @@ public enum MethodInvocation {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation virtual(TypeDescription invocationTarget) {
             return Illegal.INSTANCE;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation special(TypeDescription invocationTarget) {
             return Illegal.INSTANCE;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation dynamic(String methodName,
                                          TypeDescription returnType,
                                          List<? extends TypeDescription> methodType,
@@ -132,19 +162,25 @@ public enum MethodInvocation {
             return Illegal.INSTANCE;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
+        public StackManipulation onHandle(HandleType type) {
+            return Illegal.INSTANCE;
+        }
+
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return false;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             return Illegal.INSTANCE.apply(methodVisitor, implementationContext);
-        }
-
-        @Override
-        public String toString() {
-            return "MethodInvocation.IllegalInvocation." + name();
         }
     }
 
@@ -185,11 +221,20 @@ public enum MethodInvocation {
                                   TypeDescription returnType,
                                   List<? extends TypeDescription> methodType,
                                   List<?> arguments);
+
+        /**
+         * Invokes the method via a {@code MethodHandle}.
+         *
+         * @param type The type of invocation.
+         * @return A stack manipulation that represents a method call of the specified method via a method handle.
+         */
+        StackManipulation onHandle(HandleType type);
     }
 
     /**
      * A method invocation of a generically resolved method.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class OfGenericMethod implements WithImplicitInvocationTargetType {
 
         /**
@@ -224,58 +269,53 @@ public enum MethodInvocation {
             return new OfGenericMethod(methodDescription.getReturnType().asErasure(), invocation);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation virtual(TypeDescription invocationTarget) {
             return new StackManipulation.Compound(invocation.virtual(invocationTarget), TypeCasting.to(targetType));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation special(TypeDescription invocationTarget) {
             return new StackManipulation.Compound(invocation.special(invocationTarget), TypeCasting.to(targetType));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation dynamic(String methodName, TypeDescription returnType, List<? extends TypeDescription> methodType, List<?> arguments) {
             return invocation.dynamic(methodName, returnType, methodType, arguments);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
+        public StackManipulation onHandle(HandleType type) {
+            return new Compound(invocation.onHandle(type), TypeCasting.to(targetType));
+        }
+
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return invocation.isValid();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             return new Compound(invocation, TypeCasting.to(targetType)).apply(methodVisitor, implementationContext);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            OfGenericMethod that = (OfGenericMethod) other;
-            return targetType.equals(that.targetType) && invocation.equals(that.invocation);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = targetType.hashCode();
-            result = 31 * result + invocation.hashCode();
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "MethodInvocation.OfGenericMethod{" +
-                    "targetType=" + targetType +
-                    ", invocation=" + invocation +
-                    '}';
         }
     }
 
     /**
      * An implementation of a method invoking stack manipulation.
      */
+    @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
     protected class Invocation implements WithImplicitInvocationTargetType {
 
         /**
@@ -286,15 +326,15 @@ public enum MethodInvocation {
         /**
          * The type on which this method is to be invoked.
          */
-        private final MethodDescription methodDescription;
+        private final MethodDescription.InDefinedShape methodDescription;
 
         /**
          * Creates an invocation of a given method on its declaring type as an invocation target.
          *
          * @param methodDescription The method to be invoked.
          */
-        protected Invocation(MethodDescription methodDescription) {
-            this(methodDescription, methodDescription.getDeclaringType().asErasure());
+        protected Invocation(MethodDescription.InDefinedShape methodDescription) {
+            this(methodDescription, methodDescription.getDeclaringType());
         }
 
         /**
@@ -303,96 +343,85 @@ public enum MethodInvocation {
          * @param methodDescription The method to be invoked.
          * @param typeDescription   The type on which this method is to be invoked.
          */
-        protected Invocation(MethodDescription methodDescription, TypeDescription typeDescription) {
+        protected Invocation(MethodDescription.InDefinedShape methodDescription, TypeDescription typeDescription) {
             this.typeDescription = typeDescription;
             this.methodDescription = methodDescription;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-            methodVisitor.visitMethodInsn(invocationOpcode,
+            methodVisitor.visitMethodInsn(opcode == legacyOpcode || implementationContext.getClassFileVersion().isAtLeast(ClassFileVersion.JAVA_V11)
+                            ? opcode
+                            : legacyOpcode,
                     typeDescription.getInternalName(),
                     methodDescription.getInternalName(),
                     methodDescription.getDescriptor(),
                     typeDescription.isInterface());
-            int parameterSize = methodDescription.getStackSize();
-            int returnValueSize = methodDescription.getReturnType().getStackSize().getSize();
+            int parameterSize = methodDescription.getStackSize(), returnValueSize = methodDescription.getReturnType().getStackSize().getSize();
             return new Size(returnValueSize - parameterSize, Math.max(0, returnValueSize - parameterSize));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation virtual(TypeDescription invocationTarget) {
-            if (methodDescription.isPrivate() || methodDescription.isConstructor() || methodDescription.isStatic()) {
+            if (methodDescription.isConstructor() || methodDescription.isStatic()) {
                 return Illegal.INSTANCE;
-            }
-            if (invocationTarget.isInterface()) {
-                return INTERFACE.new Invocation(methodDescription, invocationTarget);
+            } else if (methodDescription.isPrivate()) {
+                return methodDescription.getDeclaringType().equals(invocationTarget)
+                        ? this
+                        : Illegal.INSTANCE;
+            } else if (invocationTarget.isInterface()) {
+                return methodDescription.getDeclaringType().represents(Object.class)
+                        ? this
+                        : INTERFACE.new Invocation(methodDescription, invocationTarget);
             } else {
                 return VIRTUAL.new Invocation(methodDescription, invocationTarget);
             }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation special(TypeDescription invocationTarget) {
             return methodDescription.isSpecializableFor(invocationTarget)
                     ? SPECIAL.new Invocation(methodDescription, invocationTarget)
                     : Illegal.INSTANCE;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public StackManipulation dynamic(String methodName,
                                          TypeDescription returnType,
                                          List<? extends TypeDescription> methodType,
                                          List<?> arguments) {
-            return methodDescription.isBootstrap()
-                    ? new DynamicInvocation(methodName, returnType, new TypeList.Explicit(methodType), methodDescription, arguments)
+            return methodDescription.isInvokeBootstrap()
+                    ? new DynamicInvocation(methodName, returnType, new TypeList.Explicit(methodType), methodDescription.asDefined(), arguments)
                     : Illegal.INSTANCE;
         }
 
         /**
-         * Returns the outer instance.
-         *
-         * @return The outer instance.
+         * {@inheritDoc}
          */
-        private MethodInvocation getOuterInstance() {
-            return MethodInvocation.this;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            Invocation that = (Invocation) other;
-            return MethodInvocation.this.equals(((Invocation) other).getOuterInstance())
-                    && methodDescription.asToken().equals(that.methodDescription.asToken())
-                    && typeDescription.equals(that.typeDescription);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = typeDescription.hashCode();
-            result = 31 * result + MethodInvocation.this.hashCode();
-            result = 31 * result + methodDescription.asToken().hashCode();
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "MethodInvocation.Invocation{" +
-                    "typeDescription=" + typeDescription +
-                    ", methodDescription=" + methodDescription +
-                    '}';
+        public StackManipulation onHandle(HandleType type) {
+            return new HandleInvocation(methodDescription, type);
         }
     }
 
     /**
      * Performs a dynamic method invocation of the given method.
      */
+    @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
     protected class DynamicInvocation implements StackManipulation {
 
         /**
@@ -408,12 +437,12 @@ public enum MethodInvocation {
         /**
          * The parameter types of the method to be bootstrapped.
          */
-        private final TypeList parameterTypes;
+        private final List<? extends TypeDescription> parameterTypes;
 
         /**
          * The bootstrap method.
          */
-        private final MethodDescription bootstrapMethod;
+        private final MethodDescription.InDefinedShape bootstrapMethod;
 
         /**
          * The list of arguments to be handed over to the bootstrap method.
@@ -431,8 +460,8 @@ public enum MethodInvocation {
          */
         public DynamicInvocation(String methodName,
                                  TypeDescription returnType,
-                                 TypeList parameterTypes,
-                                 MethodDescription bootstrapMethod,
+                                 List<? extends TypeDescription> parameterTypes,
+                                 MethodDescription.InDefinedShape bootstrapMethod,
                                  List<?> arguments) {
             this.methodName = methodName;
             this.returnType = returnType;
@@ -441,12 +470,16 @@ public enum MethodInvocation {
             this.arguments = arguments;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             StringBuilder stringBuilder = new StringBuilder("(");
             for (TypeDescription parameterType : parameterTypes) {
@@ -455,58 +488,110 @@ public enum MethodInvocation {
             String methodDescriptor = stringBuilder.append(')').append(returnType.getDescriptor()).toString();
             methodVisitor.visitInvokeDynamicInsn(methodName,
                     methodDescriptor,
-                    new Handle(handle,
-                            bootstrapMethod.getDeclaringType().asErasure().getInternalName(),
+                    new Handle(handle == legacyHandle || implementationContext.getClassFileVersion().isAtLeast(ClassFileVersion.JAVA_V11)
+                            ? handle
+                            : legacyHandle,
+                            bootstrapMethod.getDeclaringType().getInternalName(),
                             bootstrapMethod.getInternalName(),
-                            bootstrapMethod.getDescriptor()),
+                            bootstrapMethod.getDescriptor(),
+                            bootstrapMethod.getDeclaringType().isInterface()),
                     arguments.toArray(new Object[arguments.size()]));
-            int stackSize = returnType.getStackSize().getSize() - parameterTypes.getStackSize();
+            int stackSize = returnType.getStackSize().getSize() - StackSize.of(parameterTypes);
             return new Size(stackSize, Math.max(stackSize, 0));
         }
+    }
 
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            DynamicInvocation that = (DynamicInvocation) other;
-            return MethodInvocation.this == that.getOuter()
-                    && arguments.equals(that.arguments)
-                    && bootstrapMethod.equals(that.bootstrapMethod)
-                    && returnType.equals(that.returnType)
-                    && parameterTypes.equals(that.parameterTypes)
-                    && methodName.equals(that.methodName);
+    /**
+     * Performs a method invocation on a method handle with a polymorphic type signature.
+     */
+    @HashCodeAndEqualsPlugin.Enhance
+    protected static class HandleInvocation implements StackManipulation {
+
+        /**
+         * The internal name of the method handle type.
+         */
+        private static final String METHOD_HANDLE = "java/lang/invoke/MethodHandle";
+
+        /**
+         * The invoked method.
+         */
+        private final MethodDescription.InDefinedShape methodDescription;
+
+        /**
+         * The type of method handle invocation.
+         */
+        private final HandleType type;
+
+        /**
+         * Creates a new method handle invocation.
+         *
+         * @param methodDescription The invoked method.
+         * @param type              The type of method handle invocation.
+         */
+        protected HandleInvocation(MethodDescription.InDefinedShape methodDescription, HandleType type) {
+            this.methodDescription = methodDescription;
+            this.type = type;
         }
 
         /**
-         * Returns the outer instance.
-         *
-         * @return The outer instance.
+         * {@inheritDoc}
          */
-        private MethodInvocation getOuter() {
-            return MethodInvocation.this;
+        public boolean isValid() {
+            return true;
         }
 
-        @Override
-        public int hashCode() {
-            int result = methodName.hashCode();
-            result = 31 * result + MethodInvocation.this.hashCode();
-            result = 31 * result + returnType.hashCode();
-            result = 31 * result + parameterTypes.hashCode();
-            result = 31 * result + bootstrapMethod.hashCode();
-            result = 31 * result + arguments.hashCode();
-            return result;
+        /**
+         * {@inheritDoc}
+         */
+        public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                    METHOD_HANDLE,
+                    type.getMethodName(),
+                    methodDescription.isStatic() || methodDescription.isConstructor()
+                            ? methodDescription.getDescriptor()
+                            : "(" + methodDescription.getDeclaringType().getDescriptor() + methodDescription.getDescriptor().substring(1),
+                    false);
+            int parameterSize = 1 + methodDescription.getStackSize(), returnValueSize = methodDescription.getReturnType().getStackSize().getSize();
+            return new Size(returnValueSize - parameterSize, Math.max(0, returnValueSize - parameterSize));
+        }
+    }
+
+    /**
+     * The type of method handle invocation.
+     */
+    public enum HandleType {
+
+        /**
+         * An exact invocation without type adjustments.
+         */
+        EXACT("invokeExact"),
+
+        /**
+         * A regular invocation with standard type adjustments.
+         */
+        REGULAR("invoke");
+
+        /**
+         * The name of the invoked method.
+         */
+        private final String methodName;
+
+        /**
+         * Creates a new handle type.
+         *
+         * @param methodName The name of the invoked method.
+         */
+        HandleType(String methodName) {
+            this.methodName = methodName;
         }
 
-        @Override
-        public String toString() {
-            return "MethodInvocation.DynamicInvocation{" +
-                    "methodInvocation=" + MethodInvocation.this +
-                    ", methodName='" + methodName + '\'' +
-                    ", returnType=" + returnType +
-                    ", parameterTypes=" + parameterTypes +
-                    ", bootstrapMethod=" + bootstrapMethod +
-                    ", arguments=" + arguments +
-                    '}';
+        /**
+         * Returns the name of the represented method.
+         *
+         * @return The name of the invoked method.
+         */
+        protected String getMethodName() {
+            return methodName;
         }
     }
 }

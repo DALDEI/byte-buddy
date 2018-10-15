@@ -20,8 +20,8 @@ import org.objectweb.asm.Opcodes;
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -35,7 +35,10 @@ public class VoidAwareAssignerNonVoidToVoidTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription sourceTypeDescription, targetTypeDescription;
+    private TypeDescription.Generic source, target;
+
+    @Mock
+    private TypeDescription rawSource;
 
     @Mock
     private Assigner chainedAssigner;
@@ -67,13 +70,16 @@ public class VoidAwareAssignerNonVoidToVoidTest {
 
     @Before
     public void setUp() throws Exception {
-        when(sourceTypeDescription.represents(sourceType)).thenReturn(true);
-        when(sourceTypeDescription.getStackSize()).thenReturn(StackSize.of(sourceType));
+        when(source.represents(sourceType)).thenReturn(true);
+        when(source.getStackSize()).thenReturn(StackSize.of(sourceType));
+        when(source.asErasure()).thenReturn(rawSource);
+        when(rawSource.represents(sourceType)).thenReturn(true);
+        when(rawSource.asErasure()).thenReturn(rawSource);
         if (sourceType.isPrimitive()) {
-            when(sourceTypeDescription.isPrimitive()).thenReturn(true);
+            when(source.isPrimitive()).thenReturn(true);
         }
-        when(targetTypeDescription.represents(void.class)).thenReturn(true);
-        when(targetTypeDescription.isPrimitive()).thenReturn(true);
+        when(target.represents(void.class)).thenReturn(true);
+        when(target.isPrimitive()).thenReturn(true);
     }
 
     @After
@@ -94,7 +100,7 @@ public class VoidAwareAssignerNonVoidToVoidTest {
 
     private void testAssignDefaultValue(boolean dynamicallyTyped) throws Exception {
         Assigner voidAwareAssigner = new VoidAwareAssigner(chainedAssigner);
-        StackManipulation stackManipulation = voidAwareAssigner.assign(sourceTypeDescription, targetTypeDescription, Assigner.Typing.of(dynamicallyTyped));
+        StackManipulation stackManipulation = voidAwareAssigner.assign(source, target, Assigner.Typing.of(dynamicallyTyped));
         assertThat(stackManipulation.isValid(), is(true));
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         assertThat(size.getSizeImpact(), is(-1 * StackSize.of(sourceType).getSize()));

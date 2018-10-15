@@ -1,6 +1,8 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.bind.annotation.RuntimeType;
 import net.bytebuddy.implementation.bind.annotation.SuperCall;
 import net.bytebuddy.test.utility.CallTraceable;
@@ -14,12 +16,12 @@ import java.io.Serializable;
 import java.lang.reflect.Method;
 import java.util.concurrent.Callable;
 
-import static net.bytebuddy.matcher.ElementMatchers.*;
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 
-public class MethodDelegationSuperCallTest extends AbstractImplementationTest {
+public class MethodDelegationSuperCallTest {
 
     private static final String SINGLE_DEFAULT_METHOD = "net.bytebuddy.test.precompiled.SingleDefaultMethodInterface";
 
@@ -32,8 +34,13 @@ public class MethodDelegationSuperCallTest extends AbstractImplementationTest {
 
     @Test
     public void testRunnableSuperCall() throws Exception {
-        DynamicType.Loaded<Foo> loaded = implement(Foo.class, MethodDelegation.to(RunnableClass.class));
-        Foo instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<Foo> loaded = new ByteBuddy()
+                .subclass(Foo.class)
+                .method(isDeclaredBy(Foo.class))
+                .intercept(MethodDelegation.to(RunnableClass.class))
+                .make()
+                .load(Foo.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        Foo instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(instance.value, is(BAR));
         instance.foo();
         assertThat(instance.value, is(FOO));
@@ -41,42 +48,63 @@ public class MethodDelegationSuperCallTest extends AbstractImplementationTest {
 
     @Test
     public void testCallableSuperCall() throws Exception {
-        DynamicType.Loaded<Bar> loaded = implement(Bar.class, MethodDelegation.to(CallableClass.class));
-        Bar instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<Bar> loaded = new ByteBuddy()
+                .subclass(Bar.class)
+                .method(isDeclaredBy(Bar.class))
+                .intercept(MethodDelegation.to(CallableClass.class))
+                .make()
+                .load(Bar.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        Bar instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(instance.bar(), is(FOO));
     }
 
     @Test
     public void testVoidToNonVoidSuperCall() throws Exception {
-        DynamicType.Loaded<VoidTest> loaded = implement(VoidTest.class, MethodDelegation.to(NonVoidTarget.class));
-        VoidTest instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<VoidTest> loaded = new ByteBuddy()
+                .subclass(VoidTest.class)
+                .method(isDeclaredBy(VoidTest.class))
+                .intercept(MethodDelegation.to(NonVoidTarget.class))
+                .make()
+                .load(VoidTest.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        VoidTest instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         instance.foo();
         instance.assertOnlyCall(FOO);
     }
 
     @Test
     public void testRuntimeTypeSuperCall() throws Exception {
-        DynamicType.Loaded<RuntimeTypeTest> loaded = implement(RuntimeTypeTest.class, MethodDelegation.to(RuntimeTypeTarget.class));
-        RuntimeTypeTest instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<RuntimeTypeTest> loaded = new ByteBuddy()
+                .subclass(RuntimeTypeTest.class)
+                .method(isDeclaredBy(RuntimeTypeTest.class))
+                .intercept(MethodDelegation.to(RuntimeTypeTarget.class))
+                .make()
+                .load(RuntimeTypeTest.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        RuntimeTypeTest instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(instance.foo(), is(FOO));
     }
 
     @Test
     public void testSerializableProxy() throws Exception {
-        DynamicType.Loaded<Bar> loaded = implement(Bar.class, MethodDelegation.to(SerializationCheck.class));
-        Bar instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<Bar> loaded = new ByteBuddy()
+                .subclass(Bar.class)
+                .method(isDeclaredBy(Bar.class))
+                .intercept(MethodDelegation.to(SerializationCheck.class))
+                .make()
+                .load(Bar.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        Bar instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(instance.bar(), is(FOO));
     }
 
     @Test
     @JavaVersionRule.Enforce(8)
     public void testDefaultMethodFallback() throws Exception {
-        DynamicType.Loaded<?> loaded = implement(Object.class,
-                MethodDelegation.to(NonVoidTarget.class),
-                getClass().getClassLoader(),
-                isMethod().and(not(isDeclaredBy(Object.class))),
-                Class.forName(SINGLE_DEFAULT_METHOD));
-        Object instance = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<?> loaded = new ByteBuddy()
+                .subclass(Object.class)
+                .implement(Class.forName(SINGLE_DEFAULT_METHOD))
+                .intercept(MethodDelegation.to(NonVoidTarget.class))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        Object instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         Method method = loaded.getLoaded().getMethod(FOO);
         assertThat(method.invoke(instance), is((Object) FOO));
     }
@@ -84,32 +112,39 @@ public class MethodDelegationSuperCallTest extends AbstractImplementationTest {
     @Test(expected = IllegalArgumentException.class)
     @JavaVersionRule.Enforce(8)
     public void testDefaultMethodFallbackDisabled() throws Exception {
-        implement(Object.class,
-                MethodDelegation.to(NoFallback.class),
-                getClass().getClassLoader(),
-                isMethod().and(not(isDeclaredBy(Object.class))),
-                Class.forName(SINGLE_DEFAULT_METHOD));
+        new ByteBuddy()
+                .subclass(Object.class)
+                .implement(Class.forName(SINGLE_DEFAULT_METHOD))
+                .intercept(MethodDelegation.to(NoFallback.class))
+                .make();
     }
 
     @Test(expected = IllegalArgumentException.class)
     @JavaVersionRule.Enforce(8)
     public void testDefaultMethodFallbackAmbiguous() throws Exception {
-        implement(Object.class,
-                MethodDelegation.to(NonVoidTarget.class),
-                getClass().getClassLoader(),
-                isMethod().and(not(isDeclaredBy(Object.class))),
-                Class.forName(SINGLE_DEFAULT_METHOD),
-                Class.forName(CONFLICTING_INTERFACE));
+        new ByteBuddy()
+                .subclass(Object.class)
+                .implement(Class.forName(SINGLE_DEFAULT_METHOD), Class.forName(CONFLICTING_INTERFACE))
+                .intercept(MethodDelegation.to(NonVoidTarget.class))
+                .make();
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testAbstractMethodNonBindable() throws Exception {
-        implement(Qux.class, MethodDelegation.to(CallableClass.class));
+        new ByteBuddy()
+                .subclass(Qux.class)
+                .method(isDeclaredBy(Qux.class))
+                .intercept(MethodDelegation.to(CallableClass.class))
+                .make();
     }
 
     @Test(expected = IllegalStateException.class)
     public void testWrongTypeThrowsException() throws Exception {
-        implement(Bar.class, MethodDelegation.to(IllegalAnnotation.class));
+        new ByteBuddy()
+                .subclass(Bar.class)
+                .method(isDeclaredBy(Bar.class))
+                .intercept(MethodDelegation.to(IllegalAnnotation.class))
+                .make();
     }
 
     public static class Foo {
@@ -144,7 +179,7 @@ public class MethodDelegationSuperCallTest extends AbstractImplementationTest {
         }
     }
 
-    public static abstract class Qux {
+    public abstract static class Qux {
 
         public abstract String bar();
     }

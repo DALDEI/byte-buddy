@@ -7,8 +7,6 @@ import java.lang.annotation.Annotation;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.reflect.Method;
-import java.net.URL;
-import java.net.URLClassLoader;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -17,7 +15,6 @@ public class AnnotationDescriptionForLoadedAnnotationTest extends AbstractAnnota
 
     private static final String FOO = "foo";
 
-    @Override
     protected AnnotationDescription describe(Annotation annotation, Class<?> declaringType) {
         return AnnotationDescription.ForLoadedAnnotation.of(annotation);
     }
@@ -25,8 +22,7 @@ public class AnnotationDescriptionForLoadedAnnotationTest extends AbstractAnnota
     @Test
     public void testAnnotationNonVisible() throws Exception {
         assertThat(describe(Carrier.class.getAnnotation(PrivateAnnotation.class), Carrier.class)
-                .getValue(new MethodDescription.ForLoadedMethod(PrivateAnnotation.class.getDeclaredMethod("value")),
-                        String.class), is(FOO));
+                .getValue(new MethodDescription.ForLoadedMethod(PrivateAnnotation.class.getDeclaredMethod("value"))).resolve(String.class), is(FOO));
     }
 
     @Test
@@ -34,24 +30,13 @@ public class AnnotationDescriptionForLoadedAnnotationTest extends AbstractAnnota
         Method method = PrivateAnnotation.class.getDeclaredMethod("value");
         method.setAccessible(true);
         assertThat(describe(Carrier.class.getAnnotation(PrivateAnnotation.class), Carrier.class)
-                .getValue(new MethodDescription.ForLoadedMethod(method), String.class), is(FOO));
+                .getValue(new MethodDescription.ForLoadedMethod(method)).resolve(String.class), is(FOO));
     }
 
     @Test(expected = IllegalStateException.class)
     public void testInoperational() throws Exception {
         describe(PrivateAnnotation.Defect.INSTANCE, Carrier.class)
                 .getValue(new MethodDescription.ForLoadedMethod(PrivateAnnotation.class.getDeclaredMethod("value")));
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void testLoadAnnotationWrongClassLoader() throws Exception {
-        describe(Carrier.class.getAnnotation(PrivateAnnotation.class), Carrier.class).prepare(PrivateAnnotation.class).load(null);
-    }
-
-    @Test
-    public void testLoadAnnotationSubClassLoader() throws Exception {
-        assertThat(describe(Carrier.class.getAnnotation(PrivateAnnotation.class), Carrier.class).prepare(PrivateAnnotation.class)
-                .load(new URLClassLoader(new URL[0], getClass().getClassLoader())), is(Carrier.class.getAnnotation(PrivateAnnotation.class)));
     }
 
     @Retention(RetentionPolicy.RUNTIME)
@@ -63,12 +48,10 @@ public class AnnotationDescriptionForLoadedAnnotationTest extends AbstractAnnota
 
             INSTANCE;
 
-            @Override
             public String value() {
                 throw new RuntimeException();
             }
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return PrivateAnnotation.class;
             }

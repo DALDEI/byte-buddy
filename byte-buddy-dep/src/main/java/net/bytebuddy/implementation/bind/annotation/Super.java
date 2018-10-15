@@ -1,12 +1,12 @@
 package net.bytebuddy.implementation.bind.annotation;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.enumeration.EnumerationDescription;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.dynamic.TargetType;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.auxiliary.TypeProxy;
@@ -47,7 +47,7 @@ import static net.bytebuddy.matcher.ElementMatchers.named;
  * proxy by default. If this is absolutely necessary, this can however be enabled by setting {@link Super#ignoreFinalizer()}
  * to {@code false}.
  * <p>&nbsp;</p>
- * If a method parameter is not a super type of the instrumented type, the method with the parameter that is annoted by
+ * If a method parameter is not a super type of the instrumented type, the method with the parameter that is annotated by
  * #{@code Super} is not considered a possible delegation target.
  *
  * @see net.bytebuddy.implementation.MethodDelegation
@@ -115,9 +115,9 @@ public @interface Super {
                                                  AnnotationDescription.Loadable<Super> annotation) {
                 return new TypeProxy.ForSuperMethodByConstructor(parameterType,
                         implementationTarget,
-                        Arrays.asList(annotation.getValue(CONSTRUCTOR_PARAMETERS, TypeDescription[].class)),
-                        annotation.getValue(IGNORE_FINALIZER, Boolean.class),
-                        annotation.getValue(SERIALIZABLE_PROXY, Boolean.class));
+                        Arrays.asList(annotation.getValue(CONSTRUCTOR_PARAMETERS).resolve(TypeDescription[].class)),
+                        annotation.getValue(IGNORE_FINALIZER).resolve(Boolean.class),
+                        annotation.getValue(SERIALIZABLE_PROXY).resolve(Boolean.class));
             }
         },
 
@@ -132,8 +132,8 @@ public @interface Super {
                                                  AnnotationDescription.Loadable<Super> annotation) {
                 return new TypeProxy.ForSuperMethodByReflectionFactory(parameterType,
                         implementationTarget,
-                        annotation.getValue(IGNORE_FINALIZER, Boolean.class),
-                        annotation.getValue(SERIALIZABLE_PROXY, Boolean.class));
+                        annotation.getValue(IGNORE_FINALIZER).resolve(Boolean.class),
+                        annotation.getValue(SERIALIZABLE_PROXY).resolve(Boolean.class));
             }
         };
 
@@ -156,7 +156,7 @@ public @interface Super {
          * Extracts method references to the annotation methods.
          */
         static {
-            MethodList<MethodDescription.InDefinedShape> annotationProperties = new TypeDescription.ForLoadedType(Super.class).getDeclaredMethods();
+            MethodList<MethodDescription.InDefinedShape> annotationProperties = TypeDescription.ForLoadedType.of(Super.class).getDeclaredMethods();
             IGNORE_FINALIZER = annotationProperties.filter(named("ignoreFinalizer")).getOnly();
             SERIALIZABLE_PROXY = annotationProperties.filter(named("serializableProxy")).getOnly();
             CONSTRUCTOR_PARAMETERS = annotationProperties.filter(named("constructorParameters")).getOnly();
@@ -174,11 +174,6 @@ public @interface Super {
         protected abstract StackManipulation proxyFor(TypeDescription parameterType,
                                                       Implementation.Target implementationTarget,
                                                       AnnotationDescription.Loadable<Super> annotation);
-
-        @Override
-        public String toString() {
-            return "Super.Instantiation." + name();
-        }
     }
 
     /**
@@ -209,40 +204,42 @@ public @interface Super {
          * Extracts method references of the super annotation.
          */
         static {
-            MethodList<MethodDescription.InDefinedShape> annotationProperties = new TypeDescription.ForLoadedType(Super.class).getDeclaredMethods();
+            MethodList<MethodDescription.InDefinedShape> annotationProperties = TypeDescription.ForLoadedType.of(Super.class).getDeclaredMethods();
             STRATEGY = annotationProperties.filter(named("strategy")).getOnly();
             PROXY_TYPE = annotationProperties.filter(named("proxyType")).getOnly();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<Super> getHandledType() {
             return Super.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<Super> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             if (target.getType().isPrimitive() || target.getType().isArray()) {
                 throw new IllegalStateException(target + " uses the @Super annotation on an invalid type");
             }
             TypeDescription proxyType = TypeLocator.ForType
-                    .of(annotation.getValue(PROXY_TYPE, TypeDescription.class))
-                    .resolve(implementationTarget.getTypeDescription(), target.getType());
-            if (source.isStatic() || !implementationTarget.getTypeDescription().isAssignableTo(proxyType)) {
+                    .of(annotation.getValue(PROXY_TYPE).resolve(TypeDescription.class))
+                    .resolve(implementationTarget.getInstrumentedType(), target.getType());
+            if (proxyType.isFinal()) {
+                throw new IllegalStateException("Cannot extend final type as @Super proxy: " + proxyType);
+            } else if (source.isStatic() || !implementationTarget.getInstrumentedType().isAssignableTo(proxyType)) {
                 return MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
             } else {
                 return new MethodDelegationBinder.ParameterBinding.Anonymous(annotation
-                        .getValue(STRATEGY, EnumerationDescription.class).load(Instantiation.class)
+                        .getValue(STRATEGY).resolve(EnumerationDescription.class).load(Instantiation.class)
                         .proxyFor(proxyType, implementationTarget, annotation));
             }
-        }
-
-        @Override
-        public String toString() {
-            return "Super.Binder." + name();
         }
 
         /**
@@ -257,7 +254,7 @@ public @interface Super {
              * @param parameterType    The type of the target parameter.
              * @return The proxy type.
              */
-            TypeDescription resolve(TypeDescription instrumentedType, GenericTypeDescription parameterType);
+            TypeDescription resolve(TypeDescription instrumentedType, TypeDescription.Generic parameterType);
 
             /**
              * A type locator that yields the instrumented type.
@@ -269,14 +266,11 @@ public @interface Super {
                  */
                 INSTANCE;
 
-                @Override
-                public TypeDescription resolve(TypeDescription instrumentedType, GenericTypeDescription parameterType) {
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription resolve(TypeDescription instrumentedType, TypeDescription.Generic parameterType) {
                     return instrumentedType;
-                }
-
-                @Override
-                public String toString() {
-                    return "Super.Binder.TypeLocator.ForInstrumentedType." + name();
                 }
             }
 
@@ -290,20 +284,21 @@ public @interface Super {
                  */
                 INSTANCE;
 
-                @Override
-                public TypeDescription resolve(TypeDescription instrumentedType, GenericTypeDescription parameterType) {
-                    return parameterType.asErasure();
-                }
-
-                @Override
-                public String toString() {
-                    return "Super.Binder.TypeLocator.ForParameterType." + name();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription resolve(TypeDescription instrumentedType, TypeDescription.Generic parameterType) {
+                    TypeDescription erasure = parameterType.asErasure();
+                    return erasure.equals(instrumentedType)
+                            ? instrumentedType
+                            : erasure;
                 }
             }
 
             /**
              * A type locator that returns a given type.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             class ForType implements TypeLocator {
 
                 /**
@@ -338,32 +333,14 @@ public @interface Super {
                     }
                 }
 
-                @Override
-                public TypeDescription resolve(TypeDescription instrumentedType, GenericTypeDescription parameterType) {
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription resolve(TypeDescription instrumentedType, TypeDescription.Generic parameterType) {
                     if (!typeDescription.isAssignableTo(parameterType.asErasure())) {
                         throw new IllegalStateException("Impossible to assign " + typeDescription + " to parameter of type " + parameterType);
                     }
                     return typeDescription;
-                }
-
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    ForType forType = (ForType) other;
-                    return typeDescription.equals(forType.typeDescription);
-                }
-
-                @Override
-                public int hashCode() {
-                    return typeDescription.hashCode();
-                }
-
-                @Override
-                public String toString() {
-                    return "Super.Binder.TypeLocator.ForType{" +
-                            "typeDescription=" + typeDescription +
-                            '}';
                 }
             }
         }

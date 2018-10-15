@@ -1,294 +1,261 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
 import net.bytebuddy.ClassFileVersion;
-import net.bytebuddy.NamingStrategy;
-import net.bytebuddy.asm.ClassVisitorWrapper;
-import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.TypeResolutionStrategy;
 import net.bytebuddy.dynamic.scaffold.*;
 import net.bytebuddy.implementation.Implementation;
-import net.bytebuddy.implementation.LoadedTypeInitializer;
-import net.bytebuddy.implementation.attribute.FieldAttributeAppender;
-import net.bytebuddy.implementation.attribute.MethodAttributeAppender;
+import net.bytebuddy.implementation.attribute.AnnotationRetention;
+import net.bytebuddy.implementation.attribute.AnnotationValueFilter;
 import net.bytebuddy.implementation.attribute.TypeAttributeAppender;
 import net.bytebuddy.implementation.auxiliary.AuxiliaryType;
 import net.bytebuddy.matcher.ElementMatcher;
+import net.bytebuddy.matcher.LatentMatcher;
+import net.bytebuddy.pool.TypePool;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
-import static net.bytebuddy.matcher.ElementMatchers.*;
-import static net.bytebuddy.utility.ByteBuddyCommons.joinUniqueRaw;
+import static net.bytebuddy.matcher.ElementMatchers.is;
 
 /**
- * A dynamic type builder that rebases a given type, i.e. it behaves like if a subclass was defined where any methods
- * are later inlined into the rebased type and the original methods are copied while using a different name space.
+ * A type builder that rebases an instrumented type.
  *
- * @param <T> The actual type of the rebased type.
+ * @param <T> A loaded type that the dynamic type is guaranteed to be a subtype of.
  */
-public class RebaseDynamicTypeBuilder<T> extends DynamicType.Builder.AbstractBase<T> {
+@HashCodeAndEqualsPlugin.Enhance
+public class RebaseDynamicTypeBuilder<T> extends AbstractInliningDynamicTypeBuilder<T> {
 
     /**
-     * A locator for finding a class file to a given type.
+     * The method rebase resolver to use for determining the name of a rebased method.
      */
-    private final ClassFileLocator classFileLocator;
+    private final MethodNameTransformer methodNameTransformer;
 
     /**
-     * A name transformer that transforms names of any rebased method.
-     */
-    private final MethodRebaseResolver.MethodNameTransformer methodNameTransformer;
-
-    /**
-     * Creates a new rebase dynamic type builder.
+     * Creates a rebase dynamic type builder.
      *
-     * @param classFileVersion                      The class file version for the created dynamic type.
-     * @param namingStrategy                        The naming strategy for naming the dynamic type.
-     * @param auxiliaryTypeNamingStrategy           The naming strategy for naming auxiliary types of the dynamic type.
-     * @param implementationContextFactory          The implementation context factory to use.
-     * @param levelType                             The type that is to be rebased.
-     * @param interfaceTypes                        A list of interfaces that should be implemented by the created dynamic type.
-     * @param modifiers                             The modifiers to be represented by the dynamic type.
-     * @param attributeAppender                     The attribute appender to apply onto the dynamic type that is created.
-     * @param ignoredMethods                        A matcher for determining methods that are to be ignored for instrumentation.
-     * @param classVisitorWrapperChain              A chain of ASM class visitors to apply to the writing process.
-     * @param fieldRegistry                         The field registry to apply to the dynamic type creation.
-     * @param methodRegistry                        The method registry to apply to the dynamic type creation.
-     * @param methodGraphCompiler                   The method graph compiler to be used.
-     * @param defaultFieldAttributeAppenderFactory  The field attribute appender factory that should be applied by default if
-     *                                              no specific appender was specified for a given field.
-     * @param defaultMethodAttributeAppenderFactory The method attribute appender factory that should be applied by default
-     *                                              if no specific appender was specified for a given method.
-     * @param classFileLocator                      A locator for finding a class file to a given type.
-     * @param methodNameTransformer                 A name transformer that transforms names of any rebased method.
+     * @param instrumentedType             An instrumented type representing the subclass.
+     * @param classFileVersion             The class file version to use for types that are not based on an existing class file.
+     * @param auxiliaryTypeNamingStrategy  The naming strategy to use for naming auxiliary types.
+     * @param annotationValueFilterFactory The annotation value filter factory to use.
+     * @param annotationRetention          The annotation retention strategy to use.
+     * @param implementationContextFactory The implementation context factory to use.
+     * @param methodGraphCompiler          The method graph compiler to use.
+     * @param typeValidation               Determines if a type should be explicitly validated.
+     * @param classWriterStrategy          The class writer strategy to use.
+     * @param ignoredMethods               A matcher for identifying methods that should be excluded from instrumentation.
+     * @param originalType                 The original type that is being redefined or rebased.
+     * @param classFileLocator             The class file locator for locating the original type's class file.
+     * @param methodNameTransformer        The method rebase resolver to use for determining the name of a rebased method.
      */
-    public RebaseDynamicTypeBuilder(ClassFileVersion classFileVersion,
-                                    NamingStrategy namingStrategy,
+    public RebaseDynamicTypeBuilder(InstrumentedType.WithFlexibleName instrumentedType,
+                                    ClassFileVersion classFileVersion,
                                     AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                    AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                    AnnotationRetention annotationRetention,
                                     Implementation.Context.Factory implementationContextFactory,
-                                    TypeDescription levelType,
-                                    List<TypeDescription> interfaceTypes,
-                                    int modifiers,
-                                    TypeAttributeAppender attributeAppender,
-                                    ElementMatcher<? super MethodDescription> ignoredMethods,
-                                    ClassVisitorWrapper.Chain classVisitorWrapperChain,
-                                    FieldRegistry fieldRegistry,
-                                    MethodRegistry methodRegistry,
                                     MethodGraph.Compiler methodGraphCompiler,
-                                    FieldAttributeAppender.Factory defaultFieldAttributeAppenderFactory,
-                                    MethodAttributeAppender.Factory defaultMethodAttributeAppenderFactory,
+                                    TypeValidation typeValidation,
+                                    ClassWriterStrategy classWriterStrategy,
+                                    LatentMatcher<? super MethodDescription> ignoredMethods,
+                                    TypeDescription originalType,
                                     ClassFileLocator classFileLocator,
-                                    MethodRebaseResolver.MethodNameTransformer methodNameTransformer) {
-        this(classFileVersion,
-                namingStrategy,
+                                    MethodNameTransformer methodNameTransformer) {
+        this(instrumentedType,
+                new FieldRegistry.Default(),
+                new MethodRegistry.Default(),
+                annotationRetention.isEnabled()
+                        ? new TypeAttributeAppender.ForInstrumentedType.Differentiating(originalType)
+                        : TypeAttributeAppender.ForInstrumentedType.INSTANCE,
+                AsmVisitorWrapper.NoOp.INSTANCE,
+                classFileVersion,
                 auxiliaryTypeNamingStrategy,
+                annotationValueFilterFactory,
+                annotationRetention,
                 implementationContextFactory,
-                levelType,
-                joinUniqueRaw(interfaceTypes, levelType.getInterfaces()),
-                modifiers,
-                attributeAppender,
-                ignoredMethods,
-                classVisitorWrapperChain,
-                fieldRegistry,
-                methodRegistry,
                 methodGraphCompiler,
-                defaultFieldAttributeAppenderFactory,
-                defaultMethodAttributeAppenderFactory,
-                levelType.getDeclaredFields().asTokenList(is(levelType)),
-                levelType.getDeclaredMethods().asTokenList(is(levelType)),
+                typeValidation,
+                classWriterStrategy,
+                ignoredMethods,
+                Collections.<DynamicType>emptyList(),
+                originalType,
                 classFileLocator,
                 methodNameTransformer);
     }
 
     /**
-     * Creates a new rebase dynamic type builder.
+     * Creates a rebase dynamic type builder.
      *
-     * @param classFileVersion                      The class file version for the created dynamic type.
-     * @param namingStrategy                        The naming strategy for naming the dynamic type.
-     * @param auxiliaryTypeNamingStrategy           The naming strategy for naming auxiliary types of the dynamic type.
-     * @param implementationContextFactory          The implementation context factory to use.
-     * @param levelType                             The type that is to be rebased.
-     * @param interfaceTypes                        A list of interfaces that should be implemented by the created dynamic type.
-     * @param modifiers                             The modifiers to be represented by the dynamic type.
-     * @param attributeAppender                     The attribute appender to apply onto the dynamic type that is created.
-     * @param ignoredMethods                        A matcher for determining methods that are to be ignored for instrumentation.
-     * @param classVisitorWrapperChain              A chain of ASM class visitors to apply to the writing process.
-     * @param fieldRegistry                         The field registry to apply to the dynamic type creation.
-     * @param methodRegistry                        The method registry to apply to the dynamic type creation.
-     * @param methodGraphCompiler                   The method graph compiler to be used.
-     * @param defaultFieldAttributeAppenderFactory  The field attribute appender factory that should be applied by default if
-     *                                              no specific appender was specified for a given field.
-     * @param defaultMethodAttributeAppenderFactory The method attribute appender factory that should be applied by default
-     *                                              if no specific appender was specified for a given method.
-     * @param fieldTokens                           A list of field representations that were added explicitly to this
-     *                                              dynamic type.
-     * @param methodTokens                          A list of method representations that were added explicitly to this
-     *                                              dynamic type.
-     * @param classFileLocator                      A locator for finding a class file to a given type.
-     * @param methodNameTransformer                 A name transformer that transforms names of any rebased method.
+     * @param instrumentedType             An instrumented type representing the subclass.
+     * @param fieldRegistry                The field pool to use.
+     * @param methodRegistry               The method pool to use.
+     * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+     * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+     * @param classFileVersion             The class file version to use for types that are not based on an existing class file.
+     * @param auxiliaryTypeNamingStrategy  The naming strategy to use for naming auxiliary types.
+     * @param annotationValueFilterFactory The annotation value filter factory to use.
+     * @param annotationRetention          The annotation retention strategy to use.
+     * @param implementationContextFactory The implementation context factory to use.
+     * @param methodGraphCompiler          The method graph compiler to use.
+     * @param typeValidation               Determines if a type should be explicitly validated.
+     * @param classWriterStrategy          The class writer strategy to use.
+     * @param ignoredMethods               A matcher for identifying methods that should be excluded from instrumentation.
+     * @param auxiliaryTypes               A list of explicitly required auxiliary types.
+     * @param originalType                 The original type that is being redefined or rebased.
+     * @param classFileLocator             The class file locator for locating the original type's class file.
+     * @param methodNameTransformer        The method rebase resolver to use for determining the name of a rebased method.
      */
-    protected RebaseDynamicTypeBuilder(ClassFileVersion classFileVersion,
-                                       NamingStrategy namingStrategy,
-                                       AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
-                                       Implementation.Context.Factory implementationContextFactory,
-                                       TypeDescription levelType,
-                                       List<GenericTypeDescription> interfaceTypes,
-                                       int modifiers,
-                                       TypeAttributeAppender attributeAppender,
-                                       ElementMatcher<? super MethodDescription> ignoredMethods,
-                                       ClassVisitorWrapper.Chain classVisitorWrapperChain,
+    protected RebaseDynamicTypeBuilder(InstrumentedType.WithFlexibleName instrumentedType,
                                        FieldRegistry fieldRegistry,
                                        MethodRegistry methodRegistry,
+                                       TypeAttributeAppender typeAttributeAppender,
+                                       AsmVisitorWrapper asmVisitorWrapper,
+                                       ClassFileVersion classFileVersion,
+                                       AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                       AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                       AnnotationRetention annotationRetention,
+                                       Implementation.Context.Factory implementationContextFactory,
                                        MethodGraph.Compiler methodGraphCompiler,
-                                       FieldAttributeAppender.Factory defaultFieldAttributeAppenderFactory,
-                                       MethodAttributeAppender.Factory defaultMethodAttributeAppenderFactory,
-                                       List<FieldDescription.Token> fieldTokens,
-                                       List<MethodDescription.Token> methodTokens,
+                                       TypeValidation typeValidation,
+                                       ClassWriterStrategy classWriterStrategy,
+                                       LatentMatcher<? super MethodDescription> ignoredMethods,
+                                       List<? extends DynamicType> auxiliaryTypes,
+                                       TypeDescription originalType,
                                        ClassFileLocator classFileLocator,
-                                       MethodRebaseResolver.MethodNameTransformer methodNameTransformer) {
-        super(classFileVersion,
-                namingStrategy,
-                auxiliaryTypeNamingStrategy,
-                implementationContextFactory,
-                levelType,
-                interfaceTypes,
-                modifiers,
-                attributeAppender,
-                ignoredMethods,
-                classVisitorWrapperChain,
+                                       MethodNameTransformer methodNameTransformer) {
+        super(instrumentedType,
                 fieldRegistry,
                 methodRegistry,
+                typeAttributeAppender,
+                asmVisitorWrapper,
+                classFileVersion,
+                auxiliaryTypeNamingStrategy,
+                annotationValueFilterFactory,
+                annotationRetention,
+                implementationContextFactory,
                 methodGraphCompiler,
-                defaultFieldAttributeAppenderFactory,
-                defaultMethodAttributeAppenderFactory,
-                fieldTokens,
-                methodTokens);
-        this.classFileLocator = classFileLocator;
+                typeValidation,
+                classWriterStrategy,
+                ignoredMethods,
+                auxiliaryTypes,
+                originalType,
+                classFileLocator);
         this.methodNameTransformer = methodNameTransformer;
     }
 
     @Override
-    protected DynamicType.Builder<T> materialize(ClassFileVersion classFileVersion,
-                                                 NamingStrategy namingStrategy,
-                                                 AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
-                                                 Implementation.Context.Factory implementationContextFactory,
-                                                 TypeDescription levelType,
-                                                 List<GenericTypeDescription> interfaceTypes,
-                                                 int modifiers,
-                                                 TypeAttributeAppender attributeAppender,
-                                                 ElementMatcher<? super MethodDescription> ignoredMethods,
-                                                 ClassVisitorWrapper.Chain classVisitorWrapperChain,
+    protected DynamicType.Builder<T> materialize(InstrumentedType.WithFlexibleName instrumentedType,
                                                  FieldRegistry fieldRegistry,
                                                  MethodRegistry methodRegistry,
+                                                 TypeAttributeAppender typeAttributeAppender,
+                                                 AsmVisitorWrapper asmVisitorWrapper,
+                                                 ClassFileVersion classFileVersion,
+                                                 AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                                 AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                 AnnotationRetention annotationRetention,
+                                                 Implementation.Context.Factory implementationContextFactory,
                                                  MethodGraph.Compiler methodGraphCompiler,
-                                                 FieldAttributeAppender.Factory defaultFieldAttributeAppenderFactory,
-                                                 MethodAttributeAppender.Factory defaultMethodAttributeAppenderFactory,
-                                                 List<FieldDescription.Token> fieldTokens,
-                                                 List<MethodDescription.Token> methodTokens) {
-        return new RebaseDynamicTypeBuilder<T>(classFileVersion,
-                namingStrategy,
-                auxiliaryTypeNamingStrategy,
-                implementationContextFactory,
-                levelType,
-                interfaceTypes,
-                modifiers,
-                attributeAppender,
-                ignoredMethods,
-                classVisitorWrapperChain,
+                                                 TypeValidation typeValidation,
+                                                 ClassWriterStrategy classWriterStrategy,
+                                                 LatentMatcher<? super MethodDescription> ignoredMethods,
+                                                 List<? extends DynamicType> auxiliaryTypes) {
+        return new RebaseDynamicTypeBuilder<T>(instrumentedType,
                 fieldRegistry,
                 methodRegistry,
+                typeAttributeAppender,
+                asmVisitorWrapper,
+                classFileVersion,
+                auxiliaryTypeNamingStrategy,
+                annotationValueFilterFactory,
+                annotationRetention,
+                implementationContextFactory,
                 methodGraphCompiler,
-                defaultFieldAttributeAppenderFactory,
-                defaultMethodAttributeAppenderFactory,
-                fieldTokens,
-                methodTokens,
+                typeValidation,
+                classWriterStrategy,
+                ignoredMethods,
+                auxiliaryTypes,
+                originalType,
                 classFileLocator,
                 methodNameTransformer);
     }
 
-    @Override
-    public DynamicType.Unloaded<T> make() {
-        MethodRegistry.Prepared preparedMethodRegistry = methodRegistry.prepare(new InstrumentedType.Default(namingStrategy.name(new NamingStrategy
-                        .UnnamedType.Default(targetType.getSuperType(), interfaceTypes, modifiers, classFileVersion)),
-                        modifiers,
-                        targetType.getTypeVariables().accept(new GenericTypeDescription.Visitor.Substitutor.ForDetachment(is(targetType))),
-                        targetType.getSuperType(),
-                        interfaceTypes,
-                        fieldTokens,
-                        methodTokens,
-                        targetType.getDeclaredAnnotations(),
-                        InstrumentedType.TypeInitializer.None.INSTANCE,
-                        LoadedTypeInitializer.NoOp.INSTANCE,
-                        targetType.getDeclaringType(),
-                        targetType.getEnclosingMethod(),
-                        targetType.getEnclosingType(),
-                        targetType.isMemberClass(),
-                        targetType.isAnonymousClass(),
-                        targetType.isLocalClass()),
+    /**
+     * {@inheritDoc}
+     */
+    public DynamicType.Unloaded<T> make(TypeResolutionStrategy typeResolutionStrategy, TypePool typePool) {
+        MethodRegistry.Prepared methodRegistry = this.methodRegistry.prepare(instrumentedType,
                 methodGraphCompiler,
-                InliningImplementationMatcher.of(ignoredMethods, targetType));
-        MethodList<MethodDescription.InDefinedShape> rebaseableMethods = preparedMethodRegistry.getInstrumentedMethods()
-                .asDefined()
-                .filter(methodRepresentedBy(anyOf(targetType.getDeclaredMethods().asTokenList())));
-        MethodRebaseResolver methodRebaseResolver = MethodRebaseResolver.Default.make(preparedMethodRegistry.getInstrumentedType(),
-                rebaseableMethods,
+                typeValidation,
+                InliningImplementationMatcher.of(ignoredMethods, originalType));
+        MethodRebaseResolver methodRebaseResolver = MethodRebaseResolver.Default.make(methodRegistry.getInstrumentedType(),
+                new HashSet<MethodDescription.Token>(originalType.getDeclaredMethods()
+                        .asTokenList(is(originalType))
+                        .filter(RebaseableMatcher.of(methodRegistry.getInstrumentedType(), methodRegistry.getInstrumentedMethods()))),
                 classFileVersion,
                 auxiliaryTypeNamingStrategy,
                 methodNameTransformer);
-        MethodRegistry.Compiled compiledMethodRegistry = preparedMethodRegistry.compile(new RebaseImplementationTarget.Factory(rebaseableMethods, methodRebaseResolver));
-        return TypeWriter.Default.<T>forRebasing(compiledMethodRegistry,
-                fieldRegistry.compile(compiledMethodRegistry.getInstrumentedType()),
+        return TypeWriter.Default.<T>forRebasing(methodRegistry,
+                auxiliaryTypes,
+                fieldRegistry.compile(methodRegistry.getInstrumentedType()),
+                typeAttributeAppender,
+                asmVisitorWrapper,
+                classFileVersion,
+                annotationValueFilterFactory,
+                annotationRetention,
                 auxiliaryTypeNamingStrategy,
                 implementationContextFactory,
-                classVisitorWrapperChain,
-                attributeAppender,
-                classFileVersion,
+                typeValidation,
+                classWriterStrategy,
+                typePool,
+                originalType,
                 classFileLocator,
-                targetType,
-                methodRebaseResolver).make();
+                methodRebaseResolver).make(typeResolutionStrategy.resolve());
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && super.equals(other)
-                && classFileLocator.equals(((RebaseDynamicTypeBuilder<?>) other).classFileLocator)
-                && methodNameTransformer.equals(((RebaseDynamicTypeBuilder<?>) other).methodNameTransformer);
-    }
+    /**
+     * A matcher that filters any method that should not be rebased, i.e. that is not already defined by the original type.
+     */
+    @HashCodeAndEqualsPlugin.Enhance
+    protected static class RebaseableMatcher implements ElementMatcher<MethodDescription.Token> {
 
-    @Override
-    public int hashCode() {
-        int result = super.hashCode();
-        result = 31 * result + classFileLocator.hashCode();
-        result = 31 * result + methodNameTransformer.hashCode();
-        return result;
-    }
+        /**
+         * A set of method tokens representing all instrumented methods.
+         */
+        private final Set<MethodDescription.Token> tokens;
 
-    @Override
-    public String toString() {
-        return "RebaseDynamicTypeBuilder{" +
-                "classFileVersion=" + classFileVersion +
-                ", namingStrategy=" + namingStrategy +
-                ", auxiliaryTypeNamingStrategy=" + auxiliaryTypeNamingStrategy +
-                ", implementationContextFactory=" + implementationContextFactory +
-                ", targetType=" + targetType +
-                ", interfaceTypes=" + interfaceTypes +
-                ", modifiers=" + modifiers +
-                ", attributeAppender=" + attributeAppender +
-                ", ignoredMethods=" + ignoredMethods +
-                ", classVisitorWrapperChain=" + classVisitorWrapperChain +
-                ", fieldRegistry=" + fieldRegistry +
-                ", methodRegistry=" + methodRegistry +
-                ", methodGraphCompiler=" + methodGraphCompiler +
-                ", defaultFieldAttributeAppenderFactory=" + defaultFieldAttributeAppenderFactory +
-                ", defaultMethodAttributeAppenderFactory=" + defaultMethodAttributeAppenderFactory +
-                ", fieldTokens=" + fieldTokens +
-                ", methodTokens=" + methodTokens +
-                ", classFileLocator=" + classFileLocator +
-                ", methodNameTransformer=" + methodNameTransformer +
-                '}';
+        /**
+         * Creates a new matcher for identifying rebasable methods.
+         *
+         * @param tokens A set of method tokens representing all instrumented methods.
+         */
+        protected RebaseableMatcher(Set<MethodDescription.Token> tokens) {
+            this.tokens = tokens;
+        }
+
+        /**
+         * Returns a matcher that filters any method that should not be rebased.
+         *
+         * @param instrumentedType    The instrumented type.
+         * @param instrumentedMethods All instrumented methods.
+         * @return A suitable matcher that filters all methods that should not be rebased.
+         */
+        protected static ElementMatcher<MethodDescription.Token> of(TypeDescription instrumentedType, MethodList<?> instrumentedMethods) {
+            return new RebaseableMatcher(new HashSet<MethodDescription.Token>(instrumentedMethods.asTokenList(is(instrumentedType))));
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public boolean matches(MethodDescription.Token target) {
+            return tokens.contains(target);
+        }
     }
 }

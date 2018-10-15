@@ -13,34 +13,20 @@ public class AnnotationDescriptionAbstractPreparedExceptionTest {
         new PseudoDescription().loadSilent();
     }
 
-    @Test(expected = IllegalStateException.class)
-    public void testThrowWithClassLoader() throws Exception {
-        new PseudoDescription().loadSilent(getClass().getClassLoader());
-    }
-
     private static class PseudoDescription extends AnnotationDescription.AbstractBase.ForPrepared<Annotation> {
 
-        @Override
         public Annotation load() throws ClassNotFoundException {
             throw new ClassNotFoundException();
         }
 
-        @Override
-        public Annotation load(ClassLoader classLoader) throws ClassNotFoundException {
-            throw new ClassNotFoundException();
-        }
-
-        @Override
-        public Object getValue(MethodDescription.InDefinedShape methodDescription) {
+        public AnnotationValue<?, ?> getValue(MethodDescription.InDefinedShape property) {
             throw new UnsupportedOperationException();
         }
 
-        @Override
         public TypeDescription getAnnotationType() {
             throw new UnsupportedOperationException();
         }
 
-        @Override
         public <T extends Annotation> Loadable<T> prepare(Class<T> annotationType) {
             throw new UnsupportedOperationException();
         }

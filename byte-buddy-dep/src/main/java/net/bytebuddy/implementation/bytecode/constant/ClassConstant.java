@@ -1,5 +1,7 @@
 package net.bytebuddy.implementation.bytecode.constant;
 
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
@@ -95,8 +97,8 @@ public enum ClassConstant implements StackManipulation {
      * @return The corresponding stack manipulation.
      */
     public static StackManipulation of(TypeDescription typeDescription) {
-        if (typeDescription.represents(void.class)) {
-            return VOID;
+        if (!typeDescription.isPrimitive()) {
+            return new ForReferenceType(typeDescription);
         } else if (typeDescription.represents(boolean.class)) {
             return BOOLEAN;
         } else if (typeDescription.represents(byte.class)) {
@@ -114,29 +116,29 @@ public enum ClassConstant implements StackManipulation {
         } else if (typeDescription.represents(double.class)) {
             return DOUBLE;
         } else {
-            return new ForReferenceType(typeDescription);
+            return VOID;
         }
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isValid() {
         return true;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
         methodVisitor.visitFieldInsn(Opcodes.GETSTATIC, fieldOwnerInternalName, PRIMITIVE_TYPE_FIELD, CLASS_TYPE_INTERNAL_NAME);
         return SIZE;
     }
 
-    @Override
-    public String toString() {
-        return "ClassConstant." + name();
-    }
-
     /**
      * A class constant for a non-primitive {@link java.lang.Class}.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class ForReferenceType implements StackManipulation {
 
         /**
@@ -153,31 +155,24 @@ public enum ClassConstant implements StackManipulation {
             this.typeDescription = typeDescription;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-            methodVisitor.visitLdcInsn(Type.getType(typeDescription.getDescriptor()));
+            if (implementationContext.getClassFileVersion().isAtLeast(ClassFileVersion.JAVA_V5) && typeDescription.isVisibleTo(implementationContext.getInstrumentedType())) {
+                methodVisitor.visitLdcInsn(Type.getType(typeDescription.getDescriptor()));
+            } else {
+                methodVisitor.visitLdcInsn(typeDescription.getName());
+                methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Class", "forName", "(Ljava/lang/String;)Ljava/lang/Class;", false);
+            }
             return SIZE;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && typeDescription.equals(((ForReferenceType) other).typeDescription);
-        }
-
-        @Override
-        public int hashCode() {
-            return typeDescription.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "ClassConstant.ForReferenceType{typeDescription=" + typeDescription + '}';
         }
     }
 }

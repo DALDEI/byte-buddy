@@ -5,14 +5,15 @@
     <parent>
         <artifactId>byte-buddy-parent</artifactId>
         <groupId>net.bytebuddy</groupId>
-        <version>0.7-SNAPSHOT</version>
+        <version>1.9.2-SNAPSHOT</version>
     </parent>
 
     <artifactId>byte-buddy-android</artifactId>
     <packaging>jar</packaging>
 
     <properties>
-        <version.android.sdk.dx>1.7</version.android.sdk.dx>
+        <!-- Newer versions require Java 7 -->
+        <version.android.sdk.dx>1</version.android.sdk.dx>
     </properties>
 
     <name>Byte Buddy for Android</name>
@@ -24,32 +25,39 @@
             <artifactId>byte-buddy</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <!-- Important: Add JUnit first to shadow the stubbed JUnit that comes with Android SDK dependency. -->
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <scope>test</scope>
-        </dependency>
         <dependency>
             <groupId>com.google.android</groupId>
             <artifactId>android</artifactId>
+            <version>${version.android.sdk}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>com.google.android.tools</groupId>
-            <artifactId>dx</artifactId>
+            <groupId>com.jakewharton.android.repackaged</groupId>
+            <artifactId>dalvik-dx</artifactId>
             <version>${version.android.sdk.dx}</version>
         </dependency>
         <dependency>
-            <groupId>${project.groupId}</groupId>
-            <artifactId>byte-buddy-agent</artifactId>
-            <version>${project.version}</version>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${version.junit}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
+            <version>${version.mockito}</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>net.bytebuddy</groupId>
+                    <artifactId>byte-buddy</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>net.bytebuddy</groupId>
+                    <artifactId>byte-buddy-agent</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
+
 </project>

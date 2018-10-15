@@ -32,23 +32,23 @@ public @interface Empty {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<Empty> getHandledType() {
             return Empty.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<Empty> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             return new MethodDelegationBinder.ParameterBinding.Anonymous(DefaultValue.of(target.getType().asErasure()));
-        }
-
-        @Override
-        public String toString() {
-            return "Empty.Binder." + name();
         }
     }
 }

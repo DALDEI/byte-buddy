@@ -4,7 +4,7 @@ import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -19,26 +19,27 @@ public class SuperCallBinderTest extends AbstractAnnotationBinderTest<SuperCall>
     private TypeDescription targetParameterType;
 
     @Mock
+    private TypeDescription.Generic genericTargetParameterType;
+
+    @Mock
     private Implementation.SpecialMethodInvocation specialMethodInvocation;
 
     @Mock
-    private MethodDescription.Token sourceToken;
+    private MethodDescription.SignatureToken sourceToken;
 
     public SuperCallBinderTest() {
         super(SuperCall.class);
     }
 
-    @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        when(target.getType()).thenReturn(targetParameterType);
+        when(target.getType()).thenReturn(genericTargetParameterType);
+        when(genericTargetParameterType.asErasure()).thenReturn(targetParameterType);
+        when(source.asSignatureToken()).thenReturn(sourceToken);
         when(implementationTarget.invokeSuper(sourceToken)).thenReturn(specialMethodInvocation);
-        when(targetParameterType.asErasure()).thenReturn(targetParameterType);
-        when(source.asToken()).thenReturn(sourceToken);
     }
 
-    @Override
     protected TargetMethodAnnotationDrivenBinder.ParameterBinder<SuperCall> getSimpleBinder() {
         return SuperCall.Binder.INSTANCE;
     }
@@ -48,7 +49,7 @@ public class SuperCallBinderTest extends AbstractAnnotationBinderTest<SuperCall>
         when(targetParameterType.represents(any(Class.class))).thenReturn(true);
         when(specialMethodInvocation.isValid()).thenReturn(true);
         MethodDelegationBinder.ParameterBinding<?> parameterBinding = SuperCall.Binder.INSTANCE
-                .bind(annotationDescription, source, target, implementationTarget, assigner);
+                .bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
         verify(implementationTarget).invokeSuper(sourceToken);
         verifyNoMoreInteractions(implementationTarget);
         assertThat(parameterBinding.isValid(), is(true));
@@ -59,19 +60,47 @@ public class SuperCallBinderTest extends AbstractAnnotationBinderTest<SuperCall>
         when(targetParameterType.represents(any(Class.class))).thenReturn(true);
         when(specialMethodInvocation.isValid()).thenReturn(false);
         MethodDelegationBinder.ParameterBinding<?> parameterBinding = SuperCall.Binder.INSTANCE
-                .bind(annotationDescription, source, target, implementationTarget, assigner);
+                .bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
         verify(implementationTarget).invokeSuper(sourceToken);
         verifyNoMoreInteractions(implementationTarget);
         assertThat(parameterBinding.isValid(), is(false));
     }
 
+    @Test
+    public void testInvalidSuperMethodCallNullFallback() throws Exception {
+        when(targetParameterType.represents(any(Class.class))).thenReturn(true);
+        when(specialMethodInvocation.isValid()).thenReturn(false);
+        when(annotation.nullIfImpossible()).thenReturn(true);
+        MethodDelegationBinder.ParameterBinding<?> parameterBinding = SuperCall.Binder.INSTANCE
+                .bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
+        verify(implementationTarget).invokeSuper(sourceToken);
+        verifyNoMoreInteractions(implementationTarget);
+        assertThat(parameterBinding.isValid(), is(true));
+    }
+
     @Test(expected = IllegalStateException.class)
     public void testWrongTypeThrowsException() throws Exception {
-        SuperCall.Binder.INSTANCE.bind(annotationDescription, source, target, implementationTarget, assigner);
+        SuperCall.Binder.INSTANCE.bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(SuperCall.Binder.class).apply();
+    public void testConstructorIsNotInvokeable() throws Exception {
+        when(targetParameterType.represents(any(Class.class))).thenReturn(true);
+        when(source.isConstructor()).thenReturn(true);
+        MethodDelegationBinder.ParameterBinding<?> parameterBinding = SuperCall.Binder.INSTANCE
+                .bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
+        verifyZeroInteractions(implementationTarget);
+        assertThat(parameterBinding.isValid(), is(false));
+    }
+
+    @Test
+    public void testConstructorNullFallback() throws Exception {
+        when(targetParameterType.represents(any(Class.class))).thenReturn(true);
+        when(source.isConstructor()).thenReturn(true);
+        when(annotation.nullIfImpossible()).thenReturn(true);
+        MethodDelegationBinder.ParameterBinding<?> parameterBinding = SuperCall.Binder.INSTANCE
+                .bind(annotationDescription, source, target, implementationTarget, assigner, Assigner.Typing.STATIC);
+        verifyZeroInteractions(implementationTarget);
+        assertThat(parameterBinding.isValid(), is(true));
     }
 }

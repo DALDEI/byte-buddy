@@ -39,32 +39,29 @@ public @interface StubValue {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<StubValue> getHandledType() {
             return StubValue.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<StubValue> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             if (!target.getType().represents(Object.class)) {
                 throw new IllegalStateException(target + " uses StubValue annotation on non-Object type");
             }
-            StackManipulation stackManipulation = source.getReturnType().represents(void.class)
+            return new MethodDelegationBinder.ParameterBinding.Anonymous(source.getReturnType().represents(void.class)
                     ? NullConstant.INSTANCE
                     : new StackManipulation.Compound(DefaultValue.of(source.getReturnType().asErasure()),
-                    assigner.assign(source.getReturnType().asErasure(), TypeDescription.OBJECT, Assigner.Typing.STATIC));
-            return stackManipulation.isValid()
-                    ? new MethodDelegationBinder.ParameterBinding.Anonymous(stackManipulation)
-                    : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
-        }
-
-        @Override
-        public String toString() {
-            return "StubValue.Binder." + name();
+                    assigner.assign(source.getReturnType(), TypeDescription.Generic.OBJECT, typing)));
         }
     }
 }

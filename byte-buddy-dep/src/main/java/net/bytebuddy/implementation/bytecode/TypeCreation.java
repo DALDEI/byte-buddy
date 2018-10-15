@@ -1,5 +1,6 @@
 package net.bytebuddy.implementation.bytecode;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import org.objectweb.asm.MethodVisitor;
@@ -8,6 +9,7 @@ import org.objectweb.asm.Opcodes;
 /**
  * A stack manipulation for creating an <i>undefined</i> type on which a constructor is to be called.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class TypeCreation implements StackManipulation {
 
     /**
@@ -30,37 +32,25 @@ public class TypeCreation implements StackManipulation {
      * @param typeDescription The type to be create.
      * @return A stack manipulation that represents the creation of the given type.
      */
-    public static StackManipulation forType(TypeDescription typeDescription) {
+    public static StackManipulation of(TypeDescription typeDescription) {
         if (typeDescription.isArray() || typeDescription.isPrimitive() || typeDescription.isAbstract()) {
             throw new IllegalArgumentException(typeDescription + " is not instantiable");
         }
         return new TypeCreation(typeDescription);
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isValid() {
         return true;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
         methodVisitor.visitTypeInsn(Opcodes.NEW, typeDescription.getInternalName());
         return new Size(1, 1);
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && typeDescription.equals(((TypeCreation) other).typeDescription);
-    }
-
-    @Override
-    public int hashCode() {
-        return typeDescription.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "TypeCreation{typeDescription=" + typeDescription + '}';
     }
 }

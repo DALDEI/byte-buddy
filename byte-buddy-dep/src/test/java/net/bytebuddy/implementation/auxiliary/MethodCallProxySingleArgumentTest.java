@@ -10,8 +10,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.Callable;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 
 @RunWith(Parameterized.class)
 public class MethodCallProxySingleArgumentTest<T extends CallTraceable> extends AbstractMethodCallProxyTest {
@@ -69,7 +69,7 @@ public class MethodCallProxySingleArgumentTest<T extends CallTraceable> extends 
         Class<?> auxiliaryType = proxyOnlyDeclaredMethodOf(targetType);
         Constructor<?> constructor = auxiliaryType.getDeclaredConstructor(targetType, valueType);
         constructor.setAccessible(true);
-        T proxiedInstance = targetType.newInstance();
+        T proxiedInstance = targetType.getDeclaredConstructor().newInstance();
         ((Runnable) constructor.newInstance(proxiedInstance, value)).run();
         proxiedInstance.assertOnlyCall(FOO, value);
     }
@@ -79,7 +79,7 @@ public class MethodCallProxySingleArgumentTest<T extends CallTraceable> extends 
         Class<?> auxiliaryType = proxyOnlyDeclaredMethodOf(targetType);
         Constructor<?> constructor = auxiliaryType.getDeclaredConstructor(targetType, valueType);
         constructor.setAccessible(true);
-        T proxiedInstance = targetType.newInstance();
+        T proxiedInstance = targetType.getDeclaredConstructor().newInstance();
         assertThat(((Callable<?>) constructor.newInstance(proxiedInstance, value)).call(), is(value));
         proxiedInstance.assertOnlyCall(FOO, value);
     }

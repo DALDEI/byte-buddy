@@ -1,13 +1,14 @@
 package net.bytebuddy.description.field;
 
+import net.bytebuddy.build.CachedReturnPlugin;
 import net.bytebuddy.description.ByteCodeElement;
 import net.bytebuddy.description.ModifierReviewable;
 import net.bytebuddy.description.NamedElement;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.annotation.AnnotationList;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.signature.SignatureWriter;
 
 import java.lang.reflect.Field;
@@ -16,13 +17,12 @@ import java.lang.reflect.Modifier;
 import java.util.Collections;
 import java.util.List;
 
-import static net.bytebuddy.matcher.ElementMatchers.none;
-
 /**
  * Implementations of this interface describe a Java field. Implementations of this interface must provide meaningful
  * {@code equal(Object)} and {@code hashCode()} implementations.
  */
 public interface FieldDescription extends ByteCodeElement,
+        ModifierReviewable.ForFieldDescription,
         NamedElement.WithGenericName,
         ByteCodeElement.TypeDependant<FieldDescription.InDefinedShape, FieldDescription.Token> {
 
@@ -36,14 +36,42 @@ public interface FieldDescription extends ByteCodeElement,
      *
      * @return The type of the described field.
      */
-    GenericTypeDescription getType();
+    TypeDescription.Generic getType();
+
+    /**
+     * Returns the field's actual modifiers as it is present in a class file, i.e. its modifiers including
+     * a flag if this field is deprecated.
+     *
+     * @return The field's actual modifiers.
+     */
+    int getActualModifiers();
+
+    /**
+     * Returns a signature token representing this field.
+     *
+     * @return A signature token representing this field.
+     */
+    SignatureToken asSignatureToken();
+
+    /**
+     * Represents a field description in its generic shape, i.e. in the shape it is defined by a generic or raw type.
+     */
+    interface InGenericShape extends FieldDescription {
+
+        /**
+         * {@inheritDoc}
+         */
+        TypeDescription.Generic getDeclaringType();
+    }
 
     /**
      * Represents a field in its defined shape, i.e. in the form it is defined by a class without its type variables being resolved.
      */
-    interface InDefinedShape extends FieldDescription, ByteCodeElement.Accessible {
+    interface InDefinedShape extends FieldDescription {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         TypeDescription getDeclaringType();
 
         /**
@@ -51,14 +79,11 @@ public interface FieldDescription extends ByteCodeElement,
          */
         abstract class AbstractBase extends FieldDescription.AbstractBase implements InDefinedShape {
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public InDefinedShape asDefined() {
                 return this;
-            }
-
-            @Override
-            public boolean isAccessibleTo(TypeDescription typeDescription) {
-                return isVisibleTo(typeDescription) && getDeclaringType().isVisibleTo(typeDescription);
             }
         }
     }
@@ -68,75 +93,113 @@ public interface FieldDescription extends ByteCodeElement,
      */
     abstract class AbstractBase extends ModifierReviewable.AbstractBase implements FieldDescription {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getInternalName() {
             return getName();
         }
 
-        @Override
-        public String getSourceCodeName() {
+        /**
+         * {@inheritDoc}
+         */
+        public String getActualName() {
             return getName();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getDescriptor() {
             return getType().asErasure().getDescriptor();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getGenericSignature() {
-            GenericTypeDescription fieldType = getType();
+            TypeDescription.Generic fieldType = getType();
             try {
                 return fieldType.getSort().isNonGeneric()
                         ? NON_GENERIC_SIGNATURE
-                        : fieldType.accept(new GenericTypeDescription.Visitor.ForSignatureVisitor(new SignatureWriter())).toString();
+                        : fieldType.accept(new TypeDescription.Generic.Visitor.ForSignatureVisitor(new SignatureWriter())).toString();
             } catch (GenericSignatureFormatError ignored) {
                 return NON_GENERIC_SIGNATURE;
             }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isVisibleTo(TypeDescription typeDescription) {
             return getDeclaringType().asErasure().isVisibleTo(typeDescription)
                     && (isPublic()
-                    || typeDescription.equals(getDeclaringType())
+                    || typeDescription.equals(getDeclaringType().asErasure())
                     || (isProtected() && getDeclaringType().asErasure().isAssignableFrom(typeDescription))
                     || (!isPrivate() && typeDescription.isSamePackage(getDeclaringType().asErasure())));
         }
 
-        @Override
-        public FieldDescription.Token asToken() {
-            return asToken(none());
+        /**
+         * {@inheritDoc}
+         */
+        public boolean isAccessibleTo(TypeDescription typeDescription) {
+            return isPublic()
+                    || typeDescription.equals(getDeclaringType().asErasure())
+                    || (!isPrivate() && typeDescription.isSamePackage(getDeclaringType().asErasure()));
         }
 
-        @Override
-        public FieldDescription.Token asToken(ElementMatcher<? super GenericTypeDescription> targetTypeMatcher) {
+        /**
+         * {@inheritDoc}
+         */
+        public int getActualModifiers() {
+            return getModifiers() | (getDeclaredAnnotations().isAnnotationPresent(Deprecated.class)
+                    ? Opcodes.ACC_DEPRECATED
+                    : EMPTY_MASK);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public FieldDescription.Token asToken(ElementMatcher<? super TypeDescription> matcher) {
             return new FieldDescription.Token(getName(),
                     getModifiers(),
-                    getType().accept(new GenericTypeDescription.Visitor.Substitutor.ForDetachment(targetTypeMatcher)),
+                    getType().accept(new TypeDescription.Generic.Visitor.Substitutor.ForDetachment(matcher)),
                     getDeclaredAnnotations());
         }
 
-        @Override
-        public boolean equals(Object other) {
-            return other == this || other instanceof FieldDescription
-                    && getName().equals(((FieldDescription) other).getName())
-                    && getDeclaringType().equals(((FieldDescription) other).getDeclaringType());
+        /**
+         * {@inheritDoc}
+         */
+        public SignatureToken asSignatureToken() {
+            return new SignatureToken(getInternalName(), getType().asErasure());
         }
 
         @Override
         public int hashCode() {
-            return getDeclaringType().hashCode() + 31 * getName().hashCode();
+            return getDeclaringType().hashCode() + 31 * (17 + getName().hashCode());
         }
 
         @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            } else if (!(other instanceof FieldDescription)) {
+                return false;
+            }
+            FieldDescription fieldDescription = (FieldDescription) other;
+            return getName().equals(fieldDescription.getName()) && getDeclaringType().equals(fieldDescription.getDeclaringType());
+        }
+
+        /**
+         * {@inheritDoc}
+         */
         public String toGenericString() {
             StringBuilder stringBuilder = new StringBuilder();
             if (getModifiers() != EMPTY_MASK) {
-                stringBuilder.append(Modifier.toString(getModifiers())).append(" ");
+                stringBuilder.append(Modifier.toString(getModifiers())).append(' ');
             }
-            stringBuilder.append(getType().getSourceCodeName()).append(" ");
-            stringBuilder.append(getDeclaringType().asErasure().getSourceCodeName()).append(".");
+            stringBuilder.append(getType().getActualName()).append(' ');
+            stringBuilder.append(getDeclaringType().asErasure().getActualName()).append('.');
             return stringBuilder.append(getName()).toString();
         }
 
@@ -144,10 +207,10 @@ public interface FieldDescription extends ByteCodeElement,
         public String toString() {
             StringBuilder stringBuilder = new StringBuilder();
             if (getModifiers() != EMPTY_MASK) {
-                stringBuilder.append(Modifier.toString(getModifiers())).append(" ");
+                stringBuilder.append(Modifier.toString(getModifiers())).append(' ');
             }
-            stringBuilder.append(getType().asErasure().getSourceCodeName()).append(" ");
-            stringBuilder.append(getDeclaringType().asErasure().getSourceCodeName()).append(".");
+            stringBuilder.append(getType().asErasure().getActualName()).append(' ');
+            stringBuilder.append(getDeclaringType().asErasure().getActualName()).append('.');
             return stringBuilder.append(getName()).toString();
         }
     }
@@ -171,32 +234,48 @@ public interface FieldDescription extends ByteCodeElement,
             this.field = field;
         }
 
-        @Override
-        public GenericTypeDescription getType() {
-            return new GenericTypeDescription.LazyProjection.OfLoadedFieldType(field);
+        /**
+         * {@inheritDoc}
+         */
+        public TypeDescription.Generic getType() {
+            if (TypeDescription.AbstractBase.RAW_TYPES) {
+                return TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(field.getType());
+            }
+            return new TypeDescription.Generic.LazyProjection.ForLoadedFieldType(field);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
+        @CachedReturnPlugin.Enhance("declaredAnnotations")
         public AnnotationList getDeclaredAnnotations() {
-            return new AnnotationList.ForLoadedAnnotation(field.getDeclaredAnnotations());
+            return new AnnotationList.ForLoadedAnnotations(field.getDeclaredAnnotations());
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getName() {
             return field.getName();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public TypeDescription getDeclaringType() {
-            return new TypeDescription.ForLoadedType(field.getDeclaringClass());
+            return TypeDescription.ForLoadedType.of(field.getDeclaringClass());
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int getModifiers() {
             return field.getModifiers();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isSynthetic() {
             return field.isSynthetic();
         }
@@ -226,7 +305,7 @@ public interface FieldDescription extends ByteCodeElement,
         /**
          * The type of the field.
          */
-        private final GenericTypeDescription fieldType;
+        private final TypeDescription.Generic fieldType;
 
         /**
          * The annotations of this field.
@@ -259,7 +338,7 @@ public interface FieldDescription extends ByteCodeElement,
         public Latent(TypeDescription declaringType,
                       String fieldName,
                       int modifiers,
-                      GenericTypeDescription fieldType,
+                      TypeDescription.Generic fieldType,
                       List<? extends AnnotationDescription> declaredAnnotations) {
             this.declaringType = declaringType;
             this.fieldName = fieldName;
@@ -268,27 +347,37 @@ public interface FieldDescription extends ByteCodeElement,
             this.declaredAnnotations = declaredAnnotations;
         }
 
-        @Override
-        public GenericTypeDescription getType() {
-            return fieldType.accept(GenericTypeDescription.Visitor.Substitutor.ForAttachment.of(this));
+        /**
+         * {@inheritDoc}
+         */
+        public TypeDescription.Generic getType() {
+            return fieldType.accept(TypeDescription.Generic.Visitor.Substitutor.ForAttachment.of(this));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public AnnotationList getDeclaredAnnotations() {
             return new AnnotationList.Explicit(declaredAnnotations);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getName() {
             return fieldName;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public TypeDescription getDeclaringType() {
             return declaringType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int getModifiers() {
             return modifiers;
         }
@@ -297,12 +386,12 @@ public interface FieldDescription extends ByteCodeElement,
     /**
      * A field description that represents a given field but with a substituted field type.
      */
-    class TypeSubstituting extends AbstractBase {
+    class TypeSubstituting extends AbstractBase implements InGenericShape {
 
         /**
          * The declaring type of the field.
          */
-        private final GenericTypeDescription declaringType;
+        private final TypeDescription.Generic declaringType;
 
         /**
          * The represented field.
@@ -312,7 +401,7 @@ public interface FieldDescription extends ByteCodeElement,
         /**
          * A visitor that is applied to the field type.
          */
-        private final GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor;
+        private final TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor;
 
         /**
          * Creates a field description with a substituted field type.
@@ -321,48 +410,59 @@ public interface FieldDescription extends ByteCodeElement,
          * @param fieldDescription The represented field.
          * @param visitor          A visitor that is applied to the field type.
          */
-        public TypeSubstituting(GenericTypeDescription declaringType,
+        public TypeSubstituting(TypeDescription.Generic declaringType,
                                 FieldDescription fieldDescription,
-                                GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor) {
+                                TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor) {
             this.declaringType = declaringType;
             this.fieldDescription = fieldDescription;
             this.visitor = visitor;
         }
 
-        @Override
-        public GenericTypeDescription getType() {
+        /**
+         * {@inheritDoc}
+         */
+        public TypeDescription.Generic getType() {
             return fieldDescription.getType().accept(visitor);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public AnnotationList getDeclaredAnnotations() {
             return fieldDescription.getDeclaredAnnotations();
         }
 
-        @Override
-        public GenericTypeDescription getDeclaringType() {
+        /**
+         * {@inheritDoc}
+         */
+        public TypeDescription.Generic getDeclaringType() {
             return declaringType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int getModifiers() {
             return fieldDescription.getModifiers();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getName() {
             return fieldDescription.getName();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public InDefinedShape asDefined() {
             return fieldDescription.asDefined();
         }
     }
 
     /**
-     * A token that represents a field's shape. A field token is equal to another token when the other field
-     * tokens's name is equal to this token.
+     * A token representing a field's properties detached from a type.
      */
     class Token implements ByteCodeElement.Token<Token> {
 
@@ -379,7 +479,7 @@ public interface FieldDescription extends ByteCodeElement,
         /**
          * The type of the represented field.
          */
-        private final GenericTypeDescription type;
+        private final TypeDescription.Generic type;
 
         /**
          * The annotations of the represented field.
@@ -387,25 +487,25 @@ public interface FieldDescription extends ByteCodeElement,
         private final List<? extends AnnotationDescription> annotations;
 
         /**
-         * Creates a new field token without annotations.
+         * Creates a new field token without annotations. The field type must be represented in its detached form.
          *
          * @param name      The name of the represented field.
          * @param modifiers The modifiers of the represented field.
          * @param type      The type of the represented field.
          */
-        public Token(String name, int modifiers, GenericTypeDescription type) {
+        public Token(String name, int modifiers, TypeDescription.Generic type) {
             this(name, modifiers, type, Collections.<AnnotationDescription>emptyList());
         }
 
         /**
-         * Creates a new field token.
+         * Creates a new field token. The field type must be represented in its detached form.
          *
          * @param name        The name of the represented field.
          * @param modifiers   The modifiers of the represented field.
          * @param type        The type of the represented field.
          * @param annotations The annotations of the represented field.
          */
-        public Token(String name, int modifiers, GenericTypeDescription type, List<? extends AnnotationDescription> annotations) {
+        public Token(String name, int modifiers, TypeDescription.Generic type, List<? extends AnnotationDescription> annotations) {
             this.name = name;
             this.modifiers = modifiers;
             this.type = type;
@@ -426,7 +526,7 @@ public interface FieldDescription extends ByteCodeElement,
          *
          * @return The type of the represented field.
          */
-        public GenericTypeDescription getType() {
+        public TypeDescription.Generic getType() {
             return type;
         }
 
@@ -448,43 +548,115 @@ public interface FieldDescription extends ByteCodeElement,
             return new AnnotationList.Explicit(annotations);
         }
 
-        @Override
-        public Token accept(GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor) {
-            return new Token(getName(),
-                    getModifiers(),
-                    getType().accept(visitor),
-                    getAnnotations());
+        /**
+         * {@inheritDoc}
+         */
+        public Token accept(TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor) {
+            return new Token(name,
+                    modifiers,
+                    type.accept(visitor),
+                    annotations);
         }
 
-        @Override
-        public boolean isIdenticalTo(Token token) {
-            return getName().equals(token.getName())
-                    && getModifiers() == token.getModifiers()
-                    && getType().equals(token.getType())
-                    && getAnnotations().equals(token.getAnnotations());
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (!(other instanceof Token)) return false;
-            Token token = (Token) other;
-            return getName().equals(token.getName());
+        /**
+         * Creates a signature token that represents the method that is represented by this token.
+         *
+         * @param declaringType The declaring type of the field that this token represents.
+         * @return A signature token representing this token.
+         */
+        public SignatureToken asSignatureToken(TypeDescription declaringType) {
+            return new SignatureToken(name, type.accept(new TypeDescription.Generic.Visitor.Reducing(declaringType)));
         }
 
         @Override
         public int hashCode() {
-            return getName().hashCode();
+            int result = name.hashCode();
+            result = 31 * result + modifiers;
+            result = 31 * result + type.hashCode();
+            result = 31 * result + annotations.hashCode();
+            return result;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            } else if (other == null || getClass() != other.getClass()) {
+                return false;
+            }
+            Token token = (Token) other;
+            return modifiers == token.modifiers
+                    && name.equals(token.name)
+                    && type.equals(token.type)
+                    && annotations.equals(token.annotations);
+        }
+    }
+
+    /**
+     * A token that uniquely identifies a field by its name and type erasure.
+     */
+    class SignatureToken {
+
+        /**
+         * The field's name.
+         */
+        private final String name;
+
+        /**
+         * The field's raw type.
+         */
+        private final TypeDescription type;
+
+        /**
+         * Creates a new signature token.
+         *
+         * @param name The field's name.
+         * @param type The field's raw type.
+         */
+        public SignatureToken(String name, TypeDescription type) {
+            this.name = name;
+            this.type = type;
+        }
+
+        /**
+         * Returns the name of the represented field.
+         *
+         * @return The name of the represented field.
+         */
+        public String getName() {
+            return name;
+        }
+
+        /**
+         * Returns the type of the represented field.
+         *
+         * @return The type of the represented field.
+         */
+        public TypeDescription getType() {
+            return type;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = name.hashCode();
+            result = 31 * result + type.hashCode();
+            return result;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            } else if (!(other instanceof SignatureToken)) {
+                return false;
+            }
+            SignatureToken signatureToken = (SignatureToken) other;
+            return name.equals(signatureToken.name) && type.equals(signatureToken.type);
         }
 
         @Override
         public String toString() {
-            return "FieldDescription.Token{" +
-                    "name='" + name + '\'' +
-                    ", modifiers=" + modifiers +
-                    ", type=" + type +
-                    ", annotations=" + annotations +
-                    '}';
+            return type + " " + name;
         }
     }
 }

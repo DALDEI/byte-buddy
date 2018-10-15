@@ -10,12 +10,11 @@ import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.implementation.bytecode.collection.ArrayFactory;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
+import net.bytebuddy.utility.CompoundList;
 
 import java.lang.annotation.*;
 import java.util.ArrayList;
 import java.util.List;
-
-import static net.bytebuddy.utility.ByteBuddyCommons.join;
 
 /**
  * Parameters that are annotated with this annotation will be assigned a collection (or an array) containing
@@ -100,11 +99,6 @@ public @interface AllArguments {
         protected boolean isStrict() {
             return strict;
         }
-
-        @Override
-        public String toString() {
-            return "AllArguments.Assignment." + name();
-        }
     }
 
     /**
@@ -121,30 +115,40 @@ public @interface AllArguments {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<AllArguments> getHandledType() {
             return AllArguments.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<AllArguments> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
-            if (!target.getType().isArray()) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
+            TypeDescription.Generic componentType;
+            if (target.getType().represents(Object.class)) {
+                componentType = TypeDescription.Generic.OBJECT;
+            } else if (target.getType().isArray()) {
+                componentType = target.getType().getComponentType();
+            } else {
                 throw new IllegalStateException("Expected an array type for all argument annotation on " + source);
             }
-            ArrayFactory arrayFactory = ArrayFactory.forType(target.getType().asErasure().getComponentType());
             boolean includeThis = !source.isStatic() && annotation.loadSilent().includeSelf();
             List<StackManipulation> stackManipulations = new ArrayList<StackManipulation>(source.getParameters().size() + (includeThis ? 1 : 0));
             int offset = source.isStatic() || includeThis ? 0 : 1;
-            for (TypeDescription sourceParameter : includeThis
-                    ? join(implementationTarget.getTypeDescription(), source.getParameters().asTypeList().asErasures())
-                    : source.getParameters().asTypeList().asErasures()) {
+            for (TypeDescription.Generic sourceParameter : includeThis
+                    ? CompoundList.of(implementationTarget.getInstrumentedType().asGenericType(), source.getParameters().asTypeList())
+                    : source.getParameters().asTypeList()) {
                 StackManipulation stackManipulation = new StackManipulation.Compound(
-                        MethodVariableAccess.forType(sourceParameter).loadOffset(offset),
-                        assigner.assign(sourceParameter, arrayFactory.getComponentType(), RuntimeType.Verifier.check(target)));
+                        MethodVariableAccess.of(sourceParameter).loadFrom(offset),
+                        assigner.assign(sourceParameter, componentType, typing)
+                );
                 if (stackManipulation.isValid()) {
                     stackManipulations.add(stackManipulation);
                 } else if (annotation.loadSilent().value().isStrict()) {
@@ -152,12 +156,7 @@ public @interface AllArguments {
                 }
                 offset += sourceParameter.getStackSize().getSize();
             }
-            return new MethodDelegationBinder.ParameterBinding.Anonymous(arrayFactory.withValues(stackManipulations));
-        }
-
-        @Override
-        public String toString() {
-            return "AllArguments.Binder." + name();
+            return new MethodDelegationBinder.ParameterBinding.Anonymous(ArrayFactory.forType(componentType).withValues(stackManipulations));
         }
     }
 }

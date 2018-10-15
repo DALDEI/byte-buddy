@@ -3,7 +3,6 @@ package net.bytebuddy.implementation.bytecode.constant;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
@@ -15,8 +14,8 @@ import org.objectweb.asm.MethodVisitor;
 import java.util.Arrays;
 import java.util.Collection;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -62,10 +61,5 @@ public class LongConstantTest {
         verify(methodVisitor).visitLdcInsn(value);
         verifyNoMoreInteractions(methodVisitor);
         verifyZeroInteractions(implementationContext);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(LongConstant.ConstantPool.class).apply();
     }
 }

@@ -1,17 +1,19 @@
 package net.bytebuddy.dynamic.scaffold.subclass;
 
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.scaffold.MethodGraph;
-import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
 
+import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.when;
@@ -25,37 +27,34 @@ public class SubclassImplementationTargetFactoryTest {
     private MethodGraph.Linked methodGraph;
 
     @Mock
-    private TypeDescription instrumentedType, superType;
+    private TypeDescription instrumentedType, rawSuperClass;
 
-    private Implementation.Target.Factory factory;
+    @Mock
+    private ClassFileVersion classFileVersion;
+
+    @Mock
+    private TypeDescription.Generic superClass;
 
     @Before
     public void setUp() throws Exception {
-        when(instrumentedType.getSuperType()).thenReturn(superType);
-        when(superType.asErasure()).thenReturn(superType);
-        when(superType.getDeclaredMethods()).thenReturn(new MethodList.Empty());
-        factory = new SubclassImplementationTarget.Factory(SubclassImplementationTarget.OriginTypeResolver.SUPER_TYPE);
+        when(instrumentedType.getSuperClass()).thenReturn(superClass);
+        when(superClass.asErasure()).thenReturn(rawSuperClass);
+        when(superClass.getDeclaredMethods()).thenReturn(new MethodList.Empty<MethodDescription.InGenericShape>());
     }
 
     @Test
-    public void testReturnsSubclassimplementationTarget() throws Exception {
-        assertThat(factory.make(instrumentedType, methodGraph) instanceof SubclassImplementationTarget, is(true));
+    public void testReturnsSubclassImplementationTarget() throws Exception {
+        assertThat(SubclassImplementationTarget.Factory.SUPER_CLASS.make(instrumentedType, methodGraph, classFileVersion), instanceOf(SubclassImplementationTarget.class));
+        assertThat(SubclassImplementationTarget.Factory.LEVEL_TYPE.make(instrumentedType, methodGraph, classFileVersion), instanceOf(SubclassImplementationTarget.class));
     }
 
     @Test
-    public void testOriginTypeSuperType() throws Exception {
-        assertThat(new SubclassImplementationTarget.Factory(SubclassImplementationTarget.OriginTypeResolver.SUPER_TYPE)
-                .make(instrumentedType, methodGraph).getOriginType(), is(superType));
+    public void testOriginTypeSuperClass() throws Exception {
+        assertThat(SubclassImplementationTarget.Factory.SUPER_CLASS.make(instrumentedType, methodGraph, classFileVersion).getOriginType(), is((TypeDefinition) superClass));
     }
 
     @Test
     public void testOriginTypeLevelType() throws Exception {
-        assertThat(new SubclassImplementationTarget.Factory(SubclassImplementationTarget.OriginTypeResolver.LEVEL_TYPE)
-                .make(instrumentedType, methodGraph).getOriginType(), is(instrumentedType));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(SubclassImplementationTarget.Factory.class).apply();
+        assertThat(SubclassImplementationTarget.Factory.LEVEL_TYPE.make(instrumentedType, methodGraph, classFileVersion).getOriginType(), is((TypeDefinition) instrumentedType));
     }
 }

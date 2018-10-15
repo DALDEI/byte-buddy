@@ -1,42 +1,59 @@
 package net.bytebuddy.dynamic.scaffold;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import net.bytebuddy.ClassFileVersion;
-import net.bytebuddy.asm.ClassVisitorWrapper;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationList;
+import net.bytebuddy.description.annotation.AnnotationValue;
 import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.method.ParameterList;
+import net.bytebuddy.description.modifier.ModifierContributor;
+import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.PackageDescription;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeList;
+import net.bytebuddy.description.type.TypeList;
 import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.TypeResolutionStrategy;
 import net.bytebuddy.dynamic.scaffold.inline.MethodRebaseResolver;
+import net.bytebuddy.dynamic.scaffold.inline.RebaseImplementationTarget;
+import net.bytebuddy.dynamic.scaffold.subclass.SubclassImplementationTarget;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.LoadedTypeInitializer;
-import net.bytebuddy.implementation.attribute.AnnotationAppender;
-import net.bytebuddy.implementation.attribute.FieldAttributeAppender;
-import net.bytebuddy.implementation.attribute.MethodAttributeAppender;
-import net.bytebuddy.implementation.attribute.TypeAttributeAppender;
+import net.bytebuddy.implementation.attribute.*;
 import net.bytebuddy.implementation.auxiliary.AuxiliaryType;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
+import net.bytebuddy.implementation.bytecode.constant.DefaultValue;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
-import net.bytebuddy.utility.RandomString;
+import net.bytebuddy.pool.TypePool;
+import net.bytebuddy.utility.CompoundList;
+import net.bytebuddy.utility.OpenedClassReader;
+import net.bytebuddy.utility.privilege.GetSystemPropertyAction;
+import net.bytebuddy.utility.visitor.MetadataAwareClassVisitor;
 import org.objectweb.asm.*;
+import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.Remapper;
-import org.objectweb.asm.commons.RemappingClassAdapter;
-import org.objectweb.asm.commons.RemappingMethodAdapter;
 import org.objectweb.asm.commons.SimpleRemapper;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.security.AccessController;
+import java.security.PrivilegedExceptionAction;
 import java.util.*;
 
-import static net.bytebuddy.utility.ByteBuddyCommons.join;
+import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * A type writer is a utility for writing an actual class file using the ASM library.
@@ -46,11 +63,19 @@ import static net.bytebuddy.utility.ByteBuddyCommons.join;
 public interface TypeWriter<T> {
 
     /**
+     * A system property that indicates a folder for Byte Buddy to dump class files of all types that it creates.
+     * If this property is not set, Byte Buddy does not dump any class files. This property is only read a single
+     * time which is why it must be set on application start-up.
+     */
+    String DUMP_PROPERTY = "net.bytebuddy.dump";
+
+    /**
      * Creates the dynamic type that is described by this type writer.
      *
+     * @param typeResolver The type resolution strategy to use.
      * @return An unloaded dynamic type that describes the created type.
      */
-    DynamicType.Unloaded<T> make();
+    DynamicType.Unloaded<T> make(TypeResolutionStrategy.Resolved typeResolver);
 
     /**
      * An field pool that allows a lookup for how to implement a field.
@@ -75,6 +100,20 @@ public interface TypeWriter<T> {
         interface Record {
 
             /**
+             * Determines if this record is implicit, i.e is not defined by a {@link FieldPool}.
+             *
+             * @return {@code true} if this record is implicit.
+             */
+            boolean isImplicit();
+
+            /**
+             * Returns the field that this record represents.
+             *
+             * @return The field that this record represents.
+             */
+            FieldDescription getField();
+
+            /**
              * Returns the field attribute appender for a given field.
              *
              * @return The attribute appender to be applied on the given field.
@@ -82,24 +121,34 @@ public interface TypeWriter<T> {
             FieldAttributeAppender getFieldAppender();
 
             /**
-             * Returns the default value for the field that is represented by this entry. This value might be
-             * {@code null} if no such value is set.
+             * Resolves the default value that this record represents. This is not possible for implicit records.
              *
-             * @return The default value for the field that is represented by this entry.
+             * @param defaultValue The default value that was defined previously or {@code null} if no default value is defined.
+             * @return The default value for the represented field or {@code null} if no default value is to be defined.
              */
-            Object getDefaultValue();
+            Object resolveDefault(Object defaultValue);
 
             /**
              * Writes this entry to a given class visitor.
              *
-             * @param classVisitor The class visitor to which this entry is to be written to.
+             * @param classVisitor                 The class visitor to which this entry is to be written to.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply when writing annotations.
              */
-            void apply(ClassVisitor classVisitor);
+            void apply(ClassVisitor classVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory);
+
+            /**
+             * Applies this record to a field visitor. This is not possible for implicit records.
+             *
+             * @param fieldVisitor                 The field visitor onto which this record is to be applied.
+             * @param annotationValueFilterFactory The annotation value filter factory to use for annotations.
+             */
+            void apply(FieldVisitor fieldVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory);
 
             /**
              * A record for a simple field without a default value where all of the field's declared annotations are appended.
              */
-            class ForSimpleField implements Record {
+            @HashCodeAndEqualsPlugin.Enhance
+            class ForImplicitField implements Record {
 
                 /**
                  * The implemented field.
@@ -111,56 +160,68 @@ public interface TypeWriter<T> {
                  *
                  * @param fieldDescription The described field.
                  */
-                public ForSimpleField(FieldDescription fieldDescription) {
+                public ForImplicitField(FieldDescription fieldDescription) {
                     this.fieldDescription = fieldDescription;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
+                public boolean isImplicit() {
+                    return true;
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
+                public FieldDescription getField() {
+                    return fieldDescription;
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
                 public FieldAttributeAppender getFieldAppender() {
-                    return new FieldAttributeAppender.ForField(fieldDescription, AnnotationAppender.ValueFilter.AppendDefaults.INSTANCE);
+                    throw new IllegalStateException("An implicit field record does not expose a field appender: " + this);
                 }
 
-                @Override
-                public Object getDefaultValue() {
-                    return FieldDescription.NO_DEFAULT_VALUE;
+                /**
+                 * {@inheritDoc}
+                 */
+                public Object resolveDefault(Object defaultValue) {
+                    throw new IllegalStateException("An implicit field record does not expose a default value: " + this);
                 }
 
-                @Override
-                public void apply(ClassVisitor classVisitor) {
-                    FieldVisitor fieldVisitor = classVisitor.visitField(fieldDescription.getModifiers(),
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(ClassVisitor classVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    FieldVisitor fieldVisitor = classVisitor.visitField(fieldDescription.getActualModifiers(),
                             fieldDescription.getInternalName(),
                             fieldDescription.getDescriptor(),
                             fieldDescription.getGenericSignature(),
                             FieldDescription.NO_DEFAULT_VALUE);
-                    getFieldAppender().apply(fieldVisitor, fieldDescription);
-                    fieldVisitor.visitEnd();
+                    if (fieldVisitor != null) {
+                        FieldAttributeAppender.ForInstrumentedField.INSTANCE.apply(fieldVisitor,
+                                fieldDescription,
+                                annotationValueFilterFactory.on(fieldDescription));
+                        fieldVisitor.visitEnd();
+                    }
                 }
 
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    ForSimpleField that = (ForSimpleField) other;
-                    return fieldDescription.equals(that.fieldDescription);
-                }
-
-                @Override
-                public int hashCode() {
-                    return fieldDescription.hashCode();
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.FieldPool.Record.ForSimpleField{" +
-                            "fieldDescription=" + fieldDescription +
-                            '}';
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(FieldVisitor fieldVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    throw new IllegalStateException("An implicit field record is not intended for partial application: " + this);
                 }
             }
 
             /**
              * A record for a rich field with attributes and a potential default value.
              */
-            class ForRichField implements Record {
+            @HashCodeAndEqualsPlugin.Enhance
+            class ForExplicitField implements Record {
 
                 /**
                  * The attribute appender for the field.
@@ -184,59 +245,81 @@ public interface TypeWriter<T> {
                  * @param defaultValue      The field's default value.
                  * @param fieldDescription  The implemented field.
                  */
-                public ForRichField(FieldAttributeAppender attributeAppender, Object defaultValue, FieldDescription fieldDescription) {
+                public ForExplicitField(FieldAttributeAppender attributeAppender, Object defaultValue, FieldDescription fieldDescription) {
                     this.attributeAppender = attributeAppender;
                     this.defaultValue = defaultValue;
                     this.fieldDescription = fieldDescription;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
+                public boolean isImplicit() {
+                    return false;
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
+                public FieldDescription getField() {
+                    return fieldDescription;
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
                 public FieldAttributeAppender getFieldAppender() {
                     return attributeAppender;
                 }
 
-                @Override
-                public Object getDefaultValue() {
-                    return defaultValue;
+                /**
+                 * {@inheritDoc}
+                 */
+                public Object resolveDefault(Object defaultValue) {
+                    return this.defaultValue == null
+                            ? defaultValue
+                            : this.defaultValue;
                 }
 
-                @Override
-                public void apply(ClassVisitor classVisitor) {
-                    FieldVisitor fieldVisitor = classVisitor.visitField(fieldDescription.getModifiers(),
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(ClassVisitor classVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    FieldVisitor fieldVisitor = classVisitor.visitField(fieldDescription.getActualModifiers(),
                             fieldDescription.getInternalName(),
                             fieldDescription.getDescriptor(),
                             fieldDescription.getGenericSignature(),
-                            getDefaultValue());
-                    attributeAppender.apply(fieldVisitor, fieldDescription);
-                    fieldVisitor.visitEnd();
+                            resolveDefault(FieldDescription.NO_DEFAULT_VALUE));
+                    if (fieldVisitor != null) {
+                        attributeAppender.apply(fieldVisitor, fieldDescription, annotationValueFilterFactory.on(fieldDescription));
+                        fieldVisitor.visitEnd();
+                    }
                 }
 
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    ForRichField that = (ForRichField) other;
-                    return attributeAppender.equals(that.attributeAppender)
-                            && !(defaultValue != null ? !defaultValue.equals(that.defaultValue) : that.defaultValue != null)
-                            && fieldDescription.equals(that.fieldDescription);
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(FieldVisitor fieldVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    attributeAppender.apply(fieldVisitor, fieldDescription, annotationValueFilterFactory.on(fieldDescription));
                 }
+            }
+        }
 
-                @Override
-                public int hashCode() {
-                    int result = attributeAppender.hashCode();
-                    result = 31 * result + (defaultValue != null ? defaultValue.hashCode() : 0);
-                    result = 31 * result + fieldDescription.hashCode();
-                    return result;
-                }
+        /**
+         * A field pool that does not allow any look ups.
+         */
+        enum Disabled implements FieldPool {
 
-                @Override
-                public String toString() {
-                    return "TypeWriter.FieldPool.Record.ForRichField{" +
-                            "attributeAppender=" + attributeAppender +
-                            ", defaultValue=" + defaultValue +
-                            ", fieldDescription=" + fieldDescription +
-                            '}';
-                }
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * {@inheritDoc}
+             */
+            public Record target(FieldDescription fieldDescription) {
+                throw new IllegalStateException("Cannot look up field from disabld pool");
             }
         }
     }
@@ -269,12 +352,19 @@ public interface TypeWriter<T> {
             Sort getSort();
 
             /**
-             * Returns the method that is implemented where the returned method ressembles a potential transformation. An implemented
+             * Returns the method that is implemented where the returned method resembles a potential transformation. An implemented
              * method is only defined if a method is not {@link Record.Sort#SKIPPED}.
              *
              * @return The implemented method.
              */
-            MethodDescription getImplementedMethod();
+            MethodDescription getMethod();
+
+            /**
+             * The visibility to enforce for this method.
+             *
+             * @return The visibility to enforce for this method.
+             */
+            Visibility getVisibility();
 
             /**
              * Prepends the given method appender to this entry.
@@ -287,10 +377,11 @@ public interface TypeWriter<T> {
             /**
              * Applies this method entry. This method can always be called and might be a no-op.
              *
-             * @param classVisitor          The class visitor to which this entry should be applied.
-             * @param implementationContext The implementation context to which this entry should be applied.
+             * @param classVisitor                 The class visitor to which this entry should be applied.
+             * @param implementationContext        The implementation context to which this entry should be applied.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply when writing annotations.
              */
-            void apply(ClassVisitor classVisitor, Implementation.Context implementationContext);
+            void apply(ClassVisitor classVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory);
 
             /**
              * Applies the head of this entry. Applying an entry is only possible if a method is defined, i.e. the sort of this entry is not
@@ -304,10 +395,30 @@ public interface TypeWriter<T> {
              * Applies the body of this entry. Applying the body of an entry is only possible if a method is implemented, i.e. the sort of this
              * entry is {@link Record.Sort#IMPLEMENTED}.
              *
+             * @param methodVisitor                The method visitor to which this entry should be applied.
+             * @param implementationContext        The implementation context to which this entry should be applied.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply when writing annotations.
+             */
+            void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory);
+
+            /**
+             * Applies the attributes of this entry. Applying the body of an entry is only possible if a method is implemented, i.e. the sort of this
+             * entry is {@link Record.Sort#DEFINED}.
+             *
+             * @param methodVisitor                The method visitor to which this entry should be applied.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply when writing annotations.
+             */
+            void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory);
+
+            /**
+             * Applies the code of this entry. Applying the body of an entry is only possible if a method is implemented, i.e. the sort of this
+             * entry is {@link Record.Sort#IMPLEMENTED}.
+             *
              * @param methodVisitor         The method visitor to which this entry should be applied.
              * @param implementationContext The implementation context to which this entry should be applied.
+             * @return The size requirements of the implemented code.
              */
-            void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext);
+            ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext);
 
             /**
              * The sort of an entry.
@@ -367,56 +478,90 @@ public interface TypeWriter<T> {
                 public boolean isImplemented() {
                     return implement;
                 }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.MethodPool.Entry.Sort." + name();
-                }
             }
 
             /**
              * A canonical implementation of a method that is not declared but inherited by the instrumented type.
              */
-            enum ForNonDefinedMethod implements Record {
+            @HashCodeAndEqualsPlugin.Enhance
+            class ForNonImplementedMethod implements Record {
 
                 /**
-                 * The singleton instance.
+                 * The undefined method.
                  */
-                INSTANCE;
+                private final MethodDescription methodDescription;
 
-                @Override
-                public void apply(ClassVisitor classVisitor, Implementation.Context implementationContext) {
+                /**
+                 * Creates a new undefined record.
+                 *
+                 * @param methodDescription The undefined method.
+                 */
+                public ForNonImplementedMethod(MethodDescription methodDescription) {
+                    this.methodDescription = methodDescription;
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(ClassVisitor classVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
                     /* do nothing */
                 }
 
-                @Override
-                public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                    throw new IllegalStateException("Cannot apply headless implementation for method that should be skipped");
+                /**
+                 * {@inheritDoc}
+                 */
+                public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    throw new IllegalStateException("Cannot apply body for non-implemented method on " + methodDescription);
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
+                public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    /* do nothing */
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
+                public ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                    throw new IllegalStateException("Cannot apply code for non-implemented method on " + methodDescription);
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
                 public void applyHead(MethodVisitor methodVisitor) {
-                    throw new IllegalStateException("Cannot apply headless implementation for method that should be skipped");
+                    throw new IllegalStateException("Cannot apply head for non-implemented method on " + methodDescription);
                 }
 
-                @Override
-                public MethodDescription getImplementedMethod() {
-                    throw new IllegalStateException("A method that is not defined cannot be extracted");
+                /**
+                 * {@inheritDoc}
+                 */
+                public MethodDescription getMethod() {
+                    return methodDescription;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
+                public Visibility getVisibility() {
+                    return methodDescription.getVisibility();
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
                 public Sort getSort() {
                     return Sort.SKIPPED;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public Record prepend(ByteCodeAppender byteCodeAppender) {
-                    throw new IllegalStateException("Cannot prepend code to non-implemented method");
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.MethodPool.Record.ForNonDefinedMethod." + name();
+                    return new ForDefinedMethod.WithBody(methodDescription, new ByteCodeAppender.Compound(byteCodeAppender,
+                            new ByteCodeAppender.Simple(DefaultValue.of(methodDescription.getReturnType()), MethodReturn.of(methodDescription.getReturnType()))));
                 }
             }
 
@@ -425,27 +570,32 @@ public interface TypeWriter<T> {
              */
             abstract class ForDefinedMethod implements Record {
 
-                @Override
-                public void apply(ClassVisitor classVisitor, Implementation.Context implementationContext) {
-                    MethodVisitor methodVisitor = classVisitor.visitMethod(getImplementedMethod().getAdjustedModifiers(getSort().isImplemented()),
-                            getImplementedMethod().getInternalName(),
-                            getImplementedMethod().getDescriptor(),
-                            getImplementedMethod().getGenericSignature(),
-                            getImplementedMethod().getExceptionTypes().asErasures().toInternalNames());
-                    ParameterList<?> parameterList = getImplementedMethod().getParameters();
-                    if (parameterList.hasExplicitMetaData()) {
-                        for (ParameterDescription parameterDescription : parameterList) {
-                            methodVisitor.visitParameter(parameterDescription.getName(), parameterDescription.getModifiers());
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(ClassVisitor classVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    MethodVisitor methodVisitor = classVisitor.visitMethod(getMethod().getActualModifiers(getSort().isImplemented(), getVisibility()),
+                            getMethod().getInternalName(),
+                            getMethod().getDescriptor(),
+                            getMethod().getGenericSignature(),
+                            getMethod().getExceptionTypes().asErasures().toInternalNames());
+                    if (methodVisitor != null) {
+                        ParameterList<?> parameterList = getMethod().getParameters();
+                        if (parameterList.hasExplicitMetaData()) {
+                            for (ParameterDescription parameterDescription : parameterList) {
+                                methodVisitor.visitParameter(parameterDescription.getName(), parameterDescription.getModifiers());
+                            }
                         }
+                        applyHead(methodVisitor);
+                        applyBody(methodVisitor, implementationContext, annotationValueFilterFactory);
+                        methodVisitor.visitEnd();
                     }
-                    applyHead(methodVisitor);
-                    applyBody(methodVisitor, implementationContext);
-                    methodVisitor.visitEnd();
                 }
 
                 /**
                  * Describes an entry that defines a method as byte code.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 public static class WithBody extends ForDefinedMethod {
 
                     /**
@@ -464,13 +614,18 @@ public interface TypeWriter<T> {
                     private final MethodAttributeAppender methodAttributeAppender;
 
                     /**
+                     * The represented method's minimum visibility.
+                     */
+                    private final Visibility visibility;
+
+                    /**
                      * Creates a new record for an implemented method without attributes or a modifier resolver.
                      *
                      * @param methodDescription The implemented method.
                      * @param byteCodeAppender  The byte code appender to apply.
                      */
                     public WithBody(MethodDescription methodDescription, ByteCodeAppender byteCodeAppender) {
-                        this(methodDescription, byteCodeAppender, MethodAttributeAppender.NoOp.INSTANCE);
+                        this(methodDescription, byteCodeAppender, MethodAttributeAppender.NoOp.INSTANCE, methodDescription.getVisibility());
                     }
 
                     /**
@@ -479,72 +634,85 @@ public interface TypeWriter<T> {
                      * @param methodDescription       The implemented method.
                      * @param byteCodeAppender        The byte code appender to apply.
                      * @param methodAttributeAppender The method attribute appender to apply.
+                     * @param visibility              The represented method's minimum visibility.
                      */
-                    public WithBody(MethodDescription methodDescription, ByteCodeAppender byteCodeAppender, MethodAttributeAppender methodAttributeAppender) {
+                    public WithBody(MethodDescription methodDescription,
+                                    ByteCodeAppender byteCodeAppender,
+                                    MethodAttributeAppender methodAttributeAppender,
+                                    Visibility visibility) {
                         this.methodDescription = methodDescription;
                         this.byteCodeAppender = byteCodeAppender;
                         this.methodAttributeAppender = methodAttributeAppender;
+                        this.visibility = visibility;
                     }
 
-                    @Override
-                    public MethodDescription getImplementedMethod() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public MethodDescription getMethod() {
                         return methodDescription;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Sort getSort() {
                         return Sort.IMPLEMENTED;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Visibility getVisibility() {
+                        return visibility;
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void applyHead(MethodVisitor methodVisitor) {
                         /* do nothing */
                     }
 
-                    @Override
-                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                        methodAttributeAppender.apply(methodVisitor, methodDescription);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        applyAttributes(methodVisitor, annotationValueFilterFactory);
                         methodVisitor.visitCode();
-                        ByteCodeAppender.Size size = byteCodeAppender.apply(methodVisitor, implementationContext, methodDescription);
+                        ByteCodeAppender.Size size = applyCode(methodVisitor, implementationContext);
                         methodVisitor.visitMaxs(size.getOperandStackSize(), size.getLocalVariableSize());
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        methodAttributeAppender.apply(methodVisitor, methodDescription, annotationValueFilterFactory.on(methodDescription));
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                        return byteCodeAppender.apply(methodVisitor, implementationContext, methodDescription);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Record prepend(ByteCodeAppender byteCodeAppender) {
-                        return new WithBody(methodDescription, new ByteCodeAppender.Compound(byteCodeAppender, this.byteCodeAppender), methodAttributeAppender);
-                    }
-
-                    @Override
-                    public boolean equals(Object other) {
-                        if (this == other) return true;
-                        if (other == null || getClass() != other.getClass()) return false;
-                        WithBody withBody = (WithBody) other;
-                        return methodDescription.equals(withBody.methodDescription)
-                                && byteCodeAppender.equals(withBody.byteCodeAppender)
-                                && methodAttributeAppender.equals(withBody.methodAttributeAppender);
-                    }
-
-                    @Override
-                    public int hashCode() {
-                        int result = methodDescription.hashCode();
-                        result = 31 * result + byteCodeAppender.hashCode();
-                        result = 31 * result + methodAttributeAppender.hashCode();
-                        return result;
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.MethodPool.Record.ForDefinedMethod.WithBody{" +
-                                "methodDescription=" + methodDescription +
-                                ", byteCodeAppender=" + byteCodeAppender +
-                                ", methodAttributeAppender=" + methodAttributeAppender +
-                                '}';
+                        return new WithBody(methodDescription,
+                                new ByteCodeAppender.Compound(byteCodeAppender, this.byteCodeAppender),
+                                methodAttributeAppender,
+                                visibility);
                     }
                 }
 
                 /**
                  * Describes an entry that defines a method but without byte code and without an annotation value.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 public static class WithoutBody extends ForDefinedMethod {
 
                     /**
@@ -558,69 +726,84 @@ public interface TypeWriter<T> {
                     private final MethodAttributeAppender methodAttributeAppender;
 
                     /**
+                     * The represented method's minimum visibility.
+                     */
+                    private final Visibility visibility;
+
+                    /**
                      * Creates a new entry for a method that is defines but does not append byte code, i.e. is native or abstract.
                      *
                      * @param methodDescription       The implemented method.
                      * @param methodAttributeAppender The method attribute appender to apply.
+                     * @param visibility              The represented method's minimum visibility.
                      */
-                    public WithoutBody(MethodDescription methodDescription, MethodAttributeAppender methodAttributeAppender) {
+                    public WithoutBody(MethodDescription methodDescription, MethodAttributeAppender methodAttributeAppender, Visibility visibility) {
                         this.methodDescription = methodDescription;
                         this.methodAttributeAppender = methodAttributeAppender;
+                        this.visibility = visibility;
                     }
 
-                    @Override
-                    public MethodDescription getImplementedMethod() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public MethodDescription getMethod() {
                         return methodDescription;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Sort getSort() {
                         return Sort.DEFINED;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Visibility getVisibility() {
+                        return visibility;
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void applyHead(MethodVisitor methodVisitor) {
                         /* do nothing */
                     }
 
-                    @Override
-                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                        methodAttributeAppender.apply(methodVisitor, methodDescription);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        applyAttributes(methodVisitor, annotationValueFilterFactory);
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        methodAttributeAppender.apply(methodVisitor, methodDescription, annotationValueFilterFactory.on(methodDescription));
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                        throw new IllegalStateException("Cannot apply code for abstract method on " + methodDescription);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Record prepend(ByteCodeAppender byteCodeAppender) {
-                        throw new IllegalStateException("Cannot prepend code to abstract method");
-                    }
-
-                    @Override
-                    public boolean equals(Object other) {
-                        if (this == other) return true;
-                        if (other == null || getClass() != other.getClass()) return false;
-                        WithoutBody that = (WithoutBody) other;
-                        return methodDescription.equals(that.methodDescription)
-                                && methodAttributeAppender.equals(that.methodAttributeAppender);
-                    }
-
-                    @Override
-                    public int hashCode() {
-                        int result = methodDescription.hashCode();
-                        result = 31 * result + methodAttributeAppender.hashCode();
-                        return result;
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.MethodPool.Record.ForDefinedMethod.WithoutBody{" +
-                                "methodDescription=" + methodDescription +
-                                ", methodAttributeAppender=" + methodAttributeAppender +
-                                '}';
+                        throw new IllegalStateException("Cannot prepend code for abstract method on " + methodDescription);
                     }
                 }
 
                 /**
                  * Describes an entry that defines a method with a default annotation value.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 public static class WithAnnotationDefaultValue extends ForDefinedMethod {
 
                     /**
@@ -631,7 +814,7 @@ public interface TypeWriter<T> {
                     /**
                      * The annotation value to define.
                      */
-                    private final Object annotationValue;
+                    private final AnnotationValue<?, ?> annotationValue;
 
                     /**
                      * The method attribute appender to apply.
@@ -646,24 +829,37 @@ public interface TypeWriter<T> {
                      * @param methodAttributeAppender The method attribute appender to apply.
                      */
                     public WithAnnotationDefaultValue(MethodDescription methodDescription,
-                                                      Object annotationValue,
+                                                      AnnotationValue<?, ?> annotationValue,
                                                       MethodAttributeAppender methodAttributeAppender) {
                         this.methodDescription = methodDescription;
                         this.annotationValue = annotationValue;
                         this.methodAttributeAppender = methodAttributeAppender;
                     }
 
-                    @Override
-                    public MethodDescription getImplementedMethod() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public MethodDescription getMethod() {
                         return methodDescription;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Sort getSort() {
                         return Sort.DEFINED;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Visibility getVisibility() {
+                        return methodDescription.getVisibility();
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void applyHead(MethodVisitor methodVisitor) {
                         if (!methodDescription.isDefaultValue(annotationValue)) {
                             throw new IllegalStateException("Cannot set " + annotationValue + " as default for " + methodDescription);
@@ -672,51 +868,43 @@ public interface TypeWriter<T> {
                         AnnotationAppender.Default.apply(annotationVisitor,
                                 methodDescription.getReturnType().asErasure(),
                                 AnnotationAppender.NO_NAME,
-                                annotationValue);
+                                annotationValue.resolve());
                         annotationVisitor.visitEnd();
                     }
 
-                    @Override
-                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                        methodAttributeAppender.apply(methodVisitor, methodDescription);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        methodAttributeAppender.apply(methodVisitor, methodDescription, annotationValueFilterFactory.on(methodDescription));
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        throw new IllegalStateException("Cannot apply attributes for default value on " + methodDescription);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                        throw new IllegalStateException("Cannot apply code for default value on " + methodDescription);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Record prepend(ByteCodeAppender byteCodeAppender) {
-                        throw new IllegalStateException("Cannot prepend code to method that defines a default annotation value");
-                    }
-
-                    @Override
-                    public boolean equals(Object other) {
-                        if (this == other) return true;
-                        if (other == null || getClass() != other.getClass()) return false;
-                        WithAnnotationDefaultValue that = (WithAnnotationDefaultValue) other;
-                        return methodDescription.equals(that.methodDescription)
-                                && annotationValue.equals(that.annotationValue)
-                                && methodAttributeAppender.equals(that.methodAttributeAppender);
-                    }
-
-                    @Override
-                    public int hashCode() {
-                        int result = methodDescription.hashCode();
-                        result = 31 * result + annotationValue.hashCode();
-                        result = 31 * result + methodAttributeAppender.hashCode();
-                        return result;
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.MethodPool.Record.ForDefinedMethod.WithAnnotationDefaultValue{" +
-                                "methodDescription=" + methodDescription +
-                                ", annotationValue=" + annotationValue +
-                                ", methodAttributeAppender=" + methodAttributeAppender +
-                                '}';
+                        throw new IllegalStateException("Cannot prepend code for default value on " + methodDescription);
                     }
                 }
 
                 /**
                  * A record for a visibility bridge.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 public static class OfVisibilityBridge extends ForDefinedMethod implements ByteCodeAppender {
 
                     /**
@@ -730,9 +918,9 @@ public interface TypeWriter<T> {
                     private final MethodDescription bridgeTarget;
 
                     /**
-                     * The super type of the instrumented type.
+                     * The type on which the bridge method is invoked.
                      */
-                    private final TypeDescription superType;
+                    private final TypeDescription bridgeType;
 
                     /**
                      * The attribute appender to apply to the visibility bridge.
@@ -744,16 +932,16 @@ public interface TypeWriter<T> {
                      *
                      * @param visibilityBridge  The visibility bridge.
                      * @param bridgeTarget      The method the visibility bridge invokes.
-                     * @param superType         The super type of the instrumented type.
+                     * @param bridgeType        The type of the instrumented type.
                      * @param attributeAppender The attribute appender to apply to the visibility bridge.
                      */
                     protected OfVisibilityBridge(MethodDescription visibilityBridge,
                                                  MethodDescription bridgeTarget,
-                                                 TypeDescription superType,
+                                                 TypeDescription bridgeType,
                                                  MethodAttributeAppender attributeAppender) {
                         this.visibilityBridge = visibilityBridge;
                         this.bridgeTarget = bridgeTarget;
-                        this.superType = superType;
+                        this.bridgeType = bridgeType;
                         this.attributeAppender = attributeAppender;
                     }
 
@@ -766,77 +954,97 @@ public interface TypeWriter<T> {
                      * @return A record describing the visibility bridge.
                      */
                     public static Record of(TypeDescription instrumentedType, MethodDescription bridgeTarget, MethodAttributeAppender attributeAppender) {
-                        return new OfVisibilityBridge(VisibilityBridge.of(instrumentedType, bridgeTarget),
+                        // Default method bridges must be dispatched on an implemented interface type, not considering the declaring type.
+                        TypeDefinition bridgeType = null;
+                        if (bridgeTarget.isDefaultMethod()) {
+                            TypeDescription declaringType = bridgeTarget.getDeclaringType().asErasure();
+                            for (TypeDescription interfaceType : instrumentedType.getInterfaces().asErasures().filter(isSubTypeOf(declaringType))) {
+                                if (bridgeType == null || declaringType.isAssignableTo(bridgeType.asErasure())) {
+                                    bridgeType = interfaceType;
+                                }
+                            }
+                        }
+                        // Non-default method or default method that is inherited by a super class.
+                        if (bridgeType == null) {
+                            bridgeType = instrumentedType.getSuperClass();
+                        }
+                        return new OfVisibilityBridge(new VisibilityBridge(instrumentedType, bridgeTarget),
                                 bridgeTarget,
-                                instrumentedType.getSuperType().asErasure(),
+                                bridgeType.asErasure(),
                                 attributeAppender);
                     }
 
-                    @Override
-                    public MethodDescription getImplementedMethod() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public MethodDescription getMethod() {
                         return visibilityBridge;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Sort getSort() {
                         return Sort.IMPLEMENTED;
                     }
 
-                    @Override
-                    public Record prepend(ByteCodeAppender byteCodeAppender) {
-                        return new ForDefinedMethod.WithBody(visibilityBridge, new ByteCodeAppender.Compound(this, byteCodeAppender), attributeAppender);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Visibility getVisibility() {
+                        return bridgeTarget.getVisibility();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Record prepend(ByteCodeAppender byteCodeAppender) {
+                        return new ForDefinedMethod.WithBody(visibilityBridge,
+                                new ByteCodeAppender.Compound(this, byteCodeAppender),
+                                attributeAppender,
+                                bridgeTarget.getVisibility());
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void applyHead(MethodVisitor methodVisitor) {
                         /* do nothing */
                     }
 
-                    @Override
-                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                        attributeAppender.apply(methodVisitor, visibilityBridge);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        applyAttributes(methodVisitor, annotationValueFilterFactory);
                         methodVisitor.visitCode();
-                        ByteCodeAppender.Size size = apply(methodVisitor, implementationContext, visibilityBridge);
+                        ByteCodeAppender.Size size = applyCode(methodVisitor, implementationContext);
                         methodVisitor.visitMaxs(size.getOperandStackSize(), size.getLocalVariableSize());
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                        attributeAppender.apply(methodVisitor, visibilityBridge, annotationValueFilterFactory.on(visibilityBridge));
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                        return apply(methodVisitor, implementationContext, visibilityBridge);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext, MethodDescription instrumentedMethod) {
                         return new ByteCodeAppender.Simple(
                                 MethodVariableAccess.allArgumentsOf(instrumentedMethod).prependThisReference(),
-                                MethodInvocation.invoke(bridgeTarget).special(superType),
-                                MethodReturn.returning(instrumentedMethod.getReturnType().asErasure())
+                                MethodInvocation.invoke(bridgeTarget).special(bridgeType),
+                                MethodReturn.of(instrumentedMethod.getReturnType())
                         ).apply(methodVisitor, implementationContext, instrumentedMethod);
-                    }
-
-                    @Override
-                    public boolean equals(Object other) {
-                        if (this == other) return true;
-                        if (other == null || getClass() != other.getClass()) return false;
-                        OfVisibilityBridge that = (OfVisibilityBridge) other;
-                        return visibilityBridge.equals(that.visibilityBridge)
-                                && bridgeTarget.equals(that.bridgeTarget)
-                                && superType.equals(that.superType)
-                                && attributeAppender.equals(that.attributeAppender);
-                    }
-
-                    @Override
-                    public int hashCode() {
-                        int result = visibilityBridge.hashCode();
-                        result = 31 * result + bridgeTarget.hashCode();
-                        result = 31 * result + superType.hashCode();
-                        result = 31 * result + attributeAppender.hashCode();
-                        return result;
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.MethodPool.Record.ForDefinedMethod.OfVisibilityBridge{" +
-                                "visibilityBridge=" + visibilityBridge +
-                                ", bridgeTarget=" + bridgeTarget +
-                                ", superType=" + superType +
-                                ", attributeAppender=" + attributeAppender +
-                                '}';
                     }
 
                     /**
@@ -850,75 +1058,82 @@ public interface TypeWriter<T> {
                         private final TypeDescription instrumentedType;
 
                         /**
-                         * A token describing the bridge's raw target.
+                         * The method that is the target of the bridge.
                          */
-                        private final MethodDescription.Token bridgeTarget;
+                        private final MethodDescription bridgeTarget;
 
                         /**
-                         * Creates a new visibility bridge method.
+                         * Creates a new visibility bridge.
                          *
                          * @param instrumentedType The instrumented type.
-                         * @param bridgeTarget     A token describing the bridge's target.
+                         * @param bridgeTarget     The method that is the target of the bridge.
                          */
-                        protected VisibilityBridge(TypeDescription instrumentedType, Token bridgeTarget) {
+                        protected VisibilityBridge(TypeDescription instrumentedType, MethodDescription bridgeTarget) {
                             this.instrumentedType = instrumentedType;
                             this.bridgeTarget = bridgeTarget;
                         }
 
                         /**
-                         * Creates a visibility bridge.
-                         *
-                         * @param instrumentedType The instrumented type.
-                         * @param bridgeTarget     The target method of the visibility bridge.
-                         * @return A method description of the visibility bridge.
+                         * {@inheritDoc}
                          */
-                        protected static MethodDescription of(TypeDescription instrumentedType, MethodDescription bridgeTarget) {
-                            return new VisibilityBridge(instrumentedType, bridgeTarget.asToken().accept(GenericTypeDescription.Visitor.TypeErasing.INSTANCE));
-                        }
-
-                        @Override
                         public TypeDescription getDeclaringType() {
                             return instrumentedType;
                         }
 
-                        @Override
+                        /**
+                         * {@inheritDoc}
+                         */
                         public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
-                            return new ParameterList.ForTokens(this, bridgeTarget.getParameterTokens());
+                            return new ParameterList.Explicit.ForTypes(this, bridgeTarget.getParameters().asTypeList().asRawTypes());
                         }
 
-                        @Override
-                        public GenericTypeDescription getReturnType() {
-                            return bridgeTarget.getReturnType();
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public TypeDescription.Generic getReturnType() {
+                            return bridgeTarget.getReturnType().asRawType();
                         }
 
-                        @Override
-                        public GenericTypeList getExceptionTypes() {
-                            return bridgeTarget.getExceptionTypes();
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public TypeList.Generic getExceptionTypes() {
+                            return bridgeTarget.getExceptionTypes().asRawTypes();
                         }
 
-                        @Override
-                        public Object getDefaultValue() {
-                            return MethodDescription.NO_DEFAULT_VALUE;
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public AnnotationValue<?, ?> getDefaultValue() {
+                            return AnnotationValue.UNDEFINED;
                         }
 
-                        @Override
-                        public GenericTypeList getTypeVariables() {
-                            return new GenericTypeList.Empty();
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public TypeList.Generic getTypeVariables() {
+                            return new TypeList.Generic.Empty();
                         }
 
-                        @Override
+                        /**
+                         * {@inheritDoc}
+                         */
                         public AnnotationList getDeclaredAnnotations() {
-                            return bridgeTarget.getAnnotations();
+                            return bridgeTarget.getDeclaredAnnotations();
                         }
 
-                        @Override
+                        /**
+                         * {@inheritDoc}
+                         */
                         public int getModifiers() {
                             return (bridgeTarget.getModifiers() | Opcodes.ACC_SYNTHETIC | Opcodes.ACC_BRIDGE) & ~Opcodes.ACC_NATIVE;
                         }
 
-                        @Override
+                        /**
+                         * {@inheritDoc}
+                         */
                         public String getInternalName() {
-                            return bridgeTarget.getInternalName();
+                            return bridgeTarget.getName();
                         }
                     }
                 }
@@ -926,9 +1141,10 @@ public interface TypeWriter<T> {
 
             /**
              * A wrapper that appends accessor bridges for a method's implementation. The bridges are only added if
-             * {@link net.bytebuddy.dynamic.scaffold.TypeWriter.MethodPool.Record#apply(ClassVisitor, Implementation.Context)} is invoked such
-             * that bridges are not appended for methods that are rebased or redefined as such types already have bridge methods in place.
+             * {@link net.bytebuddy.dynamic.scaffold.TypeWriter.MethodPool.Record#apply(ClassVisitor, Implementation.Context, AnnotationValueFilter.Factory)}
+             * is invoked such that bridges are not appended for methods that are rebased or redefined as such types already have bridge methods in place.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             class AccessBridgeWrapper implements Record {
 
                 /**
@@ -978,7 +1194,7 @@ public interface TypeWriter<T> {
                 }
 
                 /**
-                 * Wrapps the given record in an accessor bridge wrapper if necessary.
+                 * Wraps the given record in an accessor bridge wrapper if necessary.
                  *
                  * @param delegate          The delegate for implementing the bridge's target.
                  * @param instrumentedType  The instrumented type that defines the bridge methods and the bridge target.
@@ -992,90 +1208,105 @@ public interface TypeWriter<T> {
                                         MethodDescription bridgeTarget,
                                         Set<MethodDescription.TypeToken> bridgeTypes,
                                         MethodAttributeAppender attributeAppender) {
-                    return bridgeTypes.isEmpty() || (instrumentedType.isInterface() && !delegate.getSort().isImplemented())
+                    Set<MethodDescription.TypeToken> compatibleBridgeTypes = new HashSet<MethodDescription.TypeToken>();
+                    for (MethodDescription.TypeToken bridgeType : bridgeTypes) {
+                        if (bridgeTarget.isBridgeCompatible(bridgeType)) {
+                            compatibleBridgeTypes.add(bridgeType);
+                        }
+                    }
+                    return compatibleBridgeTypes.isEmpty() || (instrumentedType.isInterface() && !delegate.getSort().isImplemented())
                             ? delegate
-                            : new AccessBridgeWrapper(delegate, instrumentedType, bridgeTarget, bridgeTypes, attributeAppender);
+                            : new AccessBridgeWrapper(delegate, instrumentedType, bridgeTarget, compatibleBridgeTypes, attributeAppender);
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public Sort getSort() {
                     return delegate.getSort();
                 }
 
-                @Override
-                public MethodDescription getImplementedMethod() {
+                /**
+                 * {@inheritDoc}
+                 */
+                public MethodDescription getMethod() {
                     return bridgeTarget;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
+                public Visibility getVisibility() {
+                    return delegate.getVisibility();
+                }
+
+                /**
+                 * {@inheritDoc}
+                 */
                 public Record prepend(ByteCodeAppender byteCodeAppender) {
                     return new AccessBridgeWrapper(delegate.prepend(byteCodeAppender), instrumentedType, bridgeTarget, bridgeTypes, attributeAppender);
                 }
 
-                @Override
-                public void apply(ClassVisitor classVisitor, Implementation.Context implementationContext) {
-                    delegate.apply(classVisitor, implementationContext);
+                /**
+                 * {@inheritDoc}
+                 */
+                public void apply(ClassVisitor classVisitor,
+                                  Implementation.Context implementationContext,
+                                  AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    delegate.apply(classVisitor, implementationContext, annotationValueFilterFactory);
                     for (MethodDescription.TypeToken bridgeType : bridgeTypes) {
                         MethodDescription.InDefinedShape bridgeMethod = new AccessorBridge(bridgeTarget, bridgeType, instrumentedType);
                         MethodDescription.InDefinedShape bridgeTarget = new BridgeTarget(this.bridgeTarget, instrumentedType);
-                        MethodVisitor methodVisitor = classVisitor.visitMethod(bridgeMethod.getAdjustedModifiers(true),
+                        MethodVisitor methodVisitor = classVisitor.visitMethod(bridgeMethod.getActualModifiers(true, getVisibility()),
                                 bridgeMethod.getInternalName(),
                                 bridgeMethod.getDescriptor(),
                                 MethodDescription.NON_GENERIC_SIGNATURE,
                                 bridgeMethod.getExceptionTypes().asErasures().toInternalNames());
-                        attributeAppender.apply(methodVisitor, bridgeMethod);
-                        methodVisitor.visitCode();
-                        ByteCodeAppender.Size size = new ByteCodeAppender.Simple(
-                                MethodVariableAccess.allArgumentsOf(bridgeMethod).asBridgeOf(bridgeTarget).prependThisReference(),
-                                MethodInvocation.invoke(bridgeTarget).virtual(instrumentedType),
-                                MethodReturn.returning(bridgeTarget.getReturnType().asErasure())
-                        ).apply(methodVisitor, implementationContext, bridgeMethod);
-                        methodVisitor.visitMaxs(size.getOperandStackSize(), size.getLocalVariableSize());
-                        methodVisitor.visitEnd();
+                        if (methodVisitor != null) {
+                            attributeAppender.apply(methodVisitor, bridgeMethod, annotationValueFilterFactory.on(instrumentedType));
+                            methodVisitor.visitCode();
+                            ByteCodeAppender.Size size = new ByteCodeAppender.Simple(
+                                    MethodVariableAccess.allArgumentsOf(bridgeMethod).asBridgeOf(bridgeTarget).prependThisReference(),
+                                    MethodInvocation.invoke(bridgeTarget).virtual(instrumentedType),
+                                    bridgeTarget.getReturnType().asErasure().isAssignableTo(bridgeMethod.getReturnType().asErasure())
+                                            ? StackManipulation.Trivial.INSTANCE
+                                            : TypeCasting.to(bridgeMethod.getReturnType().asErasure()),
+                                    MethodReturn.of(bridgeMethod.getReturnType())
+                            ).apply(methodVisitor, implementationContext, bridgeMethod);
+                            methodVisitor.visitMaxs(size.getOperandStackSize(), size.getLocalVariableSize());
+                            methodVisitor.visitEnd();
+                        }
                     }
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public void applyHead(MethodVisitor methodVisitor) {
                     delegate.applyHead(methodVisitor);
                 }
 
-                @Override
-                public void applyBody(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                    delegate.applyBody(methodVisitor, implementationContext);
+                /**
+                 * {@inheritDoc}
+                 */
+                public void applyBody(MethodVisitor methodVisitor,
+                                      Implementation.Context implementationContext,
+                                      AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    delegate.applyBody(methodVisitor, implementationContext, annotationValueFilterFactory);
                 }
 
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    AccessBridgeWrapper that = (AccessBridgeWrapper) other;
-                    return delegate.equals(that.delegate)
-                            && instrumentedType.equals(that.instrumentedType)
-                            && bridgeTarget.equals(that.bridgeTarget)
-                            && bridgeTypes.equals(that.bridgeTypes)
-                            && attributeAppender.equals(that.attributeAppender);
+                /**
+                 * {@inheritDoc}
+                 */
+                public void applyAttributes(MethodVisitor methodVisitor, AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                    delegate.applyAttributes(methodVisitor, annotationValueFilterFactory);
                 }
 
-                @Override
-                public int hashCode() {
-                    int result = delegate.hashCode();
-                    result = 31 * result + instrumentedType.hashCode();
-                    result = 31 * result + bridgeTarget.hashCode();
-                    result = 31 * result + bridgeTypes.hashCode();
-                    result = 31 * result + attributeAppender.hashCode();
-                    return result;
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.MethodPool.Record.AccessBridgeWrapper{" +
-                            "delegate=" + delegate +
-                            ", instrumentedType=" + instrumentedType +
-                            ", bridgeTarget=" + bridgeTarget +
-                            ", bridgeTypes=" + bridgeTypes +
-                            ", attributeAppender=" + attributeAppender +
-                            '}';
+                /**
+                 * {@inheritDoc}
+                 */
+                public ByteCodeAppender.Size applyCode(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
+                    return delegate.applyCode(methodVisitor, implementationContext);
                 }
 
                 /**
@@ -1111,47 +1342,65 @@ public interface TypeWriter<T> {
                         this.instrumentedType = instrumentedType;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public TypeDescription getDeclaringType() {
                         return instrumentedType;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
                         return new ParameterList.Explicit.ForTypes(this, bridgeType.getParameterTypes());
                     }
 
-                    @Override
-                    public GenericTypeDescription getReturnType() {
-                        return bridgeType.getReturnType();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeDescription.Generic getReturnType() {
+                        return bridgeType.getReturnType().asGenericType();
                     }
 
-                    @Override
-                    public GenericTypeList getExceptionTypes() {
-                        return bridgeTarget.getExceptionTypes().accept(GenericTypeDescription.Visitor.TypeErasing.INSTANCE);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeList.Generic getExceptionTypes() {
+                        return bridgeTarget.getExceptionTypes().accept(TypeDescription.Generic.Visitor.TypeErasing.INSTANCE);
                     }
 
-                    @Override
-                    public Object getDefaultValue() {
-                        return MethodDescription.NO_DEFAULT_VALUE;
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public AnnotationValue<?, ?> getDefaultValue() {
+                        return AnnotationValue.UNDEFINED;
                     }
 
-                    @Override
-                    public GenericTypeList getTypeVariables() {
-                        return new GenericTypeList.Empty();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeList.Generic getTypeVariables() {
+                        return new TypeList.Generic.Empty();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public AnnotationList getDeclaredAnnotations() {
                         return new AnnotationList.Empty();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public int getModifiers() {
                         return (bridgeTarget.getModifiers() | Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC) & ~(Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE);
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public String getInternalName() {
                         return bridgeTarget.getInternalName();
                     }
@@ -1183,47 +1432,65 @@ public interface TypeWriter<T> {
                         this.instrumentedType = instrumentedType;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public TypeDescription getDeclaringType() {
                         return instrumentedType;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
-                        return new ParameterList.ForTokens(this, bridgeTarget.getParameters().asTokenList());
+                        return new ParameterList.ForTokens(this, bridgeTarget.getParameters().asTokenList(is(instrumentedType)));
                     }
 
-                    @Override
-                    public GenericTypeDescription getReturnType() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeDescription.Generic getReturnType() {
                         return bridgeTarget.getReturnType();
                     }
 
-                    @Override
-                    public GenericTypeList getExceptionTypes() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeList.Generic getExceptionTypes() {
                         return bridgeTarget.getExceptionTypes();
                     }
 
-                    @Override
-                    public Object getDefaultValue() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public AnnotationValue<?, ?> getDefaultValue() {
                         return bridgeTarget.getDefaultValue();
                     }
 
-                    @Override
-                    public GenericTypeList getTypeVariables() {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public TypeList.Generic getTypeVariables() {
                         return bridgeTarget.getTypeVariables();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public AnnotationList getDeclaredAnnotations() {
                         return bridgeTarget.getDeclaredAnnotations();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public int getModifiers() {
                         return bridgeTarget.getModifiers();
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public String getInternalName() {
                         return bridgeTarget.getInternalName();
                     }
@@ -1237,293 +1504,477 @@ public interface TypeWriter<T> {
      *
      * @param <S> The best known loaded type for the dynamically created type.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     abstract class Default<S> implements TypeWriter<S> {
 
         /**
-         * A flag for ASM not to automatically compute any information such as operand stack sizes and stack map frames.
+         * Indicates an empty reference in a class file which is expressed by {@code null}.
          */
-        protected static final int ASM_MANUAL_FLAG = 0;
+        private static final String NO_REFERENCE = null;
 
         /**
-         * The ASM API version to use.
+         * A folder for dumping class files or {@code null} if no dump should be generated.
          */
-        protected static final int ASM_API_VERSION = Opcodes.ASM5;
+        protected static final String DUMP_FOLDER;
+
+        /*
+         * Reads the dumping property that is set at program start up. This might cause an error because of security constraints.
+         */
+        static {
+            String dumpFolder;
+            try {
+                dumpFolder = AccessController.doPrivileged(new GetSystemPropertyAction(DUMP_PROPERTY));
+            } catch (RuntimeException exception) {
+                dumpFolder = null;
+            }
+            DUMP_FOLDER = dumpFolder;
+        }
 
         /**
-         * The instrumented type that is to be written.
+         * The instrumented type to be created.
          */
         protected final TypeDescription instrumentedType;
 
         /**
-         * The loaded type initializer of the instrumented type.
-         */
-        protected final LoadedTypeInitializer loadedTypeInitializer;
-
-        /**
-         * The type initializer of the instrumented type.
-         */
-        protected final InstrumentedType.TypeInitializer typeInitializer;
-
-        /**
-         * A list of explicit auxiliary types that are to be added to the created dynamic type.
-         */
-        protected final List<DynamicType> explicitAuxiliaryTypes;
-
-        /**
-         * The class file version of the written type.
+         * The class file specified by the user.
          */
         protected final ClassFileVersion classFileVersion;
 
         /**
-         * A naming strategy that is used for naming auxiliary types.
-         */
-        protected final AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy;
-
-        /**
-         * The implementation context factory to use.
-         */
-        protected final Implementation.Context.Factory implementationContextFactory;
-
-        /**
-         * A class visitor wrapper to apply during instrumentation.
-         */
-        protected final ClassVisitorWrapper classVisitorWrapper;
-
-        /**
-         * The type attribute appender to apply.
-         */
-        protected final TypeAttributeAppender attributeAppender;
-
-        /**
-         * The field pool to be used for instrumenting fields.
+         * The field pool to use.
          */
         protected final FieldPool fieldPool;
 
         /**
-         * The method pool to be used for instrumenting methods.
+         * The explicit auxiliary types to add to the created type.
          */
-        protected final MethodPool methodPool;
+        protected final List<? extends DynamicType> auxiliaryTypes;
 
         /**
-         * A list of all instrumented methods.
+         * The instrumented type's declared fields.
+         */
+        protected final FieldList<FieldDescription.InDefinedShape> fields;
+
+        /**
+         * The instrumented type's methods that are declared or inherited.
+         */
+        protected final MethodList<?> methods;
+
+        /**
+         * The instrumented methods relevant to this type creation.
          */
         protected final MethodList<?> instrumentedMethods;
 
         /**
+         * The loaded type initializer to apply onto the created type after loading.
+         */
+        protected final LoadedTypeInitializer loadedTypeInitializer;
+
+        /**
+         * The type initializer to include in the created type's type initializer.
+         */
+        protected final TypeInitializer typeInitializer;
+
+        /**
+         * The type attribute appender to apply onto the instrumented type.
+         */
+        protected final TypeAttributeAppender typeAttributeAppender;
+
+        /**
+         * The ASM visitor wrapper to apply onto the class writer.
+         */
+        protected final AsmVisitorWrapper asmVisitorWrapper;
+
+        /**
+         * The annotation value filter factory to apply.
+         */
+        protected final AnnotationValueFilter.Factory annotationValueFilterFactory;
+
+        /**
+         * The annotation retention to apply.
+         */
+        protected final AnnotationRetention annotationRetention;
+
+        /**
+         * The naming strategy for auxiliary types to apply.
+         */
+        protected final AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy;
+
+        /**
+         * The implementation context factory to apply.
+         */
+        protected final Implementation.Context.Factory implementationContextFactory;
+
+        /**
+         * Determines if a type should be explicitly validated.
+         */
+        protected final TypeValidation typeValidation;
+
+        /**
+         * The class writer strategy to use.
+         */
+        protected final ClassWriterStrategy classWriterStrategy;
+
+        /**
+         * The type pool to use for computing stack map frames, if required.
+         */
+        protected final TypePool typePool;
+
+        /**
          * Creates a new default type writer.
          *
-         * @param instrumentedType             The instrumented type that is to be written.
-         * @param loadedTypeInitializer        The loaded type initializer of the instrumented type.
-         * @param typeInitializer              The type initializer of the instrumented type.
-         * @param explicitAuxiliaryTypes       A list of explicit auxiliary types that are to be added to the created dynamic type.
-         * @param classFileVersion             The class file version of the written type.
-         * @param auxiliaryTypeNamingStrategy  A naming strategy that is used for naming auxiliary types.
-         * @param implementationContextFactory The implementation context factory to use.
-         * @param classVisitorWrapper          A class visitor wrapper to apply during instrumentation.
-         * @param attributeAppender            The type attribute appender to apply.
-         * @param fieldPool                    The field pool to be used for instrumenting fields.
-         * @param methodPool                   The method pool to be used for instrumenting methods.
-         * @param instrumentedMethods          A list of all instrumented methods.
+         * @param instrumentedType             The instrumented type to be created.
+         * @param classFileVersion             The class file specified by the user.
+         * @param fieldPool                    The field pool to use.
+         * @param auxiliaryTypes               The explicit auxiliary types to add to the created type.
+         * @param fields                       The instrumented type's declared fields.
+         * @param methods                      The instrumented type's declared and virtually inherited methods.
+         * @param instrumentedMethods          The instrumented methods relevant to this type creation.
+         * @param loadedTypeInitializer        The loaded type initializer to apply onto the created type after loading.
+         * @param typeInitializer              The type initializer to include in the created type's type initializer.
+         * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+         * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+         * @param annotationValueFilterFactory The annotation value filter factory to apply.
+         * @param annotationRetention          The annotation retention to apply.
+         * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+         * @param implementationContextFactory The implementation context factory to apply.
+         * @param typeValidation               Determines if a type should be explicitly validated.
+         * @param classWriterStrategy          The class writer strategy to use.
+         * @param typePool                     The type pool to use for computing stack map frames, if required.
          */
         protected Default(TypeDescription instrumentedType,
-                          LoadedTypeInitializer loadedTypeInitializer,
-                          InstrumentedType.TypeInitializer typeInitializer,
-                          List<DynamicType> explicitAuxiliaryTypes,
                           ClassFileVersion classFileVersion,
+                          FieldPool fieldPool,
+                          List<? extends DynamicType> auxiliaryTypes,
+                          FieldList<FieldDescription.InDefinedShape> fields,
+                          MethodList<?> methods,
+                          MethodList<?> instrumentedMethods,
+                          LoadedTypeInitializer loadedTypeInitializer,
+                          TypeInitializer typeInitializer,
+                          TypeAttributeAppender typeAttributeAppender,
+                          AsmVisitorWrapper asmVisitorWrapper,
+                          AnnotationValueFilter.Factory annotationValueFilterFactory,
+                          AnnotationRetention annotationRetention,
                           AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
                           Implementation.Context.Factory implementationContextFactory,
-                          ClassVisitorWrapper classVisitorWrapper,
-                          TypeAttributeAppender attributeAppender,
-                          FieldPool fieldPool,
-                          MethodPool methodPool,
-                          MethodList<?> instrumentedMethods) {
+                          TypeValidation typeValidation,
+                          ClassWriterStrategy classWriterStrategy,
+                          TypePool typePool) {
             this.instrumentedType = instrumentedType;
+            this.classFileVersion = classFileVersion;
+            this.fieldPool = fieldPool;
+            this.auxiliaryTypes = auxiliaryTypes;
+            this.fields = fields;
+            this.methods = methods;
+            this.instrumentedMethods = instrumentedMethods;
             this.loadedTypeInitializer = loadedTypeInitializer;
             this.typeInitializer = typeInitializer;
-            this.explicitAuxiliaryTypes = explicitAuxiliaryTypes;
-            this.classFileVersion = classFileVersion;
+            this.typeAttributeAppender = typeAttributeAppender;
+            this.asmVisitorWrapper = asmVisitorWrapper;
             this.auxiliaryTypeNamingStrategy = auxiliaryTypeNamingStrategy;
+            this.annotationValueFilterFactory = annotationValueFilterFactory;
+            this.annotationRetention = annotationRetention;
             this.implementationContextFactory = implementationContextFactory;
-            this.classVisitorWrapper = classVisitorWrapper;
-            this.attributeAppender = attributeAppender;
-            this.fieldPool = fieldPool;
-            this.methodPool = methodPool;
-            this.instrumentedMethods = instrumentedMethods;
+            this.typeValidation = typeValidation;
+            this.classWriterStrategy = classWriterStrategy;
+            this.typePool = typePool;
         }
 
         /**
          * Creates a type writer for creating a new type.
          *
-         * @param methodRegistry               The method registry to use for creating the type.
+         * @param methodRegistry               The compiled method registry to use.
+         * @param auxiliaryTypes               A list of explicitly required auxiliary types.
          * @param fieldPool                    The field pool to use.
-         * @param auxiliaryTypeNamingStrategy  A naming strategy for naming auxiliary types.
-         * @param implementationContextFactory The implementation context factory to use.
-         * @param classVisitorWrapper          The class visitor wrapper to apply when creating the type.
-         * @param attributeAppender            The attribute appender to use.
-         * @param classFileVersion             The class file version of the created type.
-         * @param <U>                          The best known loaded type for the dynamically created type.
-         * @return An appropriate type writer.
+         * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+         * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+         * @param classFileVersion             The class file version to use when no explicit class file version is applied.
+         * @param annotationValueFilterFactory The annotation value filter factory to apply.
+         * @param annotationRetention          The annotation retention to apply.
+         * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+         * @param implementationContextFactory The implementation context factory to apply.
+         * @param typeValidation               Determines if a type should be explicitly validated.
+         * @param classWriterStrategy          The class writer strategy to use.
+         * @param typePool                     The type pool to use for computing stack map frames, if required.
+         * @param <U>                          A loaded type that the instrumented type guarantees to subclass.
+         * @return A suitable type writer.
          */
         public static <U> TypeWriter<U> forCreation(MethodRegistry.Compiled methodRegistry,
+                                                    List<? extends DynamicType> auxiliaryTypes,
                                                     FieldPool fieldPool,
+                                                    TypeAttributeAppender typeAttributeAppender,
+                                                    AsmVisitorWrapper asmVisitorWrapper,
+                                                    ClassFileVersion classFileVersion,
+                                                    AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                    AnnotationRetention annotationRetention,
                                                     AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
                                                     Implementation.Context.Factory implementationContextFactory,
-                                                    ClassVisitorWrapper classVisitorWrapper,
-                                                    TypeAttributeAppender attributeAppender,
-                                                    ClassFileVersion classFileVersion) {
+                                                    TypeValidation typeValidation,
+                                                    ClassWriterStrategy classWriterStrategy,
+                                                    TypePool typePool) {
             return new ForCreation<U>(methodRegistry.getInstrumentedType(),
-                    methodRegistry.getLoadedTypeInitializer(),
-                    methodRegistry.getTypeInitializer(),
-                    Collections.<DynamicType>emptyList(),
                     classFileVersion,
-                    auxiliaryTypeNamingStrategy,
-                    implementationContextFactory,
-                    classVisitorWrapper,
-                    attributeAppender,
                     fieldPool,
                     methodRegistry,
-                    methodRegistry.getInstrumentedMethods());
+                    auxiliaryTypes,
+                    methodRegistry.getInstrumentedType().getDeclaredFields(),
+                    methodRegistry.getMethods(),
+                    methodRegistry.getInstrumentedMethods(),
+                    methodRegistry.getLoadedTypeInitializer(),
+                    methodRegistry.getTypeInitializer(),
+                    typeAttributeAppender,
+                    asmVisitorWrapper,
+                    annotationValueFilterFactory,
+                    annotationRetention,
+                    auxiliaryTypeNamingStrategy,
+                    implementationContextFactory,
+                    typeValidation,
+                    classWriterStrategy,
+                    typePool);
         }
 
         /**
-         * Creates a type writer for creating a new type.
+         * Creates a type writer for redefining a type.
          *
-         * @param methodRegistry               The method registry to use for creating the type.
+         * @param methodRegistry               The compiled method registry to use.
+         * @param auxiliaryTypes               A list of explicitly required auxiliary types.
          * @param fieldPool                    The field pool to use.
-         * @param auxiliaryTypeNamingStrategy  A naming strategy for naming auxiliary types.
-         * @param implementationContextFactory The implementation context factory to use.
-         * @param classVisitorWrapper          The class visitor wrapper to apply when creating the type.
-         * @param attributeAppender            The attribute appender to use.
-         * @param classFileVersion             The minimum class file version of the created type.
-         * @param classFileLocator             The class file locator to use.
-         * @param methodRebaseResolver         The method rebase resolver to use.
-         * @param targetType                   The target type that is to be rebased.
-         * @param <U>                          The best known loaded type for the dynamically created type.
-         * @return An appropriate type writer.
+         * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+         * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+         * @param classFileVersion             The class file version to use when no explicit class file version is applied.
+         * @param annotationValueFilterFactory The annotation value filter factory to apply.
+         * @param annotationRetention          The annotation retention to apply.
+         * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+         * @param implementationContextFactory The implementation context factory to apply.
+         * @param typeValidation               Determines if a type should be explicitly validated.
+         * @param classWriterStrategy          The class writer strategy to use.
+         * @param typePool                     The type pool to use for computing stack map frames, if required.
+         * @param originalType                 The original type that is being redefined or rebased.
+         * @param classFileLocator             The class file locator for locating the original type's class file.
+         * @param <U>                          A loaded type that the instrumented type guarantees to subclass.
+         * @return A suitable type writer.
          */
-        public static <U> TypeWriter<U> forRebasing(MethodRegistry.Compiled methodRegistry,
-                                                    FieldPool fieldPool,
-                                                    AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
-                                                    Implementation.Context.Factory implementationContextFactory,
-                                                    ClassVisitorWrapper classVisitorWrapper,
-                                                    TypeAttributeAppender attributeAppender,
-                                                    ClassFileVersion classFileVersion,
-                                                    ClassFileLocator classFileLocator,
-                                                    TypeDescription targetType,
-                                                    MethodRebaseResolver methodRebaseResolver) {
-            return new ForInlining<U>(methodRegistry.getInstrumentedType(),
+        public static <U> TypeWriter<U> forRedefinition(MethodRegistry.Prepared methodRegistry,
+                                                        List<? extends DynamicType> auxiliaryTypes,
+                                                        FieldPool fieldPool,
+                                                        TypeAttributeAppender typeAttributeAppender,
+                                                        AsmVisitorWrapper asmVisitorWrapper,
+                                                        ClassFileVersion classFileVersion,
+                                                        AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                        AnnotationRetention annotationRetention,
+                                                        AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                                        Implementation.Context.Factory implementationContextFactory,
+                                                        TypeValidation typeValidation,
+                                                        ClassWriterStrategy classWriterStrategy,
+                                                        TypePool typePool,
+                                                        TypeDescription originalType,
+                                                        ClassFileLocator classFileLocator) {
+            return new ForInlining.WithFullProcessing<U>(methodRegistry.getInstrumentedType(),
+                    classFileVersion,
+                    fieldPool,
+                    auxiliaryTypes,
+                    methodRegistry.getInstrumentedType().getDeclaredFields(),
+                    methodRegistry.getMethods(),
+                    methodRegistry.getInstrumentedMethods(),
                     methodRegistry.getLoadedTypeInitializer(),
                     methodRegistry.getTypeInitializer(),
-                    methodRebaseResolver.getAuxiliaryTypes(),
-                    classFileVersion,
+                    typeAttributeAppender,
+                    asmVisitorWrapper,
+                    annotationValueFilterFactory,
+                    annotationRetention,
                     auxiliaryTypeNamingStrategy,
                     implementationContextFactory,
-                    classVisitorWrapper,
-                    attributeAppender,
-                    fieldPool,
-                    methodRegistry,
-                    methodRegistry.getInstrumentedMethods(),
+                    typeValidation,
+                    classWriterStrategy,
+                    typePool,
+                    originalType,
                     classFileLocator,
-                    targetType,
+                    methodRegistry,
+                    SubclassImplementationTarget.Factory.LEVEL_TYPE,
+                    MethodRebaseResolver.Disabled.INSTANCE);
+        }
+
+        /**
+         * Creates a type writer for rebasing a type.
+         *
+         * @param methodRegistry               The compiled method registry to use.
+         * @param auxiliaryTypes               A list of explicitly required auxiliary types.
+         * @param fieldPool                    The field pool to use.
+         * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+         * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+         * @param classFileVersion             The class file version to use when no explicit class file version is applied.
+         * @param annotationValueFilterFactory The annotation value filter factory to apply.
+         * @param annotationRetention          The annotation retention to apply.
+         * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+         * @param implementationContextFactory The implementation context factory to apply.
+         * @param typeValidation               Determines if a type should be explicitly validated.
+         * @param classWriterStrategy          The class writer strategy to use.
+         * @param typePool                     The type pool to use for computing stack map frames, if required.
+         * @param originalType                 The original type that is being redefined or rebased.
+         * @param classFileLocator             The class file locator for locating the original type's class file.
+         * @param methodRebaseResolver         The method rebase resolver to use for rebasing names.
+         * @param <U>                          A loaded type that the instrumented type guarantees to subclass.
+         * @return A suitable type writer.
+         */
+        public static <U> TypeWriter<U> forRebasing(MethodRegistry.Prepared methodRegistry,
+                                                    List<? extends DynamicType> auxiliaryTypes,
+                                                    FieldPool fieldPool,
+                                                    TypeAttributeAppender typeAttributeAppender,
+                                                    AsmVisitorWrapper asmVisitorWrapper,
+                                                    ClassFileVersion classFileVersion,
+                                                    AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                    AnnotationRetention annotationRetention,
+                                                    AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                                    Implementation.Context.Factory implementationContextFactory,
+                                                    TypeValidation typeValidation,
+                                                    ClassWriterStrategy classWriterStrategy,
+                                                    TypePool typePool,
+                                                    TypeDescription originalType,
+                                                    ClassFileLocator classFileLocator,
+                                                    MethodRebaseResolver methodRebaseResolver) {
+            return new ForInlining.WithFullProcessing<U>(methodRegistry.getInstrumentedType(),
+                    classFileVersion,
+                    fieldPool,
+                    CompoundList.of(auxiliaryTypes, methodRebaseResolver.getAuxiliaryTypes()),
+                    methodRegistry.getInstrumentedType().getDeclaredFields(),
+                    methodRegistry.getMethods(),
+                    methodRegistry.getInstrumentedMethods(),
+                    methodRegistry.getLoadedTypeInitializer(),
+                    methodRegistry.getTypeInitializer(),
+                    typeAttributeAppender,
+                    asmVisitorWrapper,
+                    annotationValueFilterFactory,
+                    annotationRetention,
+                    auxiliaryTypeNamingStrategy,
+                    implementationContextFactory,
+                    typeValidation,
+                    classWriterStrategy,
+                    typePool,
+                    originalType,
+                    classFileLocator,
+                    methodRegistry,
+                    new RebaseImplementationTarget.Factory(methodRebaseResolver),
                     methodRebaseResolver);
         }
 
         /**
-         * Creates a type writer for creating a new type.
+         * Creates a type writer for decorating a type.
          *
-         * @param methodRegistry               The method registry to use for creating the type.
-         * @param fieldPool                    The field pool to use.
-         * @param auxiliaryTypeNamingStrategy  A naming strategy for naming auxiliary types.
-         * @param implementationContextFactory The implementation context factory to use.
-         * @param classVisitorWrapper          The class visitor wrapper to apply when creating the type.
-         * @param attributeAppender            The attribute appender to use.
-         * @param classFileVersion             The minimum class file version of the created type.
-         * @param classFileLocator             The class file locator to use.
-         * @param targetType                   The target type that is to be rebased.
-         * @param <U>                          The best known loaded type for the dynamically created type.
-         * @return An appropriate type writer.
+         * @param instrumentedType             The instrumented type.
+         * @param classFileVersion             The class file version to use when no explicit class file version is applied.
+         * @param auxiliaryTypes               A list of explicitly required auxiliary types.
+         * @param methods                      The methods to instrument.
+         * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+         * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+         * @param annotationValueFilterFactory The annotation value filter factory to apply.
+         * @param annotationRetention          The annotation retention to apply.
+         * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+         * @param implementationContextFactory The implementation context factory to apply.
+         * @param typeValidation               Determines if a type should be explicitly validated.
+         * @param classWriterStrategy          The class writer strategy to use.
+         * @param typePool                     The type pool to use for computing stack map frames, if required.
+         * @param classFileLocator             The class file locator for locating the original type's class file.
+         * @param <U>                          A loaded type that the instrumented type guarantees to subclass.
+         * @return A suitable type writer.
          */
-        public static <U> TypeWriter<U> forRedefinition(MethodRegistry.Compiled methodRegistry,
-                                                        FieldPool fieldPool,
-                                                        AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
-                                                        Implementation.Context.Factory implementationContextFactory,
-                                                        ClassVisitorWrapper classVisitorWrapper,
-                                                        TypeAttributeAppender attributeAppender,
-                                                        ClassFileVersion classFileVersion,
-                                                        ClassFileLocator classFileLocator,
-                                                        TypeDescription targetType) {
-            return new ForInlining<U>(methodRegistry.getInstrumentedType(),
-                    methodRegistry.getLoadedTypeInitializer(),
-                    methodRegistry.getTypeInitializer(),
-                    Collections.<DynamicType>emptyList(),
+        public static <U> TypeWriter<U> forDecoration(TypeDescription instrumentedType,
+                                                      ClassFileVersion classFileVersion,
+                                                      List<? extends DynamicType> auxiliaryTypes,
+                                                      List<? extends MethodDescription> methods,
+                                                      TypeAttributeAppender typeAttributeAppender,
+                                                      AsmVisitorWrapper asmVisitorWrapper,
+                                                      AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                      AnnotationRetention annotationRetention,
+                                                      AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                                      Implementation.Context.Factory implementationContextFactory,
+                                                      TypeValidation typeValidation,
+                                                      ClassWriterStrategy classWriterStrategy,
+                                                      TypePool typePool,
+                                                      ClassFileLocator classFileLocator) {
+            return new ForInlining.WithDecorationOnly<U>(instrumentedType,
                     classFileVersion,
+                    auxiliaryTypes,
+                    new MethodList.Explicit<MethodDescription>(methods),
+                    typeAttributeAppender,
+                    asmVisitorWrapper,
+                    annotationValueFilterFactory,
+                    annotationRetention,
                     auxiliaryTypeNamingStrategy,
                     implementationContextFactory,
-                    classVisitorWrapper,
-                    attributeAppender,
-                    fieldPool,
-                    methodRegistry,
-                    methodRegistry.getInstrumentedMethods(),
-                    classFileLocator,
-                    targetType,
-                    MethodRebaseResolver.Disabled.INSTANCE);
-        }
-
-        @Override
-        public DynamicType.Unloaded<S> make() {
-            Implementation.Context.ExtractableView implementationContext = implementationContextFactory.make(instrumentedType,
-                    auxiliaryTypeNamingStrategy,
-                    typeInitializer,
-                    classFileVersion);
-            return new DynamicType.Default.Unloaded<S>(instrumentedType,
-                    create(implementationContext),
-                    loadedTypeInitializer,
-                    join(explicitAuxiliaryTypes, implementationContext.getRegisteredAuxiliaryTypes()));
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            Default<?> aDefault = (Default<?>) other;
-            return instrumentedType.equals(aDefault.instrumentedType)
-                    && loadedTypeInitializer.equals(aDefault.loadedTypeInitializer)
-                    && typeInitializer.equals(aDefault.typeInitializer)
-                    && explicitAuxiliaryTypes.equals(aDefault.explicitAuxiliaryTypes)
-                    && classFileVersion.equals(aDefault.classFileVersion)
-                    && auxiliaryTypeNamingStrategy.equals(aDefault.auxiliaryTypeNamingStrategy)
-                    && implementationContextFactory.equals(aDefault.implementationContextFactory)
-                    && classVisitorWrapper.equals(aDefault.classVisitorWrapper)
-                    && attributeAppender.equals(aDefault.attributeAppender)
-                    && fieldPool.equals(aDefault.fieldPool)
-                    && methodPool.equals(aDefault.methodPool)
-                    && instrumentedMethods.equals(aDefault.instrumentedMethods);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = instrumentedType.hashCode();
-            result = 31 * result + loadedTypeInitializer.hashCode();
-            result = 31 * result + typeInitializer.hashCode();
-            result = 31 * result + explicitAuxiliaryTypes.hashCode();
-            result = 31 * result + classFileVersion.hashCode();
-            result = 31 * result + auxiliaryTypeNamingStrategy.hashCode();
-            result = 31 * result + implementationContextFactory.hashCode();
-            result = 31 * result + classVisitorWrapper.hashCode();
-            result = 31 * result + attributeAppender.hashCode();
-            result = 31 * result + fieldPool.hashCode();
-            result = 31 * result + methodPool.hashCode();
-            result = 31 * result + instrumentedMethods.hashCode();
-            return result;
+                    typeValidation,
+                    classWriterStrategy,
+                    typePool,
+                    classFileLocator);
         }
 
         /**
-         * Creates the instrumented type.
-         *
-         * @param implementationContext The implementation context to use.
-         * @return A byte array that is represented by the instrumented type.
+         * {@inheritDoc}
          */
-        protected abstract byte[] create(Implementation.Context.ExtractableView implementationContext);
+        @SuppressFBWarnings(value = "REC_CATCH_EXCEPTION", justification = "Setting a debugging property should never change the program outcome")
+        public DynamicType.Unloaded<S> make(TypeResolutionStrategy.Resolved typeResolutionStrategy) {
+            UnresolvedType unresolvedType = create(typeResolutionStrategy.injectedInto(typeInitializer));
+            ClassDumpAction.dump(DUMP_FOLDER, instrumentedType, false, unresolvedType.getBinaryRepresentation());
+            return unresolvedType.toDynamicType(typeResolutionStrategy);
+        }
+
+        /**
+         * Creates an unresolved version of the dynamic type.
+         *
+         * @param typeInitializer The type initializer to use.
+         * @return An unresolved type.
+         */
+        protected abstract UnresolvedType create(TypeInitializer typeInitializer);
+
+        /**
+         * An unresolved type.
+         */
+        @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
+        protected class UnresolvedType {
+
+            /**
+             * The type's binary representation.
+             */
+            private final byte[] binaryRepresentation;
+
+            /**
+             * A list of auxiliary types for this unresolved type.
+             */
+            private final List<? extends DynamicType> auxiliaryTypes;
+
+            /**
+             * Creates a new unresolved type.
+             *
+             * @param binaryRepresentation The type's binary representation.
+             * @param auxiliaryTypes       A list of auxiliary types for this unresolved type.
+             */
+            protected UnresolvedType(byte[] binaryRepresentation, List<? extends DynamicType> auxiliaryTypes) {
+                this.binaryRepresentation = binaryRepresentation;
+                this.auxiliaryTypes = auxiliaryTypes;
+            }
+
+            /**
+             * Resolves this type to a dynamic type.
+             *
+             * @param typeResolutionStrategy The type resolution strategy to apply.
+             * @return A dynamic type representing the inlined type.
+             */
+            protected DynamicType.Unloaded<S> toDynamicType(TypeResolutionStrategy.Resolved typeResolutionStrategy) {
+                return new DynamicType.Default.Unloaded<S>(instrumentedType,
+                        binaryRepresentation,
+                        loadedTypeInitializer,
+                        CompoundList.of(Default.this.auxiliaryTypes, auxiliaryTypes),
+                        typeResolutionStrategy);
+            }
+
+            /**
+             * Returns the binary representation of this unresolved type.
+             *
+             * @return The binary representation of this unresolved type.
+             */
+            protected byte[] getBinaryRepresentation() {
+                return binaryRepresentation;
+            }
+        }
 
         /**
          * A class validator that validates that a class only defines members that are appropriate for the sort of the generated class.
@@ -1541,6 +1992,21 @@ public interface TypeWriter<T> {
             private static final String RETURNS_VOID = "V";
 
             /**
+             * The descriptor of the {@link String} type.
+             */
+            private static final String STRING_DESCRIPTOR = "Ljava/lang/String;";
+
+            /**
+             * Indicates that a field is ignored.
+             */
+            private static final FieldVisitor IGNORE_FIELD = null;
+
+            /**
+             * Indicates that a method is ignored.
+             */
+            private static final MethodVisitor IGNORE_METHOD = null;
+
+            /**
              * The constraint to assert the members against. The constraint is first defined when the general class information is visited.
              */
             private Constraint constraint;
@@ -1551,25 +2017,38 @@ public interface TypeWriter<T> {
              * @param classVisitor The class visitor to which any calls are delegated to.
              */
             protected ValidatingClassVisitor(ClassVisitor classVisitor) {
-                super(ASM_API_VERSION, classVisitor);
+                super(OpenedClassReader.ASM_API, classVisitor);
+            }
+
+            /**
+             * Adds a validating visitor if type validation is enabled.
+             *
+             * @param classVisitor   The original class visitor.
+             * @param typeValidation The type validation state.
+             * @return A class visitor that applies type validation if this is required.
+             */
+            protected static ClassVisitor of(ClassVisitor classVisitor, TypeValidation typeValidation) {
+                return typeValidation.isEnabled()
+                        ? new ValidatingClassVisitor(classVisitor)
+                        : classVisitor;
             }
 
             @Override
             public void visit(int version, int modifiers, String name, String signature, String superName, String[] interfaces) {
-                ClassFileVersion classFileVersion = new ClassFileVersion(version);
-                List<Constraint> constraints = new LinkedList<Constraint>();
+                ClassFileVersion classFileVersion = ClassFileVersion.ofMinorMajor(version);
+                List<Constraint> constraints = new ArrayList<Constraint>();
                 constraints.add(new Constraint.ForClassFileVersion(classFileVersion));
                 if (name.endsWith('/' + PackageDescription.PACKAGE_CLASS_NAME)) {
                     constraints.add(Constraint.ForPackageType.INSTANCE);
                 } else if ((modifiers & Opcodes.ACC_ANNOTATION) != 0) {
-                    if (!classFileVersion.isAtLeastJava5()) {
+                    if (!classFileVersion.isAtLeast(ClassFileVersion.JAVA_V5)) {
                         throw new IllegalStateException("Cannot define an annotation type for class file version " + classFileVersion);
                     }
-                    constraints.add(classFileVersion.isAtLeastJava8()
+                    constraints.add(classFileVersion.isAtLeast(ClassFileVersion.JAVA_V8)
                             ? Constraint.ForAnnotation.JAVA_8
                             : Constraint.ForAnnotation.CLASSIC);
                 } else if ((modifiers & Opcodes.ACC_INTERFACE) != 0) {
-                    constraints.add(classFileVersion.isAtLeastJava8()
+                    constraints.add(classFileVersion.isAtLeast(ClassFileVersion.JAVA_V8)
                             ? Constraint.ForInterface.JAVA_8
                             : Constraint.ForInterface.CLASSIC);
                 } else if ((modifiers & Opcodes.ACC_ABSTRACT) != 0) {
@@ -1595,9 +2074,84 @@ public interface TypeWriter<T> {
             }
 
             @Override
+            public void visitNestHost(String nestHost) {
+                constraint.assertNestMate();
+                super.visitNestHost(nestHost);
+            }
+
+            @Override
+            public void visitNestMember(String nestMember) {
+                constraint.assertNestMate();
+                super.visitNestMember(nestMember);
+            }
+
+            @Override
             public FieldVisitor visitField(int modifiers, String name, String descriptor, String signature, Object defaultValue) {
-                constraint.assertField(name, (modifiers & Opcodes.ACC_PUBLIC) != 0, (modifiers & Opcodes.ACC_STATIC) != 0, signature != null);
-                return new ValidatingFieldVisitor(super.visitField(modifiers, name, descriptor, signature, defaultValue));
+                if (defaultValue != null) {
+                    Class<?> type;
+                    switch (descriptor.charAt(0)) {
+                        case 'Z':
+                        case 'B':
+                        case 'C':
+                        case 'S':
+                        case 'I':
+                            type = Integer.class;
+                            break;
+                        case 'J':
+                            type = Long.class;
+                            break;
+                        case 'F':
+                            type = Float.class;
+                            break;
+                        case 'D':
+                            type = Double.class;
+                            break;
+                        default:
+                            if (!descriptor.equals(STRING_DESCRIPTOR)) {
+                                throw new IllegalStateException("Cannot define a default value for type of field " + name);
+                            }
+                            type = String.class;
+                    }
+                    if (!type.isInstance(defaultValue)) {
+                        throw new IllegalStateException("Field " + name + " defines an incompatible default value " + defaultValue);
+                    } else if (type == Integer.class) {
+                        int minimum, maximum;
+                        switch (descriptor.charAt(0)) {
+                            case 'Z':
+                                minimum = 0;
+                                maximum = 1;
+                                break;
+                            case 'B':
+                                minimum = Byte.MIN_VALUE;
+                                maximum = Byte.MAX_VALUE;
+                                break;
+                            case 'C':
+                                minimum = Character.MIN_VALUE;
+                                maximum = Character.MAX_VALUE;
+                                break;
+                            case 'S':
+                                minimum = Short.MIN_VALUE;
+                                maximum = Short.MAX_VALUE;
+                                break;
+                            default:
+                                minimum = Integer.MIN_VALUE;
+                                maximum = Integer.MAX_VALUE;
+                        }
+                        int value = (Integer) defaultValue;
+                        if (value < minimum || value > maximum) {
+                            throw new IllegalStateException("Field " + name + " defines an incompatible default value " + defaultValue);
+                        }
+                    }
+                }
+                constraint.assertField(name,
+                        (modifiers & Opcodes.ACC_PUBLIC) != 0,
+                        (modifiers & Opcodes.ACC_STATIC) != 0,
+                        (modifiers & Opcodes.ACC_FINAL) != 0,
+                        signature != null);
+                FieldVisitor fieldVisitor = super.visitField(modifiers, name, descriptor, signature, defaultValue);
+                return fieldVisitor == null
+                        ? IGNORE_FIELD
+                        : new ValidatingFieldVisitor(fieldVisitor);
             }
 
             @Override
@@ -1605,20 +2159,18 @@ public interface TypeWriter<T> {
                 constraint.assertMethod(name,
                         (modifiers & Opcodes.ACC_ABSTRACT) != 0,
                         (modifiers & Opcodes.ACC_PUBLIC) != 0,
+                        (modifiers & Opcodes.ACC_PRIVATE) != 0,
                         (modifiers & Opcodes.ACC_STATIC) != 0,
+                        !name.equals(MethodDescription.CONSTRUCTOR_INTERNAL_NAME)
+                                && !name.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)
+                                && (modifiers & (Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0,
+                        name.equals(MethodDescription.CONSTRUCTOR_INTERNAL_NAME),
                         !descriptor.startsWith(NO_PARAMETERS) || descriptor.endsWith(RETURNS_VOID),
-                        name.equals(MethodDescription.CONSTRUCTOR_INTERNAL_NAME)
-                                || name.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)
-                                || (modifiers & Opcodes.ACC_PRIVATE) != 0,
                         signature != null);
-                return new ValidatingMethodVisitor(super.visitMethod(modifiers, name, descriptor, signature, exceptions), name);
-            }
-
-            @Override
-            public String toString() {
-                return "TypeWriter.Default.ValidatingClassVisitor{" +
-                        "constraint=" + constraint +
-                        "}";
+                MethodVisitor methodVisitor = super.visitMethod(modifiers, name, descriptor, signature, exceptions);
+                return methodVisitor == null
+                        ? IGNORE_METHOD
+                        : new ValidatingMethodVisitor(methodVisitor, name);
             }
 
             /**
@@ -1627,14 +2179,24 @@ public interface TypeWriter<T> {
             protected interface Constraint {
 
                 /**
+                 * Asserts if the type can legally represent a package description.
+                 *
+                 * @param modifier          The modifier that is to be written to the type.
+                 * @param definesInterfaces {@code true} if this type implements at least one interface.
+                 * @param isGeneric         {@code true} if this type defines a generic type signature.
+                 */
+                void assertType(int modifier, boolean definesInterfaces, boolean isGeneric);
+
+                /**
                  * Asserts a field for being valid.
                  *
                  * @param name      The name of the field.
                  * @param isPublic  {@code true} if this field is public.
                  * @param isStatic  {@code true} if this field is static.
-                 * @param isGeneric {@code true} if this method defines a generic signature.
+                 * @param isFinal   {@code true} if this field is final.
+                 * @param isGeneric {@code true} if this field defines a generic signature.
                  */
-                void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric);
+                void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric);
 
                 /**
                  * Asserts a method for being valid.
@@ -1642,17 +2204,21 @@ public interface TypeWriter<T> {
                  * @param name                       The name of the method.
                  * @param isAbstract                 {@code true} if the method is abstract.
                  * @param isPublic                   {@code true} if this method is public.
+                 * @param isPrivate                  {@code true} if this method is private.
                  * @param isStatic                   {@code true} if this method is static.
+                 * @param isVirtual                  {@code true} if this method is virtual.
+                 * @param isConstructor              {@code true} if this method is a constructor.
                  * @param isDefaultValueIncompatible {@code true} if a method's signature cannot describe an annotation property method.
-                 * @param isNonStaticNonVirtual      {@code true} if the method is non-virtual and non-static, i.e. a constructor, type initializer or private.
                  * @param isGeneric                  {@code true} if this method defines a generic signature.
                  */
                 void assertMethod(String name,
                                   boolean isAbstract,
                                   boolean isPublic,
+                                  boolean isPrivate,
                                   boolean isStatic,
+                                  boolean isVirtual,
+                                  boolean isConstructor,
                                   boolean isDefaultValueIncompatible,
-                                  boolean isNonStaticNonVirtual,
                                   boolean isGeneric);
 
                 /**
@@ -1673,13 +2239,44 @@ public interface TypeWriter<T> {
                 void assertDefaultValue(String name);
 
                 /**
-                 * Asserts if the type can legally represent a package description.
-                 *
-                 * @param modifier          The modifier that is to be written to the type.
-                 * @param definesInterfaces {@code true} if this type implements at least one interface.
-                 * @param isGeneric         {@code true} if this type defines a generic type signature.
+                 * Asserts if it is legal to invoke a default method from a type.
                  */
-                void assertType(int modifier, boolean definesInterfaces, boolean isGeneric);
+                void assertDefaultMethodCall();
+
+                /**
+                 * Asserts the capability to store a type constant in the class's constant pool.
+                 */
+                void assertTypeInConstantPool();
+
+                /**
+                 * Asserts the capability to store a method type constant in the class's constant pool.
+                 */
+                void assertMethodTypeInConstantPool();
+
+                /**
+                 * Asserts the capability to store a method handle in the class's constant pool.
+                 */
+                void assertHandleInConstantPool();
+
+                /**
+                 * Asserts the capability to invoke a method dynamically.
+                 */
+                void assertInvokeDynamic();
+
+                /**
+                 * Asserts the capability of executing a subroutine.
+                 */
+                void assertSubRoutine();
+
+                /**
+                 * Asserts the capability of storing a dynamic value in the constant pool.
+                 */
+                void assertDynamicValueInConstantPool();
+
+                /**
+                 * Asserts the capability of storing nest mate information.
+                 */
+                void assertNestMate();
 
                 /**
                  * Represents the constraint of a class type.
@@ -1687,12 +2284,12 @@ public interface TypeWriter<T> {
                 enum ForClass implements Constraint {
 
                     /**
-                     * Represents the constrainsts of a non-abstract class.
+                     * Represents the constraints of a non-abstract class.
                      */
                     MANIFEST(true),
 
                     /**
-                     * Represents the constrainsts of an abstract class.
+                     * Represents the constraints of an abstract class.
                      */
                     ABSTRACT(false);
 
@@ -1710,47 +2307,112 @@ public interface TypeWriter<T> {
                         this.manifestType = manifestType;
                     }
 
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertMethod(String name,
                                              boolean isAbstract,
                                              boolean isPublic,
+                                             boolean isPrivate,
                                              boolean isStatic,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
                                              boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
                                              boolean isGeneric) {
                         if (isAbstract && manifestType) {
                             throw new IllegalStateException("Cannot define abstract method '" + name + "' for non-abstract class");
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertTypeAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertDefaultValue(String name) {
                         throw new IllegalStateException("Cannot define default value for '" + name + "' for non-annotation type");
                     }
 
-                    @Override
-                    public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
                         /* do nothing */
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.ForClass." + name();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        /* do nothing */
                     }
                 }
 
@@ -1764,38 +2426,94 @@ public interface TypeWriter<T> {
                      */
                     INSTANCE;
 
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
                         throw new IllegalStateException("Cannot define a field for a package description type");
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertMethod(String name,
                                              boolean isAbstract,
                                              boolean isPublic,
+                                             boolean isPrivate,
                                              boolean isStatic,
-                                             boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
+                                             boolean isNoDefaultValue,
                                              boolean isGeneric) {
                         throw new IllegalStateException("Cannot define a method for a package description type");
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertTypeAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertDefaultValue(String name) {
                         /* do nothing, implicit by forbidding methods */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
                         if (modifier != PackageDescription.PACKAGE_MODIFIERS) {
                             throw new IllegalStateException("A package description type must define " + PackageDescription.PACKAGE_MODIFIERS + " as modifier");
@@ -1804,9 +2522,18 @@ public interface TypeWriter<T> {
                         }
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.ForPackageType." + name();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        /* do nothing */
                     }
                 }
 
@@ -1839,55 +2566,122 @@ public interface TypeWriter<T> {
                         this.classic = classic;
                     }
 
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
-                        if (!isStatic || !isPublic) {
-                            throw new IllegalStateException("Cannot define non-static or non-public field '" + name + "' for interface type");
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
+                        if (!isStatic || !isPublic || !isFinal) {
+                            throw new IllegalStateException("Cannot only define public, static, final field '" + name + "' for interface type");
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertMethod(String name,
                                              boolean isAbstract,
                                              boolean isPublic,
+                                             boolean isPrivate,
                                              boolean isStatic,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
                                              boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
                                              boolean isGeneric) {
                         if (!name.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)) {
-                            if (!isPublic || isNonStaticNonVirtual) {
-                                throw new IllegalStateException("Cannot define non-public or non-virtual method '" + name + "' for interface type");
-                            } else if (classic && isStatic) {
-                                throw new IllegalStateException("Cannot define static method '" + name + "' for a pre-Java 8 interface type");
+                            if (isConstructor) {
+                                throw new IllegalStateException("Cannot define constructor for interface type");
+                            } else if (classic && !isPublic) {
+                                throw new IllegalStateException("Cannot define non-public method '" + name + "' for interface type");
+                            } else if (classic && !isVirtual) {
+                                throw new IllegalStateException("Cannot define non-virtual method '" + name + "' for a pre-Java 8 interface type");
                             } else if (classic && !isAbstract) {
                                 throw new IllegalStateException("Cannot define default method '" + name + "' for pre-Java 8 interface type");
                             }
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertTypeAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertDefaultValue(String name) {
+                        throw new IllegalStateException("Cannot define default value for '" + name + "' for non-annotation type");
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
                         /* do nothing */
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.ForInterface." + name();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        /* do nothing */
                     }
                 }
 
@@ -1920,63 +2714,129 @@ public interface TypeWriter<T> {
                         this.classic = classic;
                     }
 
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
-                        if (!isStatic || !isPublic) {
-                            throw new IllegalStateException("Cannot define non-static or non-public field '" + name + "' for annotation type");
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
+                        if (!isStatic || !isPublic || !isFinal) {
+                            throw new IllegalStateException("Cannot only define public, static, final field '" + name + "' for interface type");
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertMethod(String name,
                                              boolean isAbstract,
                                              boolean isPublic,
+                                             boolean isPrivate,
                                              boolean isStatic,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
                                              boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
                                              boolean isGeneric) {
                         if (!name.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)) {
-                            if (!isPublic || isNonStaticNonVirtual) {
-                                throw new IllegalStateException("Cannot define non-public, non-abstract or non-virtual method '" + name + "' for annotation type");
-                            } else if (classic && isStatic) {
-                                throw new IllegalStateException("Cannot define static method '" + name + "' for a pre-Java 8 annotation type");
+                            if (isConstructor) {
+                                throw new IllegalStateException("Cannot define constructor for interface type");
+                            } else if (classic && !isVirtual) {
+                                throw new IllegalStateException("Cannot define non-virtual method '" + name + "' for a pre-Java 8 annotation type");
                             } else if (!isStatic && isDefaultValueIncompatible) {
                                 throw new IllegalStateException("Cannot define method '" + name + "' with the given signature as an annotation type method");
                             }
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertTypeAnnotation() {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertDefaultValue(String name) {
                         /* do nothing */
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
                         if ((modifier & Opcodes.ACC_INTERFACE) == 0) {
                             throw new IllegalStateException("Cannot define annotation type without interface modifier");
                         }
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.ForAnnotation." + name();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        /* do nothing */
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        /* do nothing */
                     }
                 }
 
                 /**
                  * Represents the constraint implied by a class file version.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 class ForClassFileVersion implements Constraint {
 
                     /**
@@ -1989,88 +2849,157 @@ public interface TypeWriter<T> {
                      *
                      * @param classFileVersion The enforced class file version.
                      */
-                    public ForClassFileVersion(ClassFileVersion classFileVersion) {
+                    protected ForClassFileVersion(ClassFileVersion classFileVersion) {
                         this.classFileVersion = classFileVersion;
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertType(int modifiers, boolean definesInterfaces, boolean isGeneric) {
-                        if ((modifiers & Opcodes.ACC_ANNOTATION) != 0 && !classFileVersion.isAtLeastJava5()) {
+                        if ((modifiers & Opcodes.ACC_ANNOTATION) != 0 && !classFileVersion.isAtLeast(ClassFileVersion.JAVA_V5)) {
                             throw new IllegalStateException("Cannot define annotation type for class file version " + classFileVersion);
-                        } else if (isGeneric && !classFileVersion.isAtLeastJava5()) {
+                        } else if (isGeneric && !classFileVersion.isAtLeast(ClassFileVersion.JAVA_V5)) {
                             throw new IllegalStateException("Cannot define a generic type for class file version " + classFileVersion);
                         }
                     }
 
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
-                        if (isGeneric && !classFileVersion.isAtLeastJava5()) {
-                            throw new IllegalStateException("Cannot define generic method '" + name + "' for class file version " + classFileVersion);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
+                        if (isGeneric && !classFileVersion.isAtLeast(ClassFileVersion.JAVA_V5)) {
+                            throw new IllegalStateException("Cannot define generic field '" + name + "' for class file version " + classFileVersion);
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertMethod(String name,
                                              boolean isAbstract,
                                              boolean isPublic,
+                                             boolean isPrivate,
                                              boolean isStatic,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
                                              boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
                                              boolean isGeneric) {
-                        if (isGeneric && !classFileVersion.isAtLeastJava5()) {
+                        if (isGeneric && !classFileVersion.isAtLeast(ClassFileVersion.JAVA_V5)) {
                             throw new IllegalStateException("Cannot define generic method '" + name + "' for class file version " + classFileVersion);
-                        } else if ((isStatic || isNonStaticNonVirtual) && isAbstract) {
+                        } else if (!isVirtual && isAbstract) {
                             throw new IllegalStateException("Cannot define static or non-virtual method '" + name + "' to be abstract");
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertAnnotation() {
-                        if (!classFileVersion.isAtLeastJava5()) {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V5)) {
                             throw new IllegalStateException("Cannot write annotations for class file version " + classFileVersion);
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertTypeAnnotation() {
-                        if (!classFileVersion.isAtLeastJava8()) {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V5)) {
                             throw new IllegalStateException("Cannot write type annotations for class file version " + classFileVersion);
                         }
                     }
 
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertDefaultValue(String name) {
                         /* do nothing, implicitly checked by type assertion */
                     }
 
-                    @Override
-                    public boolean equals(Object other) {
-                        return this == other || !(other == null || getClass() != other.getClass())
-                                && classFileVersion.equals(((ForClassFileVersion) other).classFileVersion);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V8)) {
+                            throw new IllegalStateException("Cannot invoke default method for class file version " + classFileVersion);
+                        }
                     }
 
-                    @Override
-                    public int hashCode() {
-                        return classFileVersion.hashCode();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V5)) {
+                            throw new IllegalStateException("Cannot write type to constant pool for class file version " + classFileVersion);
+                        }
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.ForClassFileVersion{" +
-                                "classFileVersion=" + classFileVersion +
-                                '}';
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V7)) {
+                            throw new IllegalStateException("Cannot write method type to constant pool for class file version " + classFileVersion);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V7)) {
+                            throw new IllegalStateException("Cannot write method handle to constant pool for class file version " + classFileVersion);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V7)) {
+                            throw new IllegalStateException("Cannot write invoke dynamic instruction for class file version " + classFileVersion);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        if (classFileVersion.isGreaterThan(ClassFileVersion.JAVA_V5)) {
+                            throw new IllegalStateException("Cannot write subroutine for class file version " + classFileVersion);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V11)) {
+                            throw new IllegalStateException("Cannot write dynamic constant for class file version " + classFileVersion);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        if (classFileVersion.isLessThan(ClassFileVersion.JAVA_V11)) {
+                            throw new IllegalStateException("Cannot define nest mate for class file version " + classFileVersion);
+                        }
                     }
                 }
 
                 /**
                  * A constraint implementation that summarizes several constraints.
                  */
+                @HashCodeAndEqualsPlugin.Enhance
                 class Compound implements Constraint {
 
                     /**
                      * A list of constraints that is enforced in the given order.
                      */
-                    private final List<? extends Constraint> constraints;
+                    private final List<Constraint> constraints;
 
                     /**
                      * Creates a new compound constraint.
@@ -2078,79 +3007,156 @@ public interface TypeWriter<T> {
                      * @param constraints A list of constraints that is enforced in the given order.
                      */
                     public Compound(List<? extends Constraint> constraints) {
-                        this.constraints = constraints;
-                    }
-
-                    @Override
-                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isGeneric) {
+                        this.constraints = new ArrayList<Constraint>();
                         for (Constraint constraint : constraints) {
-                            constraint.assertField(name, isPublic, isStatic, isGeneric);
+                            if (constraint instanceof Compound) {
+                                this.constraints.addAll(((Compound) constraint).constraints);
+                            } else {
+                                this.constraints.add(constraint);
+                            }
                         }
                     }
 
-                    @Override
-                    public void assertMethod(String name,
-                                             boolean isAbstract,
-                                             boolean isPublic,
-                                             boolean isStatic,
-                                             boolean isDefaultValueIncompatible,
-                                             boolean isNonStaticNonVirtual,
-                                             boolean isGeneric) {
-                        for (Constraint constraint : constraints) {
-                            constraint.assertMethod(name,
-                                    isAbstract,
-                                    isPublic,
-                                    isStatic,
-                                    isDefaultValueIncompatible,
-                                    isNonStaticNonVirtual,
-                                    isGeneric);
-                        }
-                    }
-
-                    @Override
-                    public void assertDefaultValue(String name) {
-                        for (Constraint constraint : constraints) {
-                            constraint.assertDefaultValue(name);
-                        }
-                    }
-
-                    @Override
-                    public void assertAnnotation() {
-                        for (Constraint constraint : constraints) {
-                            constraint.assertAnnotation();
-                        }
-                    }
-
-                    @Override
-                    public void assertTypeAnnotation() {
-                        for (Constraint constraint : constraints) {
-                            constraint.assertTypeAnnotation();
-                        }
-                    }
-
-                    @Override
+                    /**
+                     * {@inheritDoc}
+                     */
                     public void assertType(int modifier, boolean definesInterfaces, boolean isGeneric) {
                         for (Constraint constraint : constraints) {
                             constraint.assertType(modifier, definesInterfaces, isGeneric);
                         }
                     }
 
-                    @Override
-                    public boolean equals(Object other) {
-                        return this == other || !(other == null || getClass() != other.getClass())
-                                && constraints.equals(((Compound) other).constraints);
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertField(String name, boolean isPublic, boolean isStatic, boolean isFinal, boolean isGeneric) {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertField(name, isPublic, isStatic, isFinal, isGeneric);
+                        }
                     }
 
-                    @Override
-                    public int hashCode() {
-                        return constraints.hashCode();
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethod(String name,
+                                             boolean isAbstract,
+                                             boolean isPublic,
+                                             boolean isPrivate,
+                                             boolean isStatic,
+                                             boolean isVirtual,
+                                             boolean isConstructor,
+                                             boolean isDefaultValueIncompatible,
+                                             boolean isGeneric) {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertMethod(name,
+                                    isAbstract,
+                                    isPublic,
+                                    isPrivate,
+                                    isStatic,
+                                    isVirtual,
+                                    isConstructor,
+                                    isDefaultValueIncompatible,
+                                    isGeneric);
+                        }
                     }
 
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ValidatingClassVisitor.Constraint.Compound{" +
-                                "constraints=" + constraints +
-                                '}';
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultValue(String name) {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertDefaultValue(name);
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDefaultMethodCall() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertDefaultMethodCall();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertAnnotation() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertAnnotation();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeAnnotation() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertTypeAnnotation();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertTypeInConstantPool() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertTypeInConstantPool();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertMethodTypeInConstantPool() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertMethodTypeInConstantPool();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertHandleInConstantPool() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertHandleInConstantPool();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertInvokeDynamic() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertInvokeDynamic();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertSubRoutine() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertSubRoutine();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertDynamicValueInConstantPool() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertDynamicValueInConstantPool();
+                        }
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void assertNestMate() {
+                        for (Constraint constraint : constraints) {
+                            constraint.assertNestMate();
+                        }
                     }
                 }
             }
@@ -2166,20 +3172,13 @@ public interface TypeWriter<T> {
                  * @param fieldVisitor The field visitor to which any calls are delegated to.
                  */
                 protected ValidatingFieldVisitor(FieldVisitor fieldVisitor) {
-                    super(ASM_API_VERSION, fieldVisitor);
+                    super(OpenedClassReader.ASM_API, fieldVisitor);
                 }
 
                 @Override
                 public AnnotationVisitor visitAnnotation(String desc, boolean visible) {
                     constraint.assertAnnotation();
                     return super.visitAnnotation(desc, visible);
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.Default.ValidatingClassVisitor.ValidatingFieldVisitor{" +
-                            "classVisitor=" + ValidatingClassVisitor.this +
-                            '}';
                 }
             }
 
@@ -2200,7 +3199,7 @@ public interface TypeWriter<T> {
                  * @param name          The name of the method being visited.
                  */
                 protected ValidatingMethodVisitor(MethodVisitor methodVisitor, String name) {
-                    super(ASM_API_VERSION, methodVisitor);
+                    super(OpenedClassReader.ASM_API, methodVisitor);
                     this.name = name;
                 }
 
@@ -2217,11 +3216,52 @@ public interface TypeWriter<T> {
                 }
 
                 @Override
-                public String toString() {
-                    return "TypeWriter.Default.ValidatingClassVisitor.ValidatingMethodVisitor{" +
-                            "classVisitor=" + ValidatingClassVisitor.this +
-                            ", name='" + name + '\'' +
-                            '}';
+                @SuppressFBWarnings(value = "SF_SWITCH_NO_DEFAULT", justification = "Fall through to default case is intentional")
+                public void visitLdcInsn(Object value) {
+                    if (value instanceof Type) {
+                        Type type = (Type) value;
+                        switch (type.getSort()) {
+                            case Type.OBJECT:
+                            case Type.ARRAY:
+                                constraint.assertTypeInConstantPool();
+                                break;
+                            case Type.METHOD:
+                                constraint.assertMethodTypeInConstantPool();
+                                break;
+                        }
+                    } else if (value instanceof Handle) {
+                        constraint.assertHandleInConstantPool();
+                    } else if (value instanceof ConstantDynamic) {
+                        constraint.assertDynamicValueInConstantPool();
+                    }
+                    super.visitLdcInsn(value);
+                }
+
+                @Override
+                public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean isInterface) {
+                    if (isInterface && opcode == Opcodes.INVOKESPECIAL) {
+                        constraint.assertDefaultMethodCall();
+                    }
+                    super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
+                }
+
+                @Override
+                public void visitInvokeDynamicInsn(String name, String descriptor, Handle bootstrapMethod, Object[] bootstrapArgument) {
+                    constraint.assertInvokeDynamic();
+                    for (Object constant : bootstrapArgument) {
+                        if (constant instanceof ConstantDynamic) {
+                            constraint.assertDynamicValueInConstantPool();
+                        }
+                    }
+                    super.visitInvokeDynamicInsn(name, descriptor, bootstrapMethod, bootstrapArgument);
+                }
+
+                @Override
+                public void visitJumpInsn(int opcode, Label label) {
+                    if (opcode == Opcodes.JSR) {
+                        constraint.assertSubRoutine();
+                    }
+                    super.visitJumpInsn(opcode, label);
                 }
             }
         }
@@ -2231,17 +3271,13 @@ public interface TypeWriter<T> {
          *
          * @param <U> The best known loaded type for the dynamically created type.
          */
-        public static class ForInlining<U> extends Default<U> {
+        @HashCodeAndEqualsPlugin.Enhance
+        public abstract static class ForInlining<U> extends Default<U> {
 
             /**
-             * Indicates that a class does not define an explicit super class.
+             * Indicates that a field should be ignored.
              */
-            private static final TypeDescription NO_SUPER_CLASS = null;
-
-            /**
-             * Indicates that a method should be retained.
-             */
-            private static final MethodDescription RETAIN_METHOD = null;
+            private static final FieldVisitor IGNORE_FIELD = null;
 
             /**
              * Indicates that a method should be ignored.
@@ -2254,659 +3290,1705 @@ public interface TypeWriter<T> {
             private static final AnnotationVisitor IGNORE_ANNOTATION = null;
 
             /**
-             * The class file locator to use.
+             * The original type's description.
              */
-            private final ClassFileLocator classFileLocator;
+            protected final TypeDescription originalType;
 
             /**
-             * The target type that is to be redefined via inlining.
+             * The class file locator for locating the original type's class file.
              */
-            private final TypeDescription targetType;
+            protected final ClassFileLocator classFileLocator;
 
             /**
-             * The method rebase resolver to use.
-             */
-            private final MethodRebaseResolver methodRebaseResolver;
-
-            /**
-             * Creates a new type writer for inling a type into an existing type description.
+             * Creates a new inlining type writer.
              *
-             * @param instrumentedType             The instrumented type that is to be written.
-             * @param loadedTypeInitializer        The loaded type initializer of the instrumented type.
-             * @param typeInitializer              The type initializer of the instrumented type.
-             * @param explicitAuxiliaryTypes       A list of explicit auxiliary types that are to be added to the created dynamic type.
-             * @param classFileVersion             The class file version of the written type.
-             * @param auxiliaryTypeNamingStrategy  A naming strategy that is used for naming auxiliary types.
-             * @param implementationContextFactory The implementation context factory to use.
-             * @param classVisitorWrapper          A class visitor wrapper to apply during instrumentation.
-             * @param attributeAppender            The type attribute appender to apply.
-             * @param fieldPool                    The field pool to be used for instrumenting fields.
-             * @param methodPool                   The method pool to be used for instrumenting methods.
-             * @param instrumentedMethods          A list of all instrumented methods.
-             * @param classFileLocator             The class file locator to use.
-             * @param targetType                   The target type that is to be redefined via inlining.
-             * @param methodRebaseResolver         The method rebase resolver to use.
+             * @param instrumentedType             The instrumented type to be created.
+             * @param classFileVersion             The class file specified by the user.
+             * @param fieldPool                    The field pool to use.
+             * @param auxiliaryTypes               The explicit auxiliary types to add to the created type.
+             * @param fields                       The instrumented type's declared fields.
+             * @param methods                      The instrumented type's declared and virtually inherited methods.
+             * @param instrumentedMethods          The instrumented methods relevant to this type creation.
+             * @param loadedTypeInitializer        The loaded type initializer to apply onto the created type after loading.
+             * @param typeInitializer              The type initializer to include in the created type's type initializer.
+             * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+             * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply.
+             * @param annotationRetention          The annotation retention to apply.
+             * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+             * @param implementationContextFactory The implementation context factory to apply.
+             * @param typeValidation               Determines if a type should be explicitly validated.
+             * @param classWriterStrategy          The class writer strategy to use.
+             * @param typePool                     The type pool to use for computing stack map frames, if required.
+             * @param originalType                 The original type's description.
+             * @param classFileLocator             The class file locator for locating the original type's class file.
              */
             protected ForInlining(TypeDescription instrumentedType,
-                                  LoadedTypeInitializer loadedTypeInitializer,
-                                  InstrumentedType.TypeInitializer typeInitializer,
-                                  List<DynamicType> explicitAuxiliaryTypes,
                                   ClassFileVersion classFileVersion,
+                                  FieldPool fieldPool,
+                                  List<? extends DynamicType> auxiliaryTypes,
+                                  FieldList<FieldDescription.InDefinedShape> fields,
+                                  MethodList<?> methods,
+                                  MethodList<?> instrumentedMethods,
+                                  LoadedTypeInitializer loadedTypeInitializer,
+                                  TypeInitializer typeInitializer,
+                                  TypeAttributeAppender typeAttributeAppender,
+                                  AsmVisitorWrapper asmVisitorWrapper,
+                                  AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                  AnnotationRetention annotationRetention,
                                   AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
                                   Implementation.Context.Factory implementationContextFactory,
-                                  ClassVisitorWrapper classVisitorWrapper,
-                                  TypeAttributeAppender attributeAppender,
-                                  FieldPool fieldPool,
-                                  MethodPool methodPool,
-                                  MethodList instrumentedMethods,
-                                  ClassFileLocator classFileLocator,
-                                  TypeDescription targetType,
-                                  MethodRebaseResolver methodRebaseResolver) {
+                                  TypeValidation typeValidation,
+                                  ClassWriterStrategy classWriterStrategy,
+                                  TypePool typePool,
+                                  TypeDescription originalType,
+                                  ClassFileLocator classFileLocator) {
                 super(instrumentedType,
+                        classFileVersion,
+                        fieldPool,
+                        auxiliaryTypes,
+                        fields,
+                        methods,
+                        instrumentedMethods,
                         loadedTypeInitializer,
                         typeInitializer,
-                        explicitAuxiliaryTypes,
-                        classFileVersion,
+                        typeAttributeAppender,
+                        asmVisitorWrapper,
+                        annotationValueFilterFactory,
+                        annotationRetention,
                         auxiliaryTypeNamingStrategy,
                         implementationContextFactory,
-                        classVisitorWrapper,
-                        attributeAppender,
-                        fieldPool,
-                        methodPool,
-                        instrumentedMethods);
+                        typeValidation,
+                        classWriterStrategy,
+                        typePool);
+                this.originalType = originalType;
                 this.classFileLocator = classFileLocator;
-                this.targetType = targetType;
-                this.methodRebaseResolver = methodRebaseResolver;
             }
 
             @Override
-            public byte[] create(Implementation.Context.ExtractableView implementationContext) {
+            protected UnresolvedType create(TypeInitializer typeInitializer) {
                 try {
-                    ClassFileLocator.Resolution resolution = classFileLocator.locate(targetType.getName());
-                    if (!resolution.isResolved()) {
-                        throw new IllegalArgumentException("Cannot locate the class file for " + targetType + " using " + classFileLocator);
-                    }
-                    return doCreate(implementationContext, resolution.resolve());
+                    int writerFlags = asmVisitorWrapper.mergeWriter(AsmVisitorWrapper.NO_FLAGS);
+                    int readerFlags = asmVisitorWrapper.mergeReader(AsmVisitorWrapper.NO_FLAGS);
+                    byte[] binaryRepresentation = classFileLocator.locate(originalType.getName()).resolve();
+                    ClassDumpAction.dump(DUMP_FOLDER, instrumentedType, true, binaryRepresentation);
+                    ClassReader classReader = OpenedClassReader.of(binaryRepresentation);
+                    ClassWriter classWriter = classWriterStrategy.resolve(writerFlags, typePool, classReader);
+                    ContextRegistry contextRegistry = new ContextRegistry();
+                    classReader.accept(writeTo(ValidatingClassVisitor.of(classWriter, typeValidation),
+                            typeInitializer,
+                            contextRegistry,
+                            writerFlags,
+                            readerFlags), readerFlags);
+                    return new UnresolvedType(classWriter.toByteArray(), contextRegistry.getAuxiliaryTypes());
                 } catch (IOException exception) {
                     throw new RuntimeException("The class file could not be written", exception);
                 }
             }
 
             /**
-             * Performs the actual creation of a class file.
-             *
-             * @param implementationContext The implementation context to use for implementing the class file.
-             * @param binaryRepresentation  The binary representation of the class file.
-             * @return The byte array representing the created class.
-             */
-            private byte[] doCreate(Implementation.Context.ExtractableView implementationContext, byte[] binaryRepresentation) {
-                ClassReader classReader = new ClassReader(binaryRepresentation);
-                ClassWriter classWriter = new ClassWriter(classReader, classVisitorWrapper.mergeWriter(ASM_MANUAL_FLAG));
-                classReader.accept(writeTo(classVisitorWrapper.wrap(new ValidatingClassVisitor(classWriter)), implementationContext),
-                        classVisitorWrapper.mergeReader(ASM_MANUAL_FLAG));
-                return classWriter.toByteArray();
-            }
-
-            /**
              * Creates a class visitor which weaves all changes and additions on the fly.
              *
-             * @param classVisitor          The class visitor to which this entry is to be written to.
-             * @param implementationContext The implementation context to use for implementing the class file.
+             * @param classVisitor    The class visitor to which this entry is to be written to.
+             * @param typeInitializer The type initializer to apply.
+             * @param contextRegistry A context registry to register the lazily created implementation context to.
+             * @param writerFlags     The writer flags being used.
+             * @param readerFlags     The reader flags being used.
              * @return A class visitor which is capable of applying the changes.
              */
-            private ClassVisitor writeTo(ClassVisitor classVisitor, Implementation.Context.ExtractableView implementationContext) {
-                return FramePreservingRemapper.of(targetType.getInternalName(),
-                        instrumentedType.getInternalName(),
-                        new RedefinitionClassVisitor(classVisitor, implementationContext));
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                if (this == other) return true;
-                if (other == null || getClass() != other.getClass()) return false;
-                if (!super.equals(other)) return false;
-                ForInlining<?> that = (ForInlining<?>) other;
-                return classFileLocator.equals(that.classFileLocator)
-                        && targetType.equals(that.targetType)
-                        && methodRebaseResolver.equals(that.methodRebaseResolver);
-            }
-
-            @Override
-            public int hashCode() {
-                int result = super.hashCode();
-                result = 31 * result + classFileLocator.hashCode();
-                result = 31 * result + targetType.hashCode();
-                result = 31 * result + methodRebaseResolver.hashCode();
-                return result;
-            }
-
-            @Override
-            public String toString() {
-                return "TypeWriter.Default.ForInlining{" +
-                        "instrumentedType=" + instrumentedType +
-                        ", loadedTypeInitializer=" + loadedTypeInitializer +
-                        ", typeInitializer=" + typeInitializer +
-                        ", explicitAuxiliaryTypes=" + explicitAuxiliaryTypes +
-                        ", classFileVersion=" + classFileVersion +
-                        ", auxiliaryTypeNamingStrategy=" + auxiliaryTypeNamingStrategy +
-                        ", classVisitorWrapper=" + classVisitorWrapper +
-                        ", attributeAppender=" + attributeAppender +
-                        ", fieldPool=" + fieldPool +
-                        ", methodPool=" + methodPool +
-                        ", instrumentedMethods=" + instrumentedMethods +
-                        ", classFileLocator=" + classFileLocator +
-                        ", targetType=" + targetType +
-                        ", methodRebaseResolver=" + methodRebaseResolver +
-                        '}';
-            }
+            protected abstract ClassVisitor writeTo(ClassVisitor classVisitor,
+                                                    TypeInitializer typeInitializer,
+                                                    ContextRegistry contextRegistry,
+                                                    int writerFlags,
+                                                    int readerFlags);
 
             /**
-             * A method containing the original type initializer of a redefined class.
+             * A context registry allows to extract auxiliary types from a lazily created implementation context.
              */
-            protected static class TypeInitializerDelegate extends MethodDescription.InDefinedShape.AbstractBase {
+            protected static class ContextRegistry {
 
                 /**
-                 * A prefix for the name of the method that represents the original type initializer.
+                 * The implementation context that is used for creating a class or {@code null} if it was not registered.
                  */
-                private static final String TYPE_INITIALIZER_PROXY_PREFIX = "classInitializer";
+                private Implementation.Context.ExtractableView implementationContext;
 
                 /**
-                 * The instrumented type that defines this delegate method.
-                 */
-                private final TypeDescription instrumentedType;
-
-                /**
-                 * The suffix to append to the default prefix in order to avoid naming conflicts.
-                 */
-                private final String suffix;
-
-                /**
-                 * Creates a new type initializer delegate.
+                 * Registers the implementation context.
                  *
-                 * @param instrumentedType The instrumented type that defines this delegate method.
-                 * @param suffix           The suffix to append to the default prefix in order to avoid naming conflicts.
+                 * @param implementationContext The implementation context.
                  */
-                protected TypeInitializerDelegate(TypeDescription instrumentedType, String suffix) {
-                    this.instrumentedType = instrumentedType;
-                    this.suffix = suffix;
+                public void setImplementationContext(Implementation.Context.ExtractableView implementationContext) {
+                    this.implementationContext = implementationContext;
                 }
 
-                @Override
-                public TypeDescription getDeclaringType() {
-                    return instrumentedType;
-                }
-
-                @Override
-                public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
-                    return new ParameterList.Empty();
-                }
-
-                @Override
-                public GenericTypeDescription getReturnType() {
-                    return TypeDescription.VOID;
-                }
-
-                @Override
-                public GenericTypeList getExceptionTypes() {
-                    return new GenericTypeList.Empty();
-                }
-
-                @Override
-                public Object getDefaultValue() {
-                    return MethodDescription.NO_DEFAULT_VALUE;
-                }
-
-                @Override
-                public GenericTypeList getTypeVariables() {
-                    return new GenericTypeList.Empty();
-                }
-
-                @Override
-                public AnnotationList getDeclaredAnnotations() {
-                    return new AnnotationList.Empty();
-                }
-
-                @Override
-                public int getModifiers() {
-                    return Opcodes.ACC_SYNTHETIC | Opcodes.ACC_STATIC | (instrumentedType.isInterface()
-                            ? Opcodes.ACC_PUBLIC
-                            : Opcodes.ACC_PRIVATE);
-                }
-
-                @Override
-                public String getInternalName() {
-                    return String.format("%s$%s", TYPE_INITIALIZER_PROXY_PREFIX, suffix);
+                /**
+                 * Returns the auxiliary types that were registered during class creation. This method must only be called after
+                 * a class was created.
+                 *
+                 * @return The auxiliary types that were registered during class creation
+                 */
+                @SuppressFBWarnings(value = "UWF_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR", justification = "Lazy value definition is intended")
+                public List<DynamicType> getAuxiliaryTypes() {
+                    return implementationContext.getAuxiliaryTypes();
                 }
             }
 
             /**
-             * A remapper adapter that does not attempt to reorder method frames which is never the case for a renaming. This
-             * adaption might not longer be necessary in the future:
-             * <a href="http://forge.ow2.org/tracker/index.php?func=detail&aid=317576&group_id=23&atid=100023">ASM #317576</a>.
+             * A default type writer that reprocesses a type completely.
+             *
+             * @param <V> The best known loaded type for the dynamically created type.
              */
-            protected static class FramePreservingRemapper extends RemappingClassAdapter {
+            @HashCodeAndEqualsPlugin.Enhance
+            protected static class WithFullProcessing<V> extends ForInlining<V> {
 
                 /**
-                 * Creates a new frame preserving class remapper.
-                 *
-                 * @param classVisitor The class visitor that is responsible for writing the class.
-                 * @param remapper     The remapper to use for renaming the instrumented type.
+                 * The method registry to use.
                  */
-                protected FramePreservingRemapper(ClassVisitor classVisitor, Remapper remapper) {
-                    super(ASM_API_VERSION, classVisitor, remapper);
+                private final MethodRegistry.Prepared methodRegistry;
+
+                /**
+                 * The implementation target factory to use.
+                 */
+                private final Implementation.Target.Factory implementationTargetFactory;
+
+                /**
+                 * The method rebase resolver to use for rebasing methods.
+                 */
+                private final MethodRebaseResolver methodRebaseResolver;
+
+                /**
+                 * Creates a new inlining type writer that fully reprocesses a type.
+                 *
+                 * @param instrumentedType             The instrumented type to be created.
+                 * @param classFileVersion             The class file specified by the user.
+                 * @param fieldPool                    The field pool to use.
+                 * @param auxiliaryTypes               The explicit auxiliary types to add to the created type.
+                 * @param fields                       The instrumented type's declared fields.
+                 * @param methods                      The instrumented type's declared and virtually inherited methods.
+                 * @param instrumentedMethods          The instrumented methods relevant to this type creation.
+                 * @param loadedTypeInitializer        The loaded type initializer to apply onto the created type after loading.
+                 * @param typeInitializer              The type initializer to include in the created type's type initializer.
+                 * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+                 * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+                 * @param annotationValueFilterFactory The annotation value filter factory to apply.
+                 * @param annotationRetention          The annotation retention to apply.
+                 * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+                 * @param implementationContextFactory The implementation context factory to apply.
+                 * @param typeValidation               Determines if a type should be explicitly validated.
+                 * @param classWriterStrategy          The class writer strategy to use.
+                 * @param typePool                     The type pool to use for computing stack map frames, if required.
+                 * @param originalType                 The original type's description.
+                 * @param classFileLocator             The class file locator for locating the original type's class file.
+                 * @param methodRegistry               The method registry to use.
+                 * @param implementationTargetFactory  The implementation target factory to use.
+                 * @param methodRebaseResolver         The method rebase resolver to use for rebasing methods.
+                 */
+                protected WithFullProcessing(TypeDescription instrumentedType,
+                                             ClassFileVersion classFileVersion,
+                                             FieldPool fieldPool,
+                                             List<? extends DynamicType> auxiliaryTypes,
+                                             FieldList<FieldDescription.InDefinedShape> fields,
+                                             MethodList<?> methods, MethodList<?> instrumentedMethods,
+                                             LoadedTypeInitializer loadedTypeInitializer,
+                                             TypeInitializer typeInitializer,
+                                             TypeAttributeAppender typeAttributeAppender,
+                                             AsmVisitorWrapper asmVisitorWrapper,
+                                             AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                             AnnotationRetention annotationRetention,
+                                             AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                             Implementation.Context.Factory implementationContextFactory,
+                                             TypeValidation typeValidation,
+                                             ClassWriterStrategy classWriterStrategy,
+                                             TypePool typePool,
+                                             TypeDescription originalType,
+                                             ClassFileLocator classFileLocator,
+                                             MethodRegistry.Prepared methodRegistry,
+                                             Implementation.Target.Factory implementationTargetFactory,
+                                             MethodRebaseResolver methodRebaseResolver) {
+                    super(instrumentedType,
+                            classFileVersion,
+                            fieldPool,
+                            auxiliaryTypes,
+                            fields,
+                            methods,
+                            instrumentedMethods,
+                            loadedTypeInitializer,
+                            typeInitializer,
+                            typeAttributeAppender,
+                            asmVisitorWrapper,
+                            annotationValueFilterFactory,
+                            annotationRetention,
+                            auxiliaryTypeNamingStrategy,
+                            implementationContextFactory,
+                            typeValidation,
+                            classWriterStrategy,
+                            typePool,
+                            originalType,
+                            classFileLocator);
+                    this.methodRegistry = methodRegistry;
+                    this.implementationTargetFactory = implementationTargetFactory;
+                    this.methodRebaseResolver = methodRebaseResolver;
                 }
 
                 /**
-                 * Creates a class visitor that renames the instrumented type from the original name to the target name if those
-                 * names are not equal.
-                 *
-                 * @param originalName The instrumented type's original name.
-                 * @param targetName   The instrumented type's actual name.
-                 * @param classVisitor The class visitor that is responsible for creating the type.
-                 * @return An appropriate class visitor.
+                 * {@inheritDoc}
                  */
-                public static ClassVisitor of(String originalName, String targetName, ClassVisitor classVisitor) {
-                    return originalName.equals(targetName)
+                protected ClassVisitor writeTo(ClassVisitor classVisitor, TypeInitializer typeInitializer, ContextRegistry contextRegistry, int writerFlags, int readerFlags) {
+                    classVisitor = new RedefinitionClassVisitor(classVisitor, typeInitializer, contextRegistry, writerFlags, readerFlags);
+                    return originalType.getName().equals(instrumentedType.getName())
                             ? classVisitor
-                            : new FramePreservingRemapper(classVisitor, new SimpleRemapper(originalName, targetName));
-                }
-
-                @Override
-                protected MethodVisitor createRemappingMethodAdapter(int modifiers, String adaptedDescriptor, MethodVisitor methodVisitor) {
-                    return new FramePreservingMethodRemapper(modifiers, adaptedDescriptor, methodVisitor, remapper);
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.Default.ForInlining.FramePreservingRemapper{" +
-                            "}";
+                            : new OpenedClassRemapper(classVisitor, new SimpleRemapper(originalType.getInternalName(), instrumentedType.getInternalName()));
                 }
 
                 /**
-                 * A method remapper that does not delegate to its underlying variable sorting mechanism as this is never required for
-                 * renaming a type. This way, it is not required to hand expanded method frames to this visitor what is otherwise
-                 * required for more general remappings that sort local variables.
+                 * A {@link ClassRemapper} that uses the Byte Buddy-defined API version.
                  */
-                protected static class FramePreservingMethodRemapper extends RemappingMethodAdapter {
+                protected static class OpenedClassRemapper extends ClassRemapper {
 
                     /**
-                     * Creates a new frame preserving method remapper.
+                     * Creates a new opened class remapper.
                      *
-                     * @param modifiers     The method's modifiers.
-                     * @param descriptor    The descriptor of the method.
-                     * @param methodVisitor The method visitor that is responsible for writing the method.
-                     * @param remapper      The remapper to use for renaming the instrumented type.
+                     * @param classVisitor The class visitor to wrap
+                     * @param remapper     The remapper to apply.
                      */
-                    public FramePreservingMethodRemapper(int modifiers, String descriptor, MethodVisitor methodVisitor, Remapper remapper) {
-                        super(ASM_API_VERSION, modifiers, descriptor, methodVisitor, remapper);
+                    protected OpenedClassRemapper(ClassVisitor classVisitor, Remapper remapper) {
+                        super(OpenedClassReader.ASM_API, classVisitor, remapper);
                     }
+                }
 
-                    @Override
-                    public void visitFrame(int type, int sizeLocal, Object[] local, int sizeStack, Object[] stack) {
-                        mv.visitFrame(type, sizeLocal, remapEntries(sizeLocal, local), sizeStack, remapEntries(sizeStack, stack));
+                /**
+                 * An initialization handler is responsible for handling the creation of the type initializer.
+                 */
+                protected interface InitializationHandler {
+
+                    /**
+                     * Invoked upon completion of writing the instrumented type.
+                     *
+                     * @param classVisitor          The class visitor to write any methods to.
+                     * @param implementationContext The implementation context to use.
+                     */
+                    void complete(ClassVisitor classVisitor, Implementation.Context.ExtractableView implementationContext);
+
+                    /**
+                     * An initialization handler that creates a new type initializer.
+                     */
+                    class Creating extends TypeInitializer.Drain.Default implements InitializationHandler {
+
+                        /**
+                         * Creates a new creating initialization handler.
+                         *
+                         * @param instrumentedType             The instrumented type.
+                         * @param methodPool                   The method pool to use.
+                         * @param annotationValueFilterFactory The annotation value filter factory to use.
+                         */
+                        protected Creating(TypeDescription instrumentedType,
+                                           MethodPool methodPool,
+                                           AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                            super(instrumentedType, methodPool, annotationValueFilterFactory);
+                        }
+
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public void complete(ClassVisitor classVisitor, Implementation.Context.ExtractableView implementationContext) {
+                            implementationContext.drain(this, classVisitor, annotationValueFilterFactory);
+                        }
                     }
 
                     /**
-                     * Remaps a stack map.
-                     *
-                     * @param size  The size of the stack map.
-                     * @param entry The stack map's entries.
-                     * @return The remapped entries.
+                     * An initialization handler that appends code to a previously visited type initializer.
                      */
-                    private Object[] remapEntries(int size, Object[] entry) {
-                        for (int index = 0; index < size; index++) {
-                            if (entry[index] instanceof String) {
-                                Object[] newEntry = new Object[size];
-                                if (index > 0) {
-                                    System.arraycopy(entry, 0, newEntry, 0, index);
-                                }
-                                do {
-                                    Object frame = entry[index];
-                                    newEntry[index++] = frame instanceof String
-                                            ? remapper.mapType((String) frame)
-                                            : frame;
-                                } while (index < size);
-                                return newEntry;
+                    abstract class Appending extends MethodVisitor implements InitializationHandler, TypeInitializer.Drain {
+
+                        /**
+                         * The instrumented type.
+                         */
+                        protected final TypeDescription instrumentedType;
+
+                        /**
+                         * The method pool record for the type initializer.
+                         */
+                        protected final MethodPool.Record record;
+
+                        /**
+                         * The used annotation value filter factory.
+                         */
+                        protected final AnnotationValueFilter.Factory annotationValueFilterFactory;
+
+                        /**
+                         * The frame writer to use.
+                         */
+                        protected final FrameWriter frameWriter;
+
+                        /**
+                         * The currently recorded stack size.
+                         */
+                        protected int stackSize;
+
+                        /**
+                         * The currently recorded local variable length.
+                         */
+                        protected int localVariableLength;
+
+                        /**
+                         * Creates a new appending initialization handler.
+                         *
+                         * @param methodVisitor                The underlying method visitor.
+                         * @param instrumentedType             The instrumented type.
+                         * @param record                       The method pool record for the type initializer.
+                         * @param annotationValueFilterFactory The used annotation value filter factory.
+                         * @param requireFrames                {@code true} if the visitor is required to add frames.
+                         * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                         */
+                        protected Appending(MethodVisitor methodVisitor,
+                                            TypeDescription instrumentedType,
+                                            MethodPool.Record record,
+                                            AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                            boolean requireFrames,
+                                            boolean expandFrames) {
+                            super(OpenedClassReader.ASM_API, methodVisitor);
+                            this.instrumentedType = instrumentedType;
+                            this.record = record;
+                            this.annotationValueFilterFactory = annotationValueFilterFactory;
+                            if (!requireFrames) {
+                                frameWriter = FrameWriter.NoOp.INSTANCE;
+                            } else if (expandFrames) {
+                                frameWriter = FrameWriter.Expanding.INSTANCE;
+                            } else {
+                                frameWriter = new FrameWriter.Active();
                             }
                         }
-                        return entry;
+
+                        /**
+                         * Resolves an initialization handler.
+                         *
+                         * @param enabled                      {@code true} if the implementation context is enabled, i.e. any {@link TypeInitializer} might be active.
+                         * @param methodVisitor                The delegation method visitor.
+                         * @param instrumentedType             The instrumented type.
+                         * @param methodPool                   The method pool to use.
+                         * @param annotationValueFilterFactory The annotation value filter factory to use.
+                         * @param requireFrames                {@code true} if frames must be computed.
+                         * @param expandFrames                 {@code true} if frames must be expanded.
+                         * @return An initialization handler which is also guaranteed to be a {@link MethodVisitor}.
+                         */
+                        protected static InitializationHandler of(boolean enabled,
+                                                                  MethodVisitor methodVisitor,
+                                                                  TypeDescription instrumentedType,
+                                                                  MethodPool methodPool,
+                                                                  AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                                  boolean requireFrames,
+                                                                  boolean expandFrames) {
+                            return enabled
+                                    ? withDrain(methodVisitor, instrumentedType, methodPool, annotationValueFilterFactory, requireFrames, expandFrames)
+                                    : withoutDrain(methodVisitor, instrumentedType, methodPool, annotationValueFilterFactory, requireFrames, expandFrames);
+                        }
+
+                        /**
+                         * Resolves an initialization handler with a drain.
+                         *
+                         * @param methodVisitor                The delegation method visitor.
+                         * @param instrumentedType             The instrumented type.
+                         * @param methodPool                   The method pool to use.
+                         * @param annotationValueFilterFactory The annotation value filter factory to use.
+                         * @param requireFrames                {@code true} if frames must be computed.
+                         * @param expandFrames                 {@code true} if frames must be expanded.
+                         * @return An initialization handler which is also guaranteed to be a {@link MethodVisitor}.
+                         */
+                        private static WithDrain withDrain(MethodVisitor methodVisitor,
+                                                           TypeDescription instrumentedType,
+                                                           MethodPool methodPool,
+                                                           AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                           boolean requireFrames,
+                                                           boolean expandFrames) {
+                            MethodPool.Record record = methodPool.target(new MethodDescription.Latent.TypeInitializer(instrumentedType));
+                            return record.getSort().isImplemented()
+                                    ? new WithDrain.WithActiveRecord(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames)
+                                    : new WithDrain.WithoutActiveRecord(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                        }
+
+                        /**
+                         * Resolves an initialization handler without a drain.
+                         *
+                         * @param methodVisitor                The delegation method visitor.
+                         * @param instrumentedType             The instrumented type.
+                         * @param methodPool                   The method pool to use.
+                         * @param annotationValueFilterFactory The annotation value filter factory to use.
+                         * @param requireFrames                {@code true} if frames must be computed.
+                         * @param expandFrames                 {@code true} if frames must be expanded.
+                         * @return An initialization handler which is also guaranteed to be a {@link MethodVisitor}.
+                         */
+                        private static WithoutDrain withoutDrain(MethodVisitor methodVisitor,
+                                                                 TypeDescription instrumentedType,
+                                                                 MethodPool methodPool,
+                                                                 AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                                 boolean requireFrames,
+                                                                 boolean expandFrames) {
+                            MethodPool.Record record = methodPool.target(new MethodDescription.Latent.TypeInitializer(instrumentedType));
+                            return record.getSort().isImplemented()
+                                    ? new WithoutDrain.WithActiveRecord(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames)
+                                    : new WithoutDrain.WithoutActiveRecord(methodVisitor, instrumentedType, record, annotationValueFilterFactory);
+                        }
+
+                        @Override
+                        public void visitCode() {
+                            record.applyAttributes(mv, annotationValueFilterFactory);
+                            super.visitCode();
+                            onStart();
+                        }
+
+                        /**
+                         * Invoked after the user code was visited.
+                         */
+                        protected abstract void onStart();
+
+                        @Override
+                        public void visitFrame(int type, int localVariableLength, Object[] localVariable, int stackSize, Object[] stack) {
+                            super.visitFrame(type, localVariableLength, localVariable, stackSize, stack);
+                            frameWriter.onFrame(type, localVariableLength);
+                        }
+
+                        @Override
+                        public void visitMaxs(int stackSize, int localVariableLength) {
+                            this.stackSize = stackSize;
+                            this.localVariableLength = localVariableLength;
+                        }
+
+                        @Override
+                        public abstract void visitEnd();
+
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public void apply(ClassVisitor classVisitor, TypeInitializer typeInitializer, Implementation.Context implementationContext) {
+                            ByteCodeAppender.Size size = typeInitializer.apply(mv, implementationContext, new MethodDescription.Latent.TypeInitializer(instrumentedType));
+                            stackSize = Math.max(stackSize, size.getOperandStackSize());
+                            localVariableLength = Math.max(localVariableLength, size.getLocalVariableSize());
+                            onComplete(implementationContext);
+                        }
+
+                        /**
+                         * Invoked upon completion of writing the type initializer.
+                         *
+                         * @param implementationContext The implementation context to use.
+                         */
+                        protected abstract void onComplete(Implementation.Context implementationContext);
+
+                        /**
+                         * {@inheritDoc}
+                         */
+                        public void complete(ClassVisitor classVisitor, Implementation.Context.ExtractableView implementationContext) {
+                            implementationContext.drain(this, classVisitor, annotationValueFilterFactory);
+                            mv.visitMaxs(stackSize, localVariableLength);
+                            mv.visitEnd();
+                        }
+
+                        /**
+                         * A frame writer is responsible for adding empty frames on jump instructions.
+                         */
+                        protected interface FrameWriter {
+
+                            /**
+                             * An empty array.
+                             */
+                            Object[] EMPTY = new Object[0];
+
+                            /**
+                             * Informs this frame writer of an observed frame.
+                             *
+                             * @param type                The frame type.
+                             * @param localVariableLength The length of the local variables array.
+                             */
+                            void onFrame(int type, int localVariableLength);
+
+                            /**
+                             * Emits an empty frame.
+                             *
+                             * @param methodVisitor The method visitor to write the frame to.
+                             */
+                            void emitFrame(MethodVisitor methodVisitor);
+
+                            /**
+                             * A non-operational frame writer.
+                             */
+                            enum NoOp implements FrameWriter {
+
+                                /**
+                                 * The singleton instance.
+                                 */
+                                INSTANCE;
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void onFrame(int type, int localVariableLength) {
+                                    /* do nothing */
+                                }
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void emitFrame(MethodVisitor methodVisitor) {
+                                    /* do nothing */
+                                }
+                            }
+
+                            /**
+                             * A frame writer that creates an expanded frame.
+                             */
+                            enum Expanding implements FrameWriter {
+
+                                /**
+                                 * The singleton instance.
+                                 */
+                                INSTANCE;
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void onFrame(int type, int localVariableLength) {
+                                    /* do nothing */
+                                }
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void emitFrame(MethodVisitor methodVisitor) {
+                                    methodVisitor.visitFrame(Opcodes.F_NEW, EMPTY.length, EMPTY, EMPTY.length, EMPTY);
+                                }
+                            }
+
+                            /**
+                             * An active frame writer that creates the most efficient frame.
+                             */
+                            class Active implements FrameWriter {
+
+                                /**
+                                 * The current length of the current local variable array.
+                                 */
+                                private int currentLocalVariableLength;
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void onFrame(int type, int localVariableLength) {
+                                    switch (type) {
+                                        case Opcodes.F_SAME:
+                                        case Opcodes.F_SAME1:
+                                            break;
+                                        case Opcodes.F_APPEND:
+                                            currentLocalVariableLength += localVariableLength;
+                                            break;
+                                        case Opcodes.F_CHOP:
+                                            currentLocalVariableLength -= localVariableLength;
+                                            break;
+                                        case Opcodes.F_NEW:
+                                        case Opcodes.F_FULL:
+                                            currentLocalVariableLength = localVariableLength;
+                                            break;
+                                        default:
+                                            throw new IllegalStateException("Unexpected frame type: " + type);
+                                    }
+                                }
+
+                                /**
+                                 * {@inheritDoc}
+                                 */
+                                public void emitFrame(MethodVisitor methodVisitor) {
+                                    if (currentLocalVariableLength == 0) {
+                                        methodVisitor.visitFrame(Opcodes.F_SAME, EMPTY.length, EMPTY, EMPTY.length, EMPTY);
+                                    } else if (currentLocalVariableLength > 3) {
+                                        methodVisitor.visitFrame(Opcodes.F_FULL, EMPTY.length, EMPTY, EMPTY.length, EMPTY);
+                                    } else {
+                                        methodVisitor.visitFrame(Opcodes.F_CHOP, currentLocalVariableLength, EMPTY, EMPTY.length, EMPTY);
+                                    }
+                                    currentLocalVariableLength = 0;
+                                }
+                            }
+                        }
+
+                        /**
+                         * An initialization handler that appends code to a previously visited type initializer without allowing active
+                         * {@link TypeInitializer} registrations.
+                         */
+                        protected abstract static class WithoutDrain extends Appending {
+
+                            /**
+                             * Creates a new appending initialization handler without a drain.
+                             *
+                             * @param methodVisitor                The underlying method visitor.
+                             * @param instrumentedType             The instrumented type.
+                             * @param record                       The method pool record for the type initializer.
+                             * @param annotationValueFilterFactory The used annotation value filter factory.
+                             * @param requireFrames                {@code true} if the visitor is required to add frames.
+                             * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                             */
+                            protected WithoutDrain(MethodVisitor methodVisitor,
+                                                   TypeDescription instrumentedType,
+                                                   MethodPool.Record record,
+                                                   AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                   boolean requireFrames,
+                                                   boolean expandFrames) {
+                                super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                            }
+
+                            @Override
+                            protected void onStart() {
+                                /* do nothing */
+                            }
+
+                            @Override
+                            public void visitEnd() {
+                                /* do nothing */
+                            }
+
+                            /**
+                             * An initialization handler that appends code to a previously visited type initializer without allowing active
+                             * {@link TypeInitializer} registrations and without an active record.
+                             */
+                            protected static class WithoutActiveRecord extends WithoutDrain {
+
+                                /**
+                                 * Creates a new appending initialization handler without a drain and without an active record.
+                                 *
+                                 * @param methodVisitor                The underlying method visitor.
+                                 * @param instrumentedType             The instrumented type.
+                                 * @param record                       The method pool record for the type initializer.
+                                 * @param annotationValueFilterFactory The used annotation value filter factory.
+                                 */
+                                protected WithoutActiveRecord(MethodVisitor methodVisitor,
+                                                              TypeDescription instrumentedType,
+                                                              MethodPool.Record record,
+                                                              AnnotationValueFilter.Factory annotationValueFilterFactory) {
+                                    super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, false, false);
+                                }
+
+                                @Override
+                                protected void onComplete(Implementation.Context implementationContext) {
+                                    /* do nothing */
+                                }
+                            }
+
+                            /**
+                             * An initialization handler that appends code to a previously visited type initializer without allowing active
+                             * {@link TypeInitializer} registrations and with an active record.
+                             */
+                            protected static class WithActiveRecord extends WithoutDrain {
+
+                                /**
+                                 * The label that indicates the beginning of the active record.
+                                 */
+                                private final Label label;
+
+                                /**
+                                 * Creates a new appending initialization handler without a drain and with an active record.
+                                 *
+                                 * @param methodVisitor                The underlying method visitor.
+                                 * @param instrumentedType             The instrumented type.
+                                 * @param record                       The method pool record for the type initializer.
+                                 * @param annotationValueFilterFactory The used annotation value filter factory.
+                                 * @param requireFrames                {@code true} if the visitor is required to add frames.
+                                 * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                                 */
+                                protected WithActiveRecord(MethodVisitor methodVisitor,
+                                                           TypeDescription instrumentedType,
+                                                           MethodPool.Record record,
+                                                           AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                           boolean requireFrames,
+                                                           boolean expandFrames) {
+                                    super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                                    label = new Label();
+                                }
+
+                                @Override
+                                public void visitInsn(int opcode) {
+                                    if (opcode == Opcodes.RETURN) {
+                                        mv.visitJumpInsn(Opcodes.GOTO, label);
+                                    } else {
+                                        super.visitInsn(opcode);
+                                    }
+                                }
+
+                                @Override
+                                protected void onComplete(Implementation.Context implementationContext) {
+                                    mv.visitLabel(label);
+                                    frameWriter.emitFrame(mv);
+                                    ByteCodeAppender.Size size = record.applyCode(mv, implementationContext);
+                                    stackSize = Math.max(stackSize, size.getOperandStackSize());
+                                    localVariableLength = Math.max(localVariableLength, size.getLocalVariableSize());
+                                }
+
+                            }
+                        }
+
+                        /**
+                         * An initialization handler that appends code to a previously visited type initializer with allowing active
+                         * {@link TypeInitializer} registrations.
+                         */
+                        protected abstract static class WithDrain extends Appending {
+
+                            /**
+                             * A label marking the beginning of the appended code.
+                             */
+                            protected final Label appended;
+
+                            /**
+                             * A label marking the beginning og the original type initializer's code.
+                             */
+                            protected final Label original;
+
+                            /**
+                             * Creates a new appending initialization handler with a drain.
+                             *
+                             * @param methodVisitor                The underlying method visitor.
+                             * @param instrumentedType             The instrumented type.
+                             * @param record                       The method pool record for the type initializer.
+                             * @param annotationValueFilterFactory The used annotation value filter factory.
+                             * @param requireFrames                {@code true} if the visitor is required to add frames.
+                             * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                             */
+                            protected WithDrain(MethodVisitor methodVisitor,
+                                                TypeDescription instrumentedType,
+                                                MethodPool.Record record,
+                                                AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                boolean requireFrames,
+                                                boolean expandFrames) {
+                                super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                                appended = new Label();
+                                original = new Label();
+                            }
+
+                            @Override
+                            protected void onStart() {
+                                mv.visitJumpInsn(Opcodes.GOTO, appended);
+                                mv.visitLabel(original);
+                                frameWriter.emitFrame(mv);
+                            }
+
+                            @Override
+                            public void visitEnd() {
+                                mv.visitLabel(appended);
+                                frameWriter.emitFrame(mv);
+                            }
+
+                            @Override
+                            protected void onComplete(Implementation.Context implementationContext) {
+                                mv.visitJumpInsn(Opcodes.GOTO, original);
+                                onAfterComplete(implementationContext);
+                            }
+
+                            /**
+                             * Invoked after completion of writing the type initializer.
+                             *
+                             * @param implementationContext The implementation context to use.
+                             */
+                            protected abstract void onAfterComplete(Implementation.Context implementationContext);
+
+                            /**
+                             * A code appending initialization handler with a drain that does not apply an explicit record.
+                             */
+                            protected static class WithoutActiveRecord extends WithDrain {
+
+                                /**
+                                 * Creates a new appending initialization handler with a drain and without an active record.
+                                 *
+                                 * @param methodVisitor                The underlying method visitor.
+                                 * @param instrumentedType             The instrumented type.
+                                 * @param record                       The method pool record for the type initializer.
+                                 * @param annotationValueFilterFactory The used annotation value filter factory.
+                                 * @param requireFrames                {@code true} if the visitor is required to add frames.
+                                 * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                                 */
+                                protected WithoutActiveRecord(MethodVisitor methodVisitor,
+                                                              TypeDescription instrumentedType,
+                                                              MethodPool.Record record,
+                                                              AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                              boolean requireFrames,
+                                                              boolean expandFrames) {
+                                    super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                                }
+
+                                @Override
+                                protected void onAfterComplete(Implementation.Context implementationContext) {
+                                    /* do nothing */
+                                }
+                            }
+
+                            /**
+                             * A code appending initialization handler with a drain that applies an explicit record.
+                             */
+                            protected static class WithActiveRecord extends WithDrain {
+
+                                /**
+                                 * A label indicating the beginning of the record's code.
+                                 */
+                                private final Label label;
+
+                                /**
+                                 * Creates a new appending initialization handler with a drain and with an active record.
+                                 *
+                                 * @param methodVisitor                The underlying method visitor.
+                                 * @param instrumentedType             The instrumented type.
+                                 * @param record                       The method pool record for the type initializer.
+                                 * @param annotationValueFilterFactory The used annotation value filter factory.
+                                 * @param requireFrames                {@code true} if the visitor is required to add frames.
+                                 * @param expandFrames                 {@code true} if the visitor is required to expand any added frame.
+                                 */
+                                protected WithActiveRecord(MethodVisitor methodVisitor,
+                                                           TypeDescription instrumentedType,
+                                                           MethodPool.Record record,
+                                                           AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                                           boolean requireFrames,
+                                                           boolean expandFrames) {
+                                    super(methodVisitor, instrumentedType, record, annotationValueFilterFactory, requireFrames, expandFrames);
+                                    label = new Label();
+                                }
+
+                                @Override
+                                public void visitInsn(int opcode) {
+                                    if (opcode == Opcodes.RETURN) {
+                                        mv.visitJumpInsn(Opcodes.GOTO, label);
+                                    } else {
+                                        super.visitInsn(opcode);
+                                    }
+                                }
+
+                                @Override
+                                protected void onAfterComplete(Implementation.Context implementationContext) {
+                                    mv.visitLabel(label);
+                                    frameWriter.emitFrame(mv);
+                                    ByteCodeAppender.Size size = record.applyCode(mv, implementationContext);
+                                    stackSize = Math.max(stackSize, size.getOperandStackSize());
+                                    localVariableLength = Math.max(localVariableLength, size.getLocalVariableSize());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                /**
+                 * A class visitor which is capable of applying a redefinition of an existing class file.
+                 */
+                @SuppressFBWarnings(value = "UWF_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR", justification = "Field access order is implied by ASM")
+                protected class RedefinitionClassVisitor extends MetadataAwareClassVisitor {
+
+                    /**
+                     * The type initializer to apply.
+                     */
+                    private final TypeInitializer typeInitializer;
+
+                    /**
+                     * A context registry to register the lazily created implementation context to.
+                     */
+                    private final ContextRegistry contextRegistry;
+
+                    /**
+                     * The writer flags being used.
+                     */
+                    private final int writerFlags;
+
+                    /**
+                     * The reader flags being used.
+                     */
+                    private final int readerFlags;
+
+                    /**
+                     * A mapping of fields to write by their names.
+                     */
+                    private final LinkedHashMap<String, FieldDescription> declarableFields;
+
+                    /**
+                     * A mapping of methods to write by a concatenation of internal name and descriptor.
+                     */
+                    private final LinkedHashMap<String, MethodDescription> declarableMethods;
+
+                    /**
+                     * A set of internal names of all nest members not yet defined by this type. If this type is not a nest host, this set is empty.
+                     */
+                    private final Set<String> nestMembers;
+
+                    /**
+                     * A mapping of the internal names of all declared types to their description.
+                     */
+                    private final LinkedHashMap<String, TypeDescription> declaredTypes;
+
+                    /**
+                     * The method pool to use or {@code null} if the pool was not yet initialized.
+                     */
+                    private MethodPool methodPool;
+
+                    /**
+                     * The initialization handler to use or {@code null} if the handler was not yet initialized.
+                     */
+                    private InitializationHandler initializationHandler;
+
+                    /**
+                     * The implementation context for this class creation or {@code null} if it was not yet created.
+                     */
+                    private Implementation.Context.ExtractableView implementationContext;
+
+                    /**
+                     * {@code true} if the modifiers for deprecation should be retained.
+                     */
+                    private boolean retainDeprecationModifiers;
+
+                    /**
+                     * Creates a class visitor which is capable of redefining an existent class on the fly.
+                     *
+                     * @param classVisitor    The underlying class visitor to which writes are delegated.
+                     * @param typeInitializer The type initializer to apply.
+                     * @param contextRegistry A context registry to register the lazily created implementation context to.
+                     * @param writerFlags     The writer flags being used.
+                     * @param readerFlags     The reader flags being used.
+                     */
+                    protected RedefinitionClassVisitor(ClassVisitor classVisitor,
+                                                       TypeInitializer typeInitializer,
+                                                       ContextRegistry contextRegistry,
+                                                       int writerFlags,
+                                                       int readerFlags) {
+                        super(OpenedClassReader.ASM_API, classVisitor);
+                        this.typeInitializer = typeInitializer;
+                        this.contextRegistry = contextRegistry;
+                        this.writerFlags = writerFlags;
+                        this.readerFlags = readerFlags;
+                        declarableFields = new LinkedHashMap<String, FieldDescription>();
+                        for (FieldDescription fieldDescription : fields) {
+                            declarableFields.put(fieldDescription.getInternalName() + fieldDescription.getDescriptor(), fieldDescription);
+                        }
+                        declarableMethods = new LinkedHashMap<String, MethodDescription>();
+                        for (MethodDescription methodDescription : instrumentedMethods) {
+                            declarableMethods.put(methodDescription.getInternalName() + methodDescription.getDescriptor(), methodDescription);
+                        }
+                        if (instrumentedType.isNestHost()) {
+                            nestMembers = new LinkedHashSet<String>();
+                            for (TypeDescription typeDescription : instrumentedType.getNestMembers().filter(not(is(instrumentedType)))) {
+                                nestMembers.add(typeDescription.getInternalName());
+                            }
+                        } else {
+                            nestMembers = Collections.emptySet();
+                        }
+                        declaredTypes = new LinkedHashMap<String, TypeDescription>();
+                        for (TypeDescription typeDescription : instrumentedType.getDeclaredTypes()) {
+                            declaredTypes.put(typeDescription.getInternalName(), typeDescription);
+                        }
                     }
 
                     @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ForInlining.FramePreservingRemapper.FramePreservingMethodRemapper{" +
-                                "remapper=" + remapper +
-                                "}";
+                    public void visit(int classFileVersionNumber,
+                                      int modifiers,
+                                      String internalName,
+                                      String genericSignature,
+                                      String superClassInternalName,
+                                      String[] interfaceTypeInternalName) {
+                        ClassFileVersion classFileVersion = ClassFileVersion.ofMinorMajor(classFileVersionNumber);
+                        methodPool = methodRegistry.compile(implementationTargetFactory, classFileVersion);
+                        initializationHandler = new InitializationHandler.Creating(instrumentedType, methodPool, annotationValueFilterFactory);
+                        implementationContext = implementationContextFactory.make(instrumentedType,
+                                auxiliaryTypeNamingStrategy,
+                                typeInitializer,
+                                classFileVersion,
+                                WithFullProcessing.this.classFileVersion);
+                        retainDeprecationModifiers = classFileVersion.isLessThan(ClassFileVersion.JAVA_V5);
+                        contextRegistry.setImplementationContext(implementationContext);
+                        cv = asmVisitorWrapper.wrap(instrumentedType,
+                                cv,
+                                implementationContext,
+                                typePool,
+                                fields,
+                                methods,
+                                writerFlags,
+                                readerFlags);
+                        cv.visit(classFileVersionNumber,
+                                instrumentedType.getActualModifiers((modifiers & Opcodes.ACC_SUPER) != 0 && !instrumentedType.isInterface())
+                                        | resolveDeprecationModifiers(modifiers)
+                                        // Anonymous types might not preserve their class file's final modifier via their inner class modifier.
+                                        | (((modifiers & Opcodes.ACC_FINAL) != 0 && instrumentedType.isAnonymousType()) ? Opcodes.ACC_FINAL : 0),
+                                instrumentedType.getInternalName(),
+                                TypeDescription.AbstractBase.RAW_TYPES
+                                        ? genericSignature
+                                        : instrumentedType.getGenericSignature(),
+                                instrumentedType.getSuperClass() == null
+                                        ? (instrumentedType.isInterface() ? TypeDescription.OBJECT.getInternalName() : NO_REFERENCE)
+                                        : instrumentedType.getSuperClass().asErasure().getInternalName(),
+                                instrumentedType.getInterfaces().asErasures().toInternalNames());
+                    }
+
+                    @Override
+                    protected void onVisitNestHost(String nestHost) {
+                        onNestHost();
+                    }
+
+                    @Override
+                    protected void onNestHost() {
+                        if (!instrumentedType.isNestHost()) {
+                            cv.visitNestHost(instrumentedType.getNestHost().getInternalName());
+                        }
+                    }
+
+                    @Override
+                    protected void onVisitOuterClass(String owner, String name, String descriptor) {
+                        try { // The Groovy compiler often gets this attribute wrong such that this safety just retains it.
+                            onOuterType();
+                        } catch (Throwable ignored) {
+                            cv.visitOuterClass(owner, name, descriptor);
+                        }
+                    }
+
+                    @Override
+                    protected void onOuterType() {
+                        MethodDescription.InDefinedShape enclosingMethod = instrumentedType.getEnclosingMethod();
+                        if (enclosingMethod != null) {
+                            cv.visitOuterClass(enclosingMethod.getDeclaringType().getInternalName(),
+                                    enclosingMethod.getInternalName(),
+                                    enclosingMethod.getDescriptor());
+                        } else if (instrumentedType.isLocalType() || instrumentedType.isAnonymousType()) {
+                            cv.visitOuterClass(instrumentedType.getEnclosingType().getInternalName(), NO_REFERENCE, NO_REFERENCE);
+                        }
+                    }
+
+                    @Override
+                    protected void onAfterAttributes() {
+                        typeAttributeAppender.apply(cv, instrumentedType, annotationValueFilterFactory.on(instrumentedType));
+                    }
+
+                    @Override
+                    protected AnnotationVisitor onVisitTypeAnnotation(int typeReference, TypePath typePath, String descriptor, boolean visible) {
+                        return annotationRetention.isEnabled()
+                                ? cv.visitTypeAnnotation(typeReference, typePath, descriptor, visible)
+                                : IGNORE_ANNOTATION;
+                    }
+
+                    @Override
+                    protected AnnotationVisitor onVisitAnnotation(String descriptor, boolean visible) {
+                        return annotationRetention.isEnabled()
+                                ? cv.visitAnnotation(descriptor, visible)
+                                : IGNORE_ANNOTATION;
+                    }
+
+                    @Override
+                    protected FieldVisitor onVisitField(int modifiers,
+                                                        String internalName,
+                                                        String descriptor,
+                                                        String genericSignature,
+                                                        Object defaultValue) {
+                        FieldDescription fieldDescription = declarableFields.remove(internalName + descriptor);
+                        if (fieldDescription != null) {
+                            FieldPool.Record record = fieldPool.target(fieldDescription);
+                            if (!record.isImplicit()) {
+                                return redefine(record, defaultValue, modifiers, genericSignature);
+                            }
+                        }
+                        return cv.visitField(modifiers, internalName, descriptor, genericSignature, defaultValue);
+                    }
+
+                    /**
+                     * Redefines a field using the given explicit field pool record and default value.
+                     *
+                     * @param record           The field pool value to apply during visitation of the existing field.
+                     * @param defaultValue     The default value to write onto the field which might be {@code null}.
+                     * @param modifiers        The original modifiers of the transformed field.
+                     * @param genericSignature The field's original generic signature which can be {@code null}.
+                     * @return A field visitor for visiting the existing field definition.
+                     */
+                    protected FieldVisitor redefine(FieldPool.Record record, Object defaultValue, int modifiers, String genericSignature) {
+                        FieldDescription instrumentedField = record.getField();
+                        FieldVisitor fieldVisitor = cv.visitField(instrumentedField.getActualModifiers() | resolveDeprecationModifiers(modifiers),
+                                instrumentedField.getInternalName(),
+                                instrumentedField.getDescriptor(),
+                                TypeDescription.AbstractBase.RAW_TYPES
+                                        ? genericSignature
+                                        : instrumentedField.getGenericSignature(),
+                                record.resolveDefault(defaultValue));
+                        return fieldVisitor == null
+                                ? IGNORE_FIELD
+                                : new AttributeObtainingFieldVisitor(fieldVisitor, record);
+                    }
+
+                    @Override
+                    protected MethodVisitor onVisitMethod(int modifiers,
+                                                          String internalName,
+                                                          String descriptor,
+                                                          String genericSignature,
+                                                          String[] exceptionName) {
+                        if (internalName.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)) {
+                            MethodVisitor methodVisitor = cv.visitMethod(modifiers, internalName, descriptor, genericSignature, exceptionName);
+                            return methodVisitor == null
+                                    ? IGNORE_METHOD
+                                    : (MethodVisitor) (initializationHandler = InitializationHandler.Appending.of(implementationContext.isEnabled(),
+                                    methodVisitor,
+                                    instrumentedType,
+                                    methodPool,
+                                    annotationValueFilterFactory,
+                                    (writerFlags & ClassWriter.COMPUTE_FRAMES) == 0 && implementationContext.getClassFileVersion().isAtLeast(ClassFileVersion.JAVA_V6),
+                                    (readerFlags & ClassReader.EXPAND_FRAMES) != 0));
+                        } else {
+                            MethodDescription methodDescription = declarableMethods.remove(internalName + descriptor);
+                            return methodDescription == null
+                                    ? cv.visitMethod(modifiers, internalName, descriptor, genericSignature, exceptionName)
+                                    : redefine(methodDescription, (modifiers & Opcodes.ACC_ABSTRACT) != 0, modifiers, genericSignature);
+                        }
+                    }
+
+                    /**
+                     * Redefines a given method if this is required by looking up a potential implementation from the
+                     * {@link net.bytebuddy.dynamic.scaffold.TypeWriter.MethodPool}.
+                     *
+                     * @param methodDescription The method being considered for redefinition.
+                     * @param abstractOrigin    {@code true} if the original method is abstract, i.e. there is no implementation to preserve.
+                     * @param modifiers         The original modifiers of the transformed method.
+                     * @param genericSignature  The method's original generic signature which can be {@code null}.
+                     * @return A method visitor which is capable of consuming the original method.
+                     */
+                    protected MethodVisitor redefine(MethodDescription methodDescription, boolean abstractOrigin, int modifiers, String genericSignature) {
+                        MethodPool.Record record = methodPool.target(methodDescription);
+                        if (!record.getSort().isDefined()) {
+                            return cv.visitMethod(methodDescription.getActualModifiers() | resolveDeprecationModifiers(modifiers),
+                                    methodDescription.getInternalName(),
+                                    methodDescription.getDescriptor(),
+                                    TypeDescription.AbstractBase.RAW_TYPES
+                                            ? genericSignature
+                                            : methodDescription.getGenericSignature(),
+                                    methodDescription.getExceptionTypes().asErasures().toInternalNames());
+                        }
+                        MethodDescription implementedMethod = record.getMethod();
+                        MethodVisitor methodVisitor = cv.visitMethod(ModifierContributor.Resolver
+                                        .of(Collections.singleton(record.getVisibility()))
+                                        .resolve(implementedMethod.getActualModifiers(record.getSort().isImplemented())) | resolveDeprecationModifiers(modifiers),
+                                implementedMethod.getInternalName(),
+                                implementedMethod.getDescriptor(),
+                                TypeDescription.AbstractBase.RAW_TYPES
+                                        ? genericSignature
+                                        : implementedMethod.getGenericSignature(),
+                                implementedMethod.getExceptionTypes().asErasures().toInternalNames());
+                        if (methodVisitor == null) {
+                            return IGNORE_METHOD;
+                        } else if (abstractOrigin) {
+                            return new AttributeObtainingMethodVisitor(methodVisitor, record);
+                        } else if (methodDescription.isNative()) {
+                            MethodRebaseResolver.Resolution resolution = methodRebaseResolver.resolve(implementedMethod.asDefined());
+                            if (resolution.isRebased()) {
+                                MethodVisitor rebasedMethodVisitor = super.visitMethod(resolution.getResolvedMethod().getActualModifiers()
+                                                | resolveDeprecationModifiers(modifiers),
+                                        resolution.getResolvedMethod().getInternalName(),
+                                        resolution.getResolvedMethod().getDescriptor(),
+                                        TypeDescription.AbstractBase.RAW_TYPES
+                                                ? genericSignature
+                                                : implementedMethod.getGenericSignature(),
+                                        resolution.getResolvedMethod().getExceptionTypes().asErasures().toInternalNames());
+                                if (rebasedMethodVisitor != null) {
+                                    rebasedMethodVisitor.visitEnd();
+                                }
+                            }
+                            return new AttributeObtainingMethodVisitor(methodVisitor, record);
+                        } else {
+                            return new CodePreservingMethodVisitor(methodVisitor, record, methodRebaseResolver.resolve(implementedMethod.asDefined()));
+                        }
+                    }
+
+                    @Override
+                    protected void onVisitInnerClass(String internalName, String outerName, String innerName, int modifiers) {
+                        if (!internalName.equals(instrumentedType.getInternalName())) {
+                            TypeDescription declaredType = declaredTypes.remove(internalName);
+                            if (declaredType == null) {
+                                cv.visitInnerClass(internalName, outerName, innerName, modifiers);
+                            } else {
+                                cv.visitInnerClass(internalName,
+                                        // The second condition is added to retain the structure of some Java 6 compiled classes
+                                        declaredType.isMemberType() || outerName != null && innerName == null && declaredType.isAnonymousType()
+                                                ? instrumentedType.getInternalName()
+                                                : NO_REFERENCE,
+                                        declaredType.isAnonymousType()
+                                                ? NO_REFERENCE
+                                                : declaredType.getSimpleName(),
+                                        declaredType.getModifiers());
+                            }
+                        }
+                    }
+
+                    @Override
+                    protected void onVisitNestMember(String nestMember) {
+                        if (instrumentedType.isNestHost() && nestMembers.remove(nestMember)) {
+                            cv.visitNestMember(nestMember);
+                        }
+                    }
+
+                    @Override
+                    protected void onVisitEnd() {
+                        for (FieldDescription fieldDescription : declarableFields.values()) {
+                            fieldPool.target(fieldDescription).apply(cv, annotationValueFilterFactory);
+                        }
+                        for (MethodDescription methodDescription : declarableMethods.values()) {
+                            methodPool.target(methodDescription).apply(cv, implementationContext, annotationValueFilterFactory);
+                        }
+                        initializationHandler.complete(cv, implementationContext);
+                        TypeDescription declaringType = instrumentedType.getDeclaringType();
+                        if (declaringType != null) {
+                            cv.visitInnerClass(instrumentedType.getInternalName(),
+                                    declaringType.getInternalName(),
+                                    instrumentedType.getSimpleName(),
+                                    instrumentedType.getModifiers());
+                        } else if (instrumentedType.isLocalType()) {
+                            cv.visitInnerClass(instrumentedType.getInternalName(),
+                                    NO_REFERENCE,
+                                    instrumentedType.getSimpleName(),
+                                    instrumentedType.getModifiers());
+                        } else if (instrumentedType.isAnonymousType()) {
+                            cv.visitInnerClass(instrumentedType.getInternalName(),
+                                    NO_REFERENCE,
+                                    NO_REFERENCE,
+                                    instrumentedType.getModifiers());
+                        }
+                        for (TypeDescription typeDescription : declaredTypes.values()) {
+                            cv.visitInnerClass(typeDescription.getInternalName(),
+                                    typeDescription.isMemberType()
+                                            ? instrumentedType.getInternalName()
+                                            : NO_REFERENCE,
+                                    typeDescription.isAnonymousType()
+                                            ? NO_REFERENCE
+                                            : typeDescription.getSimpleName(),
+                                    typeDescription.getModifiers());
+                        }
+                        cv.visitEnd();
+                    }
+
+                    /**
+                     * Returns {@link Opcodes#ACC_DEPRECATED} if the current class file version only represents deprecated methods using modifiers
+                     * that are not exposed in the type description API what is true for class files before Java 5 and if the supplied modifiers indicate
+                     * deprecation.
+                     *
+                     * @param modifiers The original modifiers.
+                     * @return {@link Opcodes#ACC_DEPRECATED} if the supplied modifiers imply deprecation.
+                     */
+                    private int resolveDeprecationModifiers(int modifiers) {
+                        return retainDeprecationModifiers && (modifiers & Opcodes.ACC_DEPRECATED) != 0
+                                ? Opcodes.ACC_DEPRECATED
+                                : ModifierContributor.EMPTY_MASK;
+                    }
+
+                    /**
+                     * A field visitor that obtains all attributes and annotations of a field that is found in the
+                     * class file but that discards all code.
+                     */
+                    protected class AttributeObtainingFieldVisitor extends FieldVisitor {
+
+                        /**
+                         * The field pool record to apply onto the field visitor.
+                         */
+                        private final FieldPool.Record record;
+
+                        /**
+                         * Creates a new attribute obtaining field visitor.
+                         *
+                         * @param fieldVisitor The field visitor to delegate to.
+                         * @param record       The field pool record to apply onto the field visitor.
+                         */
+                        protected AttributeObtainingFieldVisitor(FieldVisitor fieldVisitor, FieldPool.Record record) {
+                            super(OpenedClassReader.ASM_API, fieldVisitor);
+                            this.record = record;
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitTypeAnnotation(int typeReference, TypePath typePath, String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitTypeAnnotation(typeReference, typePath, descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitAnnotation(descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public void visitEnd() {
+                            record.apply(fv, annotationValueFilterFactory);
+                            super.visitEnd();
+                        }
+                    }
+
+                    /**
+                     * A method visitor that preserves the code of a method in the class file by copying it into a rebased
+                     * method while copying all attributes and annotations to the actual method.
+                     */
+                    protected class CodePreservingMethodVisitor extends MethodVisitor {
+
+                        /**
+                         * The method visitor of the actual method.
+                         */
+                        private final MethodVisitor actualMethodVisitor;
+
+                        /**
+                         * The method pool entry to apply.
+                         */
+                        private final MethodPool.Record record;
+
+                        /**
+                         * The resolution of a potential rebased method.
+                         */
+                        private final MethodRebaseResolver.Resolution resolution;
+
+                        /**
+                         * Creates a new code preserving method visitor.
+                         *
+                         * @param actualMethodVisitor The method visitor of the actual method.
+                         * @param record              The method pool entry to apply.
+                         * @param resolution          The resolution of the method rebase resolver in use.
+                         */
+                        protected CodePreservingMethodVisitor(MethodVisitor actualMethodVisitor,
+                                                              MethodPool.Record record,
+                                                              MethodRebaseResolver.Resolution resolution) {
+                            super(OpenedClassReader.ASM_API, actualMethodVisitor);
+                            this.actualMethodVisitor = actualMethodVisitor;
+                            this.record = record;
+                            this.resolution = resolution;
+                            record.applyHead(actualMethodVisitor);
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitAnnotationDefault() {
+                            return IGNORE_ANNOTATION; // Annotation types can never be rebased.
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitTypeAnnotation(int typeReference, TypePath typePath, String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitTypeAnnotation(typeReference, typePath, descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitAnnotation(descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public void visitAnnotableParameterCount(int count, boolean visible) {
+                            if (annotationRetention.isEnabled()) {
+                                super.visitAnnotableParameterCount(count, visible);
+                            }
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitParameterAnnotation(int index, String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitParameterAnnotation(index, descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public void visitCode() {
+                            record.applyBody(actualMethodVisitor, implementationContext, annotationValueFilterFactory);
+                            actualMethodVisitor.visitEnd();
+                            mv = resolution.isRebased()
+                                    ? cv.visitMethod(resolution.getResolvedMethod().getActualModifiers(),
+                                    resolution.getResolvedMethod().getInternalName(),
+                                    resolution.getResolvedMethod().getDescriptor(),
+                                    resolution.getResolvedMethod().getGenericSignature(),
+                                    resolution.getResolvedMethod().getExceptionTypes().asErasures().toInternalNames())
+                                    : IGNORE_METHOD;
+                            super.visitCode();
+                        }
+
+                        @Override
+                        public void visitMaxs(int stackSize, int localVariableLength) {
+                            super.visitMaxs(stackSize, Math.max(localVariableLength, resolution.getResolvedMethod().getStackSize()));
+                        }
+                    }
+
+                    /**
+                     * A method visitor that obtains all attributes and annotations of a method that is found in the
+                     * class file but that discards all code.
+                     */
+                    protected class AttributeObtainingMethodVisitor extends MethodVisitor {
+
+                        /**
+                         * The method visitor to which the actual method is to be written to.
+                         */
+                        private final MethodVisitor actualMethodVisitor;
+
+                        /**
+                         * The method pool entry to apply.
+                         */
+                        private final MethodPool.Record record;
+
+                        /**
+                         * Creates a new attribute obtaining method visitor.
+                         *
+                         * @param actualMethodVisitor The method visitor of the actual method.
+                         * @param record              The method pool entry to apply.
+                         */
+                        protected AttributeObtainingMethodVisitor(MethodVisitor actualMethodVisitor, MethodPool.Record record) {
+                            super(OpenedClassReader.ASM_API, actualMethodVisitor);
+                            this.actualMethodVisitor = actualMethodVisitor;
+                            this.record = record;
+                            record.applyHead(actualMethodVisitor);
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitAnnotationDefault() {
+                            return IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitTypeAnnotation(int typeReference, TypePath typePath, String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitTypeAnnotation(typeReference, typePath, descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitAnnotation(descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public void visitAnnotableParameterCount(int count, boolean visible) {
+                            if (annotationRetention.isEnabled()) {
+                                super.visitAnnotableParameterCount(count, visible);
+                            }
+                        }
+
+                        @Override
+                        public AnnotationVisitor visitParameterAnnotation(int index, String descriptor, boolean visible) {
+                            return annotationRetention.isEnabled()
+                                    ? super.visitParameterAnnotation(index, descriptor, visible)
+                                    : IGNORE_ANNOTATION;
+                        }
+
+                        @Override
+                        public void visitCode() {
+                            mv = IGNORE_METHOD;
+                        }
+
+                        @Override
+                        public void visitEnd() {
+                            record.applyBody(actualMethodVisitor, implementationContext, annotationValueFilterFactory);
+                            actualMethodVisitor.visitEnd();
+                        }
                     }
                 }
             }
 
             /**
-             * A class visitor which is capable of applying a redefinition of an existing class file.
+             * A default type writer that only applies a type decoration.
+             *
+             * @param <V> The best known loaded type for the dynamically created type.
              */
-            protected class RedefinitionClassVisitor extends ClassVisitor {
+            protected static class WithDecorationOnly<V> extends ForInlining<V> {
 
                 /**
-                 * The implementation context for this class creation.
-                 */
-                private final Implementation.Context.ExtractableView implementationContext;
-
-                /**
-                 * A mapping of fields to write by their names.
-                 */
-                private final Map<String, FieldDescription> declaredFields;
-
-                /**
-                 * A mapping of methods to write by a concatenation of internal name and descriptor.
-                 */
-                private final Map<String, MethodDescription> declarableMethods;
-
-                /**
-                 * A mutable reference for code that is to be injected into the actual type initializer, if any.
-                 * Usually, this represents an invocation of the actual type initializer that is found in the class
-                 * file which is relocated into a static method.
-                 */
-                private Implementation.Context.ExtractableView.InjectedCode injectedCode;
-
-                /**
-                 * Creates a class visitor which is capable of redefining an existent class on the fly.
+                 * Creates a new inlining type writer that only applies a decoration.
                  *
-                 * @param classVisitor          The underlying class visitor to which writes are delegated.
-                 * @param implementationContext The implementation context to use for implementing the class file.
+                 * @param instrumentedType             The instrumented type to be created.
+                 * @param classFileVersion             The class file specified by the user.
+                 * @param auxiliaryTypes               The explicit auxiliary types to add to the created type.
+                 * @param methods                      The instrumented type's declared and virtually inherited methods.
+                 * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+                 * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+                 * @param annotationValueFilterFactory The annotation value filter factory to apply.
+                 * @param annotationRetention          The annotation retention to apply.
+                 * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+                 * @param implementationContextFactory The implementation context factory to apply.
+                 * @param typeValidation               Determines if a type should be explicitly validated.
+                 * @param classWriterStrategy          The class writer strategy to use.
+                 * @param typePool                     The type pool to use for computing stack map frames, if required.
+                 * @param classFileLocator             The class file locator for locating the original type's class file.
                  */
-                protected RedefinitionClassVisitor(ClassVisitor classVisitor, Implementation.Context.ExtractableView implementationContext) {
-                    super(ASM_API_VERSION, classVisitor);
-                    this.implementationContext = implementationContext;
-                    List<? extends FieldDescription> fieldDescriptions = instrumentedType.getDeclaredFields();
-                    declaredFields = new HashMap<String, FieldDescription>(fieldDescriptions.size());
-                    for (FieldDescription fieldDescription : fieldDescriptions) {
-                        declaredFields.put(fieldDescription.getName(), fieldDescription);
-                    }
-                    declarableMethods = new HashMap<String, MethodDescription>(instrumentedMethods.size());
-                    for (MethodDescription methodDescription : instrumentedMethods) {
-                        declarableMethods.put(methodDescription.getInternalName() + methodDescription.getDescriptor(), methodDescription);
-                    }
-                    injectedCode = Implementation.Context.ExtractableView.InjectedCode.None.INSTANCE;
-                }
-
-                @Override
-                public void visit(int classFileVersionNumber,
-                                  int modifiers,
-                                  String internalName,
-                                  String genericSignature,
-                                  String superTypeInternalName,
-                                  String[] interfaceTypeInternalName) {
-                    super.visit(classFileVersionNumber,
-                            instrumentedType.getActualModifiers((modifiers & Opcodes.ACC_SUPER) != 0),
-                            instrumentedType.getInternalName(),
-                            instrumentedType.getGenericSignature(),
-                            (instrumentedType.getSuperType() == NO_SUPER_CLASS ?
-                                    TypeDescription.OBJECT :
-                                    instrumentedType.getSuperType().asErasure()).getInternalName(),
-                            instrumentedType.getInterfaces().asErasures().toInternalNames());
-                    attributeAppender.apply(this, instrumentedType, targetType);
-                }
-
-                @Override
-                public FieldVisitor visitField(int modifiers,
-                                               String internalName,
-                                               String descriptor,
-                                               String genericSignature,
-                                               Object defaultValue) {
-                    declaredFields.remove(internalName); // Ignore in favor of the class file definition.
-                    return super.visitField(modifiers, internalName, descriptor, genericSignature, defaultValue);
-                }
-
-                @Override
-                public MethodVisitor visitMethod(int modifiers,
-                                                 String internalName,
-                                                 String descriptor,
-                                                 String genericSignature,
-                                                 String[] exceptionTypeInternalName) {
-                    if (internalName.equals(MethodDescription.TYPE_INITIALIZER_INTERNAL_NAME)) {
-                        if (implementationContext.isRetainTypeInitializer()) {
-                            return super.visitMethod(modifiers, internalName, descriptor, genericSignature, exceptionTypeInternalName);
-                        } else {
-                            TypeInitializerInjection injectedCode = new TypeInitializerInjection(instrumentedType);
-                            this.injectedCode = injectedCode;
-                            return super.visitMethod(injectedCode.getInjectorProxyMethod().getModifiers(),
-                                    injectedCode.getInjectorProxyMethod().getInternalName(),
-                                    injectedCode.getInjectorProxyMethod().getDescriptor(),
-                                    injectedCode.getInjectorProxyMethod().getGenericSignature(),
-                                    injectedCode.getInjectorProxyMethod().getExceptionTypes().asErasures().toInternalNames());
-                        }
-                    }
-                    MethodDescription methodDescription = declarableMethods.remove(internalName + descriptor);
-                    return methodDescription == RETAIN_METHOD
-                            ? super.visitMethod(modifiers, internalName, descriptor, genericSignature, exceptionTypeInternalName)
-                            : redefine(methodDescription, (modifiers & Opcodes.ACC_ABSTRACT) != 0);
+                protected WithDecorationOnly(TypeDescription instrumentedType,
+                                             ClassFileVersion classFileVersion,
+                                             List<? extends DynamicType> auxiliaryTypes,
+                                             MethodList<?> methods,
+                                             TypeAttributeAppender typeAttributeAppender,
+                                             AsmVisitorWrapper asmVisitorWrapper,
+                                             AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                             AnnotationRetention annotationRetention,
+                                             AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                             Implementation.Context.Factory implementationContextFactory,
+                                             TypeValidation typeValidation,
+                                             ClassWriterStrategy classWriterStrategy,
+                                             TypePool typePool,
+                                             ClassFileLocator classFileLocator) {
+                    super(instrumentedType,
+                            classFileVersion,
+                            FieldPool.Disabled.INSTANCE,
+                            auxiliaryTypes,
+                            new LazyFieldList(instrumentedType),
+                            methods,
+                            new MethodList.Empty<MethodDescription>(),
+                            LoadedTypeInitializer.NoOp.INSTANCE,
+                            TypeInitializer.None.INSTANCE,
+                            typeAttributeAppender,
+                            asmVisitorWrapper,
+                            annotationValueFilterFactory,
+                            annotationRetention,
+                            auxiliaryTypeNamingStrategy,
+                            implementationContextFactory,
+                            typeValidation,
+                            classWriterStrategy,
+                            typePool,
+                            instrumentedType,
+                            classFileLocator);
                 }
 
                 /**
-                 * Redefines a given method if this is required by looking up a potential implementation from the
-                 * {@link net.bytebuddy.dynamic.scaffold.TypeWriter.MethodPool}.
-                 *
-                 * @param methodDescription The method being considered for redefinition.
-                 * @param abstractOrigin    {@code true} if the original method is abstract, i.e. there is no implementation
-                 *                          to preserve.
-                 * @return A method visitor which is capable of consuming the original method.
+                 * {@inheritDoc}
                  */
-                protected MethodVisitor redefine(MethodDescription methodDescription, boolean abstractOrigin) {
-                    MethodPool.Record record = methodPool.target(methodDescription);
-                    if (!record.getSort().isDefined()) {
-                        return super.visitMethod(methodDescription.getModifiers(),
-                                methodDescription.getInternalName(),
-                                methodDescription.getDescriptor(),
-                                methodDescription.getGenericSignature(),
-                                methodDescription.getExceptionTypes().asErasures().toInternalNames());
+                protected ClassVisitor writeTo(ClassVisitor classVisitor,
+                                               TypeInitializer typeInitializer,
+                                               ContextRegistry contextRegistry,
+                                               int writerFlags,
+                                               int readerFlags) {
+                    if (typeInitializer.isDefined()) {
+                        throw new UnsupportedOperationException("Cannot apply a type initializer for a decoration");
                     }
-                    MethodDescription implementedMethod = record.getImplementedMethod();
-                    MethodVisitor methodVisitor = super.visitMethod(implementedMethod.getAdjustedModifiers(record.getSort().isImplemented()),
-                            implementedMethod.getInternalName(),
-                            implementedMethod.getDescriptor(),
-                            implementedMethod.getGenericSignature(),
-                            implementedMethod.getExceptionTypes().asErasures().toInternalNames());
-                    return abstractOrigin
-                            ? new AttributeObtainingMethodVisitor(methodVisitor, record)
-                            : new CodePreservingMethodVisitor(methodVisitor, record, methodRebaseResolver.resolve(implementedMethod.asDefined()));
-                }
-
-                @Override
-                public void visitEnd() {
-                    for (FieldDescription fieldDescription : declaredFields.values()) {
-                        fieldPool.target(fieldDescription).apply(cv);
-                    }
-                    for (MethodDescription methodDescription : declarableMethods.values()) {
-                        methodPool.target(methodDescription).apply(cv, implementationContext);
-                    }
-                    implementationContext.drain(cv, methodPool, injectedCode);
-                    super.visitEnd();
-                }
-
-                @Override
-                public String toString() {
-                    return "TypeWriter.Default.ForInlining.RedefinitionClassVisitor{" +
-                            "typeWriter=" + TypeWriter.Default.ForInlining.this +
-                            ", implementationContext=" + implementationContext +
-                            ", declaredFields=" + declaredFields +
-                            ", declarableMethods=" + declarableMethods +
-                            ", injectedCode=" + injectedCode +
-                            '}';
+                    return new DecorationClassVisitor(classVisitor, contextRegistry, writerFlags, readerFlags);
                 }
 
                 /**
-                 * A method visitor that preserves the code of a method in the class file by copying it into a rebased
-                 * method while copying all attributes and annotations to the actual method.
+                 * A field list that only reads fields lazy to avoid an eager lookup since fields are often not required.
                  */
-                protected class CodePreservingMethodVisitor extends MethodVisitor {
+                protected static class LazyFieldList extends FieldList.AbstractBase<FieldDescription.InDefinedShape> {
 
                     /**
-                     * The method visitor of the actual method.
+                     * The instrumented type.
                      */
-                    private final MethodVisitor actualMethodVisitor;
+                    private final TypeDescription instrumentedType;
 
                     /**
-                     * The method pool entry to apply.
-                     */
-                    private final MethodPool.Record record;
-
-                    /**
-                     * The resolution of a potential rebased method.
-                     */
-                    private final MethodRebaseResolver.Resolution resolution;
-
-                    /**
-                     * Creates a new code preserving method visitor.
-                     *
-                     * @param actualMethodVisitor The method visitor of the actual method.
-                     * @param record              The method pool entry to apply.
-                     * @param resolution          The resolution of the method rebase resolver in use.
-                     */
-                    protected CodePreservingMethodVisitor(MethodVisitor actualMethodVisitor,
-                                                          MethodPool.Record record,
-                                                          MethodRebaseResolver.Resolution resolution) {
-                        super(ASM_API_VERSION, actualMethodVisitor);
-                        this.actualMethodVisitor = actualMethodVisitor;
-                        this.record = record;
-                        this.resolution = resolution;
-                        record.applyHead(actualMethodVisitor);
-                    }
-
-                    @Override
-                    public AnnotationVisitor visitAnnotationDefault() {
-                        return IGNORE_ANNOTATION; // Annotation types can never be rebased.
-                    }
-
-                    @Override
-                    public void visitCode() {
-                        record.applyBody(actualMethodVisitor, implementationContext);
-                        actualMethodVisitor.visitEnd();
-                        mv = resolution.isRebased()
-                                ? cv.visitMethod(resolution.getResolvedMethod().getModifiers(),
-                                resolution.getResolvedMethod().getInternalName(),
-                                resolution.getResolvedMethod().getDescriptor(),
-                                resolution.getResolvedMethod().getGenericSignature(),
-                                resolution.getResolvedMethod().getExceptionTypes().asErasures().toInternalNames())
-                                : IGNORE_METHOD;
-                        super.visitCode();
-                    }
-
-                    @Override
-                    public void visitMaxs(int maxStack, int maxLocals) {
-                        super.visitMaxs(maxStack, Math.max(maxLocals, resolution.getResolvedMethod().getStackSize()));
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ForInlining.RedefinitionClassVisitor.CodePreservingMethodVisitor{" +
-                                "classVisitor=" + TypeWriter.Default.ForInlining.RedefinitionClassVisitor.this +
-                                ", actualMethodVisitor=" + actualMethodVisitor +
-                                ", entry=" + record +
-                                ", resolution=" + resolution +
-                                '}';
-                    }
-                }
-
-                /**
-                 * A method visitor that obtains all attributes and annotations of a method that is found in the
-                 * class file but discards all code.
-                 */
-                protected class AttributeObtainingMethodVisitor extends MethodVisitor {
-
-                    /**
-                     * The method visitor to which the actual method is to be written to.
-                     */
-                    private final MethodVisitor actualMethodVisitor;
-
-                    /**
-                     * The method pool entry to apply.
-                     */
-                    private final MethodPool.Record record;
-
-                    /**
-                     * Creates a new attribute obtaining method visitor.
-                     *
-                     * @param actualMethodVisitor The method visitor of the actual method.
-                     * @param record              The method pool entry to apply.
-                     */
-                    protected AttributeObtainingMethodVisitor(MethodVisitor actualMethodVisitor, MethodPool.Record record) {
-                        super(ASM_API_VERSION, actualMethodVisitor);
-                        this.actualMethodVisitor = actualMethodVisitor;
-                        this.record = record;
-                        record.applyHead(actualMethodVisitor);
-                    }
-
-                    @Override
-                    public AnnotationVisitor visitAnnotationDefault() {
-                        return IGNORE_ANNOTATION;
-                    }
-
-                    @Override
-                    public void visitCode() {
-                        mv = IGNORE_METHOD;
-                    }
-
-                    @Override
-                    public void visitEnd() {
-                        record.applyBody(actualMethodVisitor, implementationContext);
-                        actualMethodVisitor.visitEnd();
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ForInlining.RedefinitionClassVisitor.AttributeObtainingMethodVisitor{" +
-                                "classVisitor=" + TypeWriter.Default.ForInlining.RedefinitionClassVisitor.this +
-                                ", actualMethodVisitor=" + actualMethodVisitor +
-                                ", entry=" + record +
-                                '}';
-                    }
-                }
-
-                /**
-                 * A code injection for the type initializer that invokes a method representing the original type initializer
-                 * which is copied to a static method.
-                 */
-                protected class TypeInitializerInjection implements Implementation.Context.ExtractableView.InjectedCode {
-
-                    /**
-                     * The method to which the original type initializer code is to be written to.
-                     */
-                    private final MethodDescription injectorProxyMethod;
-
-                    /**
-                     * Creates a new type initializer injection.
+                     * Creates a lazy field list.
                      *
                      * @param instrumentedType The instrumented type.
                      */
-                    protected TypeInitializerInjection(TypeDescription instrumentedType) {
-                        injectorProxyMethod = new TypeInitializerDelegate(instrumentedType, RandomString.make());
-                    }
-
-                    @Override
-                    public ByteCodeAppender getByteCodeAppender() {
-                        return new ByteCodeAppender.Simple(MethodInvocation.invoke(injectorProxyMethod));
-                    }
-
-                    @Override
-                    public boolean isDefined() {
-                        return true;
+                    protected LazyFieldList(TypeDescription instrumentedType) {
+                        this.instrumentedType = instrumentedType;
                     }
 
                     /**
-                     * Returns the proxy method to which the original type initializer code is written to.
-                     *
-                     * @return A method description of this proxy method.
+                     * {@inheritDoc}
                      */
-                    public MethodDescription getInjectorProxyMethod() {
-                        return injectorProxyMethod;
+                    public FieldDescription.InDefinedShape get(int index) {
+                        return instrumentedType.getDeclaredFields().get(index);
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public int size() {
+                        return instrumentedType.getDeclaredFields().size();
+                    }
+                }
+
+                /**
+                 * A class visitor that decorates an existing type.
+                 */
+                @SuppressFBWarnings(value = "UWF_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR", justification = "Field access order is implied by ASM")
+                protected class DecorationClassVisitor extends MetadataAwareClassVisitor implements TypeInitializer.Drain {
+
+                    /**
+                     * A context registry to register the lazily created implementation context to.
+                     */
+                    private final ContextRegistry contextRegistry;
+
+                    /**
+                     * The writer flags being used.
+                     */
+                    private final int writerFlags;
+
+                    /**
+                     * The reader flags being used.
+                     */
+                    private final int readerFlags;
+
+                    /**
+                     * The implementation context to use or {@code null} if the context is not yet initialized.
+                     */
+                    private Implementation.Context.ExtractableView implementationContext;
+
+                    /**
+                     * Creates a class visitor which is capable of decorating an existent class on the fly.
+                     *
+                     * @param classVisitor    The underlying class visitor to which writes are delegated.
+                     * @param contextRegistry A context registry to register the lazily created implementation context to.
+                     * @param writerFlags     The writer flags being used.
+                     * @param readerFlags     The reader flags being used.
+                     */
+                    protected DecorationClassVisitor(ClassVisitor classVisitor, ContextRegistry contextRegistry, int writerFlags, int readerFlags) {
+                        super(OpenedClassReader.ASM_API, classVisitor);
+                        this.contextRegistry = contextRegistry;
+                        this.writerFlags = writerFlags;
+                        this.readerFlags = readerFlags;
                     }
 
                     @Override
-                    public String toString() {
-                        return "TypeWriter.Default.ForInlining.RedefinitionClassVisitor.TypeInitializerInjection{" +
-                                "classVisitor=" + TypeWriter.Default.ForInlining.RedefinitionClassVisitor.this +
-                                ", injectorProxyMethod=" + injectorProxyMethod +
-                                '}';
+                    public void visit(int classFileVersionNumber,
+                                      int modifiers,
+                                      String internalName,
+                                      String genericSignature,
+                                      String superClassInternalName,
+                                      String[] interfaceTypeInternalName) {
+                        ClassFileVersion classFileVersion = ClassFileVersion.ofMinorMajor(classFileVersionNumber);
+                        implementationContext = implementationContextFactory.make(instrumentedType,
+                                auxiliaryTypeNamingStrategy,
+                                typeInitializer,
+                                classFileVersion,
+                                WithDecorationOnly.this.classFileVersion);
+                        contextRegistry.setImplementationContext(implementationContext);
+                        cv = asmVisitorWrapper.wrap(instrumentedType,
+                                cv,
+                                implementationContext,
+                                typePool,
+                                fields,
+                                methods,
+                                writerFlags,
+                                readerFlags);
+                        cv.visit(classFileVersionNumber, modifiers, internalName, genericSignature, superClassInternalName, interfaceTypeInternalName);
+                    }
+
+                    @Override
+                    protected void onNestHost() {
+                        /* do nothing */
+                    }
+
+                    @Override
+                    protected void onOuterType() {
+                        /* do nothing */
+                    }
+
+                    @Override
+                    protected AnnotationVisitor onVisitTypeAnnotation(int typeReference, TypePath typePath, String descriptor, boolean visible) {
+                        return annotationRetention.isEnabled()
+                                ? cv.visitTypeAnnotation(typeReference, typePath, descriptor, visible)
+                                : IGNORE_ANNOTATION;
+                    }
+
+                    @Override
+                    protected AnnotationVisitor onVisitAnnotation(String descriptor, boolean visible) {
+                        return annotationRetention.isEnabled()
+                                ? cv.visitAnnotation(descriptor, visible)
+                                : IGNORE_ANNOTATION;
+                    }
+
+                    @Override
+                    protected void onAfterAttributes() {
+                        typeAttributeAppender.apply(cv, instrumentedType, annotationValueFilterFactory.on(instrumentedType));
+                    }
+
+                    @Override
+                    protected void onVisitEnd() {
+                        implementationContext.drain(this, cv, annotationValueFilterFactory);
+                        cv.visitEnd();
+                    }
+
+                    /**
+                     * {@inheritDoc}
+                     */
+                    public void apply(ClassVisitor classVisitor, TypeInitializer typeInitializer, Implementation.Context implementationContext) {
+                        /* do nothing */
                     }
                 }
             }
@@ -2917,90 +4999,237 @@ public interface TypeWriter<T> {
          *
          * @param <U> The best known loaded type for the dynamically created type.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         public static class ForCreation<U> extends Default<U> {
 
             /**
-             * Creates a new type writer for creating a new type.
+             * The method pool to use.
+             */
+            private final MethodPool methodPool;
+
+            /**
+             * Creates a new default type writer for creating a new type that is not based on an existing class file.
              *
-             * @param instrumentedType             The instrumented type that is to be written.
-             * @param loadedTypeInitializer        The loaded type initializer of the instrumented type.
-             * @param typeInitializer              The type initializer of the instrumented type.
-             * @param explicitAuxiliaryTypes       A list of explicit auxiliary types that are to be added to the created dynamic type.
-             * @param classFileVersion             The class file version of the written type.
-             * @param auxiliaryTypeNamingStrategy  A naming strategy that is used for naming auxiliary types.
-             * @param implementationContextFactory The implementation context factory to use.
-             * @param classVisitorWrapper          A class visitor wrapper to apply during instrumentation.
-             * @param attributeAppender            The type attribute appender to apply.
-             * @param fieldPool                    The field pool to be used for instrumenting fields.
-             * @param methodPool                   The method pool to be used for instrumenting methods.
-             * @param instrumentedMethods          A list of all instrumented methods.
+             * @param instrumentedType             The instrumented type to be created.
+             * @param classFileVersion             The class file version to write the instrumented type in and to apply when creating auxiliary types.
+             * @param fieldPool                    The field pool to use.
+             * @param methodPool                   The method pool to use.
+             * @param auxiliaryTypes               A list of auxiliary types to add to the created type.
+             * @param fields                       The instrumented type's declared fields.
+             * @param methods                      The instrumented type's declared and virtually inherited methods.
+             * @param instrumentedMethods          The instrumented methods relevant to this type creation.
+             * @param loadedTypeInitializer        The loaded type initializer to apply onto the created type after loading.
+             * @param typeInitializer              The type initializer to include in the created type's type initializer.
+             * @param typeAttributeAppender        The type attribute appender to apply onto the instrumented type.
+             * @param asmVisitorWrapper            The ASM visitor wrapper to apply onto the class writer.
+             * @param annotationValueFilterFactory The annotation value filter factory to apply.
+             * @param annotationRetention          The annotation retention to apply.
+             * @param auxiliaryTypeNamingStrategy  The naming strategy for auxiliary types to apply.
+             * @param implementationContextFactory The implementation context factory to apply.
+             * @param typeValidation               Determines if a type should be explicitly validated.
+             * @param classWriterStrategy          The class writer strategy to use.
+             * @param typePool                     The type pool to use for computing stack map frames, if required.
              */
             protected ForCreation(TypeDescription instrumentedType,
-                                  LoadedTypeInitializer loadedTypeInitializer,
-                                  InstrumentedType.TypeInitializer typeInitializer,
-                                  List<DynamicType> explicitAuxiliaryTypes,
                                   ClassFileVersion classFileVersion,
-                                  AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
-                                  Implementation.Context.Factory implementationContextFactory,
-                                  ClassVisitorWrapper classVisitorWrapper,
-                                  TypeAttributeAppender attributeAppender,
                                   FieldPool fieldPool,
                                   MethodPool methodPool,
-                                  MethodList instrumentedMethods) {
+                                  List<? extends DynamicType> auxiliaryTypes,
+                                  FieldList<FieldDescription.InDefinedShape> fields,
+                                  MethodList<?> methods,
+                                  MethodList<?> instrumentedMethods,
+                                  LoadedTypeInitializer loadedTypeInitializer,
+                                  TypeInitializer typeInitializer,
+                                  TypeAttributeAppender typeAttributeAppender,
+                                  AsmVisitorWrapper asmVisitorWrapper,
+                                  AnnotationValueFilter.Factory annotationValueFilterFactory,
+                                  AnnotationRetention annotationRetention,
+                                  AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
+                                  Implementation.Context.Factory implementationContextFactory,
+                                  TypeValidation typeValidation,
+                                  ClassWriterStrategy classWriterStrategy,
+                                  TypePool typePool) {
                 super(instrumentedType,
+                        classFileVersion,
+                        fieldPool,
+                        auxiliaryTypes,
+                        fields,
+                        methods,
+                        instrumentedMethods,
                         loadedTypeInitializer,
                         typeInitializer,
-                        explicitAuxiliaryTypes,
-                        classFileVersion,
+                        typeAttributeAppender,
+                        asmVisitorWrapper,
+                        annotationValueFilterFactory,
+                        annotationRetention,
                         auxiliaryTypeNamingStrategy,
                         implementationContextFactory,
-                        classVisitorWrapper,
-                        attributeAppender,
-                        fieldPool,
-                        methodPool,
-                        instrumentedMethods);
+                        typeValidation,
+                        classWriterStrategy,
+                        typePool);
+                this.methodPool = methodPool;
             }
 
             @Override
-            public byte[] create(Implementation.Context.ExtractableView implementationContext) {
-                ClassWriter classWriter = new ClassWriter(classVisitorWrapper.mergeWriter(ASM_MANUAL_FLAG));
-                ClassVisitor classVisitor = classVisitorWrapper.wrap(new ValidatingClassVisitor(classWriter));
-                classVisitor.visit(classFileVersion.getVersion(),
+            protected UnresolvedType create(TypeInitializer typeInitializer) {
+                int writerFlags = asmVisitorWrapper.mergeWriter(AsmVisitorWrapper.NO_FLAGS);
+                ClassWriter classWriter = classWriterStrategy.resolve(writerFlags, typePool);
+                Implementation.Context.ExtractableView implementationContext = implementationContextFactory.make(instrumentedType,
+                        auxiliaryTypeNamingStrategy,
+                        typeInitializer,
+                        classFileVersion,
+                        classFileVersion);
+                ClassVisitor classVisitor = asmVisitorWrapper.wrap(instrumentedType,
+                        ValidatingClassVisitor.of(classWriter, typeValidation),
+                        implementationContext,
+                        typePool,
+                        fields,
+                        methods,
+                        writerFlags,
+                        asmVisitorWrapper.mergeReader(AsmVisitorWrapper.NO_FLAGS));
+                classVisitor.visit(classFileVersion.getMinorMajorVersion(),
                         instrumentedType.getActualModifiers(!instrumentedType.isInterface()),
                         instrumentedType.getInternalName(),
                         instrumentedType.getGenericSignature(),
-                        (instrumentedType.getSuperType() == null
+                        (instrumentedType.getSuperClass() == null
                                 ? TypeDescription.OBJECT
-                                : instrumentedType.getSuperType().asErasure()).getInternalName(),
+                                : instrumentedType.getSuperClass().asErasure()).getInternalName(),
                         instrumentedType.getInterfaces().asErasures().toInternalNames());
-                attributeAppender.apply(classVisitor, instrumentedType, instrumentedType.getSuperType());
-                for (FieldDescription fieldDescription : instrumentedType.getDeclaredFields()) {
-                    fieldPool.target(fieldDescription).apply(classVisitor);
+                if (!instrumentedType.isNestHost()) {
+                    classVisitor.visitNestHost(instrumentedType.getNestHost().getInternalName());
+                }
+                MethodDescription.InDefinedShape enclosingMethod = instrumentedType.getEnclosingMethod();
+                if (enclosingMethod != null) {
+                    classVisitor.visitOuterClass(enclosingMethod.getDeclaringType().getInternalName(),
+                            enclosingMethod.getInternalName(),
+                            enclosingMethod.getDescriptor());
+                } else if (instrumentedType.isLocalType() || instrumentedType.isAnonymousType()) {
+                    classVisitor.visitOuterClass(instrumentedType.getEnclosingType().getInternalName(), NO_REFERENCE, NO_REFERENCE);
+                }
+                typeAttributeAppender.apply(classVisitor, instrumentedType, annotationValueFilterFactory.on(instrumentedType));
+                for (FieldDescription fieldDescription : fields) {
+                    fieldPool.target(fieldDescription).apply(classVisitor, annotationValueFilterFactory);
                 }
                 for (MethodDescription methodDescription : instrumentedMethods) {
-                    methodPool.target(methodDescription).apply(classVisitor, implementationContext);
+                    methodPool.target(methodDescription).apply(classVisitor, implementationContext, annotationValueFilterFactory);
                 }
-                implementationContext.drain(classVisitor, methodPool, Implementation.Context.ExtractableView.InjectedCode.None.INSTANCE);
+                implementationContext.drain(new TypeInitializer.Drain.Default(instrumentedType,
+                        methodPool,
+                        annotationValueFilterFactory), classVisitor, annotationValueFilterFactory);
+                if (instrumentedType.isNestHost()) {
+                    for (TypeDescription typeDescription : instrumentedType.getNestMembers().filter(not(is(instrumentedType)))) {
+                        classVisitor.visitNestMember(typeDescription.getInternalName());
+                    }
+                }
+                TypeDescription declaringType = instrumentedType.getDeclaringType();
+                if (declaringType != null) {
+                    classVisitor.visitInnerClass(instrumentedType.getInternalName(),
+                            declaringType.getInternalName(),
+                            instrumentedType.getSimpleName(),
+                            instrumentedType.getModifiers());
+                } else if (instrumentedType.isLocalType()) {
+                    classVisitor.visitInnerClass(instrumentedType.getInternalName(),
+                            NO_REFERENCE,
+                            instrumentedType.getSimpleName(),
+                            instrumentedType.getModifiers());
+                } else if (instrumentedType.isAnonymousType()) {
+                    classVisitor.visitInnerClass(instrumentedType.getInternalName(),
+                            NO_REFERENCE,
+                            NO_REFERENCE,
+                            instrumentedType.getModifiers());
+                }
+                for (TypeDescription typeDescription : instrumentedType.getDeclaredTypes()) {
+                    classVisitor.visitInnerClass(typeDescription.getInternalName(),
+                            typeDescription.isMemberType()
+                                    ? instrumentedType.getInternalName()
+                                    : NO_REFERENCE,
+                            typeDescription.isAnonymousType()
+                                    ? NO_REFERENCE
+                                    : typeDescription.getSimpleName(),
+                            typeDescription.getModifiers());
+                }
                 classVisitor.visitEnd();
-                return classWriter.toByteArray();
+                return new UnresolvedType(classWriter.toByteArray(), implementationContext.getAuxiliaryTypes());
+            }
+        }
+
+        /**
+         * An action to write a class file to the dumping location.
+         */
+        @HashCodeAndEqualsPlugin.Enhance
+        protected static class ClassDumpAction implements PrivilegedExceptionAction<Void> {
+
+            /**
+             * Indicates that nothing is returned from this action.
+             */
+            private static final Void NOTHING = null;
+
+            /**
+             * The target folder for writing the class file to.
+             */
+            private final String target;
+
+            /**
+             * The instrumented type.
+             */
+            private final TypeDescription instrumentedType;
+
+            /**
+             * {@code true} if the dumped class file is an input to a class transformation.
+             */
+            private final boolean original;
+
+            /**
+             * The type's binary representation.
+             */
+            private final byte[] binaryRepresentation;
+
+            /**
+             * Creates a new class dump action.
+             *
+             * @param target               The target folder for writing the class file to.
+             * @param instrumentedType     The instrumented type.
+             * @param original             {@code true} if the dumped class file is an input to a class transformation.
+             * @param binaryRepresentation The type's binary representation.
+             */
+            protected ClassDumpAction(String target, TypeDescription instrumentedType, boolean original, byte[] binaryRepresentation) {
+                this.target = target;
+                this.instrumentedType = instrumentedType;
+                this.original = original;
+                this.binaryRepresentation = binaryRepresentation;
             }
 
-            @Override
-            public String toString() {
-                return "TypeWriter.Default.ForCreation{" +
-                        "instrumentedType=" + instrumentedType +
-                        ", loadedTypeInitializer=" + loadedTypeInitializer +
-                        ", typeInitializer=" + typeInitializer +
-                        ", explicitAuxiliaryTypes=" + explicitAuxiliaryTypes +
-                        ", classFileVersion=" + classFileVersion +
-                        ", auxiliaryTypeNamingStrategy=" + auxiliaryTypeNamingStrategy +
-                        ", implementationContextFactory=" + implementationContextFactory +
-                        ", classVisitorWrapper=" + classVisitorWrapper +
-                        ", attributeAppender=" + attributeAppender +
-                        ", fieldPool=" + fieldPool +
-                        ", methodPool=" + methodPool +
-                        ", instrumentedMethods=" + instrumentedMethods +
-                        "}";
+            /**
+             * Dumps the instrumented type if a {@link TypeWriter.Default#DUMP_FOLDER} is configured.
+             *
+             * @param dumpFolder           The dump folder.
+             * @param instrumentedType     The instrumented type.
+             * @param original             {@code true} if the dumped class file is an input to a class transformation.
+             * @param binaryRepresentation The binary representation.
+             */
+            protected static void dump(String dumpFolder, TypeDescription instrumentedType, boolean original, byte[] binaryRepresentation) {
+                if (dumpFolder != null) {
+                    try {
+                        AccessController.doPrivileged(new ClassDumpAction(dumpFolder, instrumentedType, original, binaryRepresentation));
+                    } catch (Exception exception) {
+                        exception.printStackTrace();
+                    }
+                }
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public Void run() throws Exception {
+                OutputStream outputStream = new FileOutputStream(new File(target, instrumentedType.getName()
+                        + (original ? "-original." : ".")
+                        + System.currentTimeMillis()));
+                try {
+                    outputStream.write(binaryRepresentation);
+                    return NOTHING;
+                } finally {
+                    outputStream.close();
+                }
             }
         }
     }

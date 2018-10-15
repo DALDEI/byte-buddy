@@ -37,12 +37,12 @@ public enum MethodManifestation implements ModifierContributor.ForMethod {
     /**
      * Modifier for a bridge method.
      */
-    BRIDGE(Opcodes.ACC_BRIDGE);
+    BRIDGE(Opcodes.ACC_BRIDGE),
 
     /**
-     * A mask for checking if a method implementation is not implemented in byte code.
+     * Modifier for a final bridge method.
      */
-    public static final int ABSTRACTION_MASK = Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE;
+    FINAL_BRIDGE(Opcodes.ACC_FINAL | Opcodes.ACC_BRIDGE);
 
     /**
      * The mask the modifier contributor.
@@ -58,17 +58,23 @@ public enum MethodManifestation implements ModifierContributor.ForMethod {
         this.mask = mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT | Opcodes.ACC_FINAL | Opcodes.ACC_BRIDGE;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -107,10 +113,5 @@ public enum MethodManifestation implements ModifierContributor.ForMethod {
      */
     public boolean isBridge() {
         return (mask & Opcodes.ACC_BRIDGE) != 0;
-    }
-
-    @Override
-    public String toString() {
-        return "MethodManifestation." + name();
     }
 }

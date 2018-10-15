@@ -58,7 +58,9 @@ public @interface BindingPriority {
                     : bindingPriority.loadSilent().value();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Resolution resolve(MethodDescription source,
                                   MethodDelegationBinder.MethodBinding left,
                                   MethodDelegationBinder.MethodBinding right) {
@@ -71,11 +73,6 @@ public @interface BindingPriority {
             } else {
                 return Resolution.LEFT;
             }
-        }
-
-        @Override
-        public String toString() {
-            return "BindingPriority.Resolver." + name();
         }
     }
 }

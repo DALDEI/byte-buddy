@@ -1,7 +1,14 @@
 package net.bytebuddy.test.utility;
 
-import net.bytebuddy.asm.ClassVisitorWrapper;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
+import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.pool.TypePool;
 import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.util.CheckClassAdapter;
 import org.objectweb.asm.util.Printer;
 import org.objectweb.asm.util.Textifier;
 import org.objectweb.asm.util.TraceClassVisitor;
@@ -11,38 +18,52 @@ import java.io.PrintWriter;
 import java.io.Writer;
 
 @SuppressWarnings("unused")
-public class DebuggingWrapper implements ClassVisitorWrapper {
+public class DebuggingWrapper implements AsmVisitorWrapper {
 
     private final PrintWriter printWriter;
 
     private final Printer printer;
 
-    public DebuggingWrapper(Writer writer, Printer printer) {
+    private final boolean check;
+
+    public DebuggingWrapper(Writer writer, Printer printer, boolean check) {
+        this.check = check;
         printWriter = new PrintWriter(writer);
         this.printer = printer;
     }
 
-    public DebuggingWrapper(OutputStream outputStream, Printer printer) {
+    public DebuggingWrapper(OutputStream outputStream, Printer printer, boolean check) {
+        this.check = check;
         printWriter = new PrintWriter(outputStream);
         this.printer = printer;
     }
 
-    public static ClassVisitorWrapper makeDefault() {
-        return new DebuggingWrapper(System.out, new Textifier());
+    public static AsmVisitorWrapper makeDefault() {
+        return makeDefault(true);
     }
 
-    @Override
-    public int mergeWriter(int hint) {
-        return hint;
+    public static AsmVisitorWrapper makeDefault(boolean check) {
+        return new DebuggingWrapper(System.out, new Textifier(), check);
     }
 
-    @Override
-    public int mergeReader(int hint) {
-        return hint;
+    public int mergeWriter(int flags) {
+        return flags;
     }
 
-    @Override
-    public ClassVisitor wrap(ClassVisitor classVisitor) {
-        return new TraceClassVisitor(classVisitor, printer, printWriter);
+    public int mergeReader(int flags) {
+        return flags;
+    }
+
+    public ClassVisitor wrap(TypeDescription instrumentedType,
+                             ClassVisitor classVisitor,
+                             Implementation.Context implementationContext,
+                             TypePool typePool,
+                             FieldList<FieldDescription.InDefinedShape> fields,
+                             MethodList<?> methods,
+                             int writerFlags,
+                             int readerFlags) {
+        return check
+                ? new CheckClassAdapter(new TraceClassVisitor(classVisitor, printer, printWriter))
+                : new TraceClassVisitor(classVisitor, printer, printWriter);
     }
 }

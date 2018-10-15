@@ -17,7 +17,7 @@ import net.bytebuddy.description.type.TypeDescription;
  * type is considered as dominant.</li>
  * <li>If this result is dominant for both the left and the right target method, this resolver will consider the binding as
  * ambiguous.</li>
- * <li>If none of the methods is dominant and if the comparison did not result in an ambigous resolution, the method that
+ * <li>If none of the methods is dominant and if the comparison did not result in an ambiguous resolution, the method that
  * consists of the most one-to-one parameter bindings is considered dominant.</li>
  * </ol>
  * Primitive types are considered dominant in the same manner as by the Java compiler.
@@ -52,8 +52,7 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
         TypeDescription rightParameterType = right.getTarget().getParameters().get(rightParameterIndex).getType().asErasure();
         if (!leftParameterType.equals(rightParameterType)) {
             if (leftParameterType.isPrimitive() && rightParameterType.isPrimitive()) {
-                return PrimitiveTypePrecedence.forPrimitive(leftParameterType)
-                        .resolve(PrimitiveTypePrecedence.forPrimitive(rightParameterType));
+                return PrimitiveTypePrecedence.forPrimitive(leftParameterType).resolve(PrimitiveTypePrecedence.forPrimitive(rightParameterType));
             } else if (leftParameterType.isPrimitive() /* && !rightParameterType.isPrimitive() */) {
                 return sourceParameterType.isPrimitive() ? Resolution.LEFT : Resolution.RIGHT;
             } else if (/* !leftParameterType.isPrimitive() && */ rightParameterType.isPrimitive()) {
@@ -91,7 +90,9 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
         }
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Resolution resolve(MethodDescription source,
                               MethodDelegationBinder.MethodBinding left,
                               MethodDelegationBinder.MethodBinding right) {
@@ -103,13 +104,11 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
             Integer leftParameterIndex = left.getTargetParameterIndex(parameterIndexToken);
             Integer rightParameterIndex = right.getTargetParameterIndex(parameterIndexToken);
             if (leftParameterIndex != null && rightParameterIndex != null) {
-                resolution = resolution.merge(
-                        resolveRivalBinding(sourceParameters.get(sourceParameterIndex).getType().asErasure(),
-                                leftParameterIndex,
-                                left,
-                                rightParameterIndex,
-                                right)
-                );
+                resolution = resolution.merge(resolveRivalBinding(sourceParameters.get(sourceParameterIndex).getType().asErasure(),
+                        leftParameterIndex,
+                        left,
+                        rightParameterIndex,
+                        right));
             } else if (leftParameterIndex != null /* && rightParameterIndex == null */) {
                 leftExtra++;
             } else if (/*leftParameterIndex == null && */ rightParameterIndex != null) {
@@ -119,11 +118,6 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
         return resolution == Resolution.UNKNOWN
                 ? resolveByScore(leftExtra - rightExtra)
                 : resolution;
-    }
-
-    @Override
-    public String toString() {
-        return "ArgumentTypeResolver." + name();
     }
 
     /**
@@ -232,11 +226,6 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
                 return Resolution.LEFT;
             }
         }
-
-        @Override
-        public String toString() {
-            return "ArgumentTypeResolver.PrimitiveTypePrecedence." + name();
-        }
     }
 
     /**
@@ -249,6 +238,7 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
         /**
          * The parameter index that is represented by this token.
          */
+        @SuppressWarnings("unused")
         private final int parameterIndex;
 
         /**
@@ -261,19 +251,19 @@ public enum ArgumentTypeResolver implements MethodDelegationBinder.AmbiguityReso
         }
 
         @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && parameterIndex == ((ParameterIndexToken) other).parameterIndex;
-        }
-
-        @Override
         public int hashCode() {
             return parameterIndex;
         }
 
         @Override
-        public String toString() {
-            return "ArgumentTypeResolver.ParameterIndexToken{parameterIndex=" + parameterIndex + '}';
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            } else if (other == null || getClass() != other.getClass()) {
+                return false;
+            }
+            ParameterIndexToken parameterIndexToken = (ParameterIndexToken) other;
+            return parameterIndex == parameterIndexToken.parameterIndex;
         }
     }
 }

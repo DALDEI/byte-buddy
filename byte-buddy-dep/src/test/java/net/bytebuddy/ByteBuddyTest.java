@@ -1,155 +1,118 @@
 package net.bytebuddy;
 
-import net.bytebuddy.asm.ClassVisitorWrapper;
-import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.modifier.ModifierContributor;
-import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
-import net.bytebuddy.dynamic.scaffold.MethodGraph;
-import net.bytebuddy.implementation.Implementation;
-import net.bytebuddy.implementation.attribute.FieldAttributeAppender;
-import net.bytebuddy.implementation.attribute.MethodAttributeAppender;
-import net.bytebuddy.implementation.attribute.TypeAttributeAppender;
-import net.bytebuddy.implementation.auxiliary.AuxiliaryType;
-import net.bytebuddy.matcher.ElementMatcher;
-import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
-import org.junit.Before;
-import org.junit.Rule;
+import net.bytebuddy.dynamic.TypeResolutionStrategy;
+import net.bytebuddy.dynamic.loading.ByteArrayClassLoader;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.MethodDelegation;
 import org.junit.Test;
-import org.junit.rules.TestRule;
-import org.mockito.Mock;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.Opcodes;
 
+import java.lang.reflect.Modifier;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.Collections;
+
+import static net.bytebuddy.matcher.ElementMatchers.isTypeInitializer;
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.mockito.Mockito.*;
 
 public class ByteBuddyTest {
 
-    private static final int MASK = Opcodes.ACC_PUBLIC;
-
-    @Rule
-    public TestRule mockitoRule = new MockitoRule(this);
-
-    @Mock
-    private TypeAttributeAppender typeAttributeAppender;
-
-    @Mock
-    private ClassFileVersion classFileVersion;
-
-    @Mock
-    private ClassVisitorWrapper classVisitorWrapper;
-
-    @Mock
-    private FieldAttributeAppender.Factory fieldAttributeAppenderFactory;
-
-    @Mock
-    private MethodAttributeAppender.Factory methodAttributeAppenderFactory;
-
-    @Mock
-    private ElementMatcher<? super MethodDescription> methodMatcher;
-
-    @Mock
-    private TypeDescription interfaceTypes;
-
-    @Mock
-    private MethodGraph.Compiler methodGraphCompiler;
-
-    @Mock
-    private ModifierContributor.ForType modifierContributorForType;
-
-    @Mock
-    private NamingStrategy.Unbound namingStrategy;
-
-    @Mock
-    private AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy;
-
-    @Mock
-    private Implementation.Context.Factory implementationContextFactory;
-
-    @Mock
-    private Implementation implementation;
-
-    @Before
-    public void setUp() throws Exception {
-        when(modifierContributorForType.getMask()).thenReturn(MASK);
-        when(interfaceTypes.isInterface()).thenReturn(true);
-        when(interfaceTypes.asErasure()).thenReturn(interfaceTypes);
-        when(interfaceTypes.getSort()).thenReturn(GenericTypeDescription.Sort.NON_GENERIC);
+    @Test(expected = IllegalArgumentException.class)
+    public void testEnumWithoutValuesIsIllegal() throws Exception {
+        new ByteBuddy().makeEnumeration();
     }
 
     @Test
-    public void testDomainSpecificLanguage() throws Exception {
-        assertProperties(new ByteBuddy()
-                .method(methodMatcher).intercept(implementation)
-                .withAttribute(typeAttributeAppender)
-                .withClassFileVersion(classFileVersion)
-                .withClassVisitor(classVisitorWrapper)
-                .withDefaultFieldAttributeAppender(fieldAttributeAppenderFactory)
-                .withDefaultMethodAttributeAppender(methodAttributeAppenderFactory)
-                .withIgnoredMethods(methodMatcher)
-                .withImplementing(interfaceTypes)
-                .withMethodGraphCompiler(methodGraphCompiler)
-                .withModifiers(modifierContributorForType)
-                .withNamingStrategy(namingStrategy)
-                .withNamingStrategy(auxiliaryTypeNamingStrategy)
-                .withContext(implementationContextFactory));
+    public void testEnumeration() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .makeEnumeration("foo")
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(Modifier.isPublic(type.getModifiers()), is(true));
+        assertThat(type.isEnum(), is(true));
+        assertThat(type.isInterface(), is(false));
+        assertThat(type.isAnnotation(), is(false));
     }
 
     @Test
-    public void testDomainSpecificLanguageOnAnnotationTarget() throws Exception {
-        assertProperties(new ByteBuddy()
-                .withAttribute(typeAttributeAppender)
-                .withClassFileVersion(classFileVersion)
-                .withClassVisitor(classVisitorWrapper)
-                .withDefaultFieldAttributeAppender(fieldAttributeAppenderFactory)
-                .withDefaultMethodAttributeAppender(methodAttributeAppenderFactory)
-                .withIgnoredMethods(methodMatcher)
-                .withImplementing(interfaceTypes)
-                .withMethodGraphCompiler(methodGraphCompiler)
-                .withModifiers(modifierContributorForType)
-                .withNamingStrategy(namingStrategy)
-                .withNamingStrategy(auxiliaryTypeNamingStrategy)
-                .withContext(implementationContextFactory)
-                .method(methodMatcher).intercept(implementation));
-    }
-
-    @SuppressWarnings("unchecked")
-    private void assertProperties(ByteBuddy byteBuddy) {
-        assertThat(byteBuddy.typeAttributeAppender, is(typeAttributeAppender));
-        assertThat(byteBuddy.classFileVersion, is(classFileVersion));
-        assertThat(byteBuddy.defaultFieldAttributeAppenderFactory, is(fieldAttributeAppenderFactory));
-        assertThat(byteBuddy.defaultMethodAttributeAppenderFactory, is(methodAttributeAppenderFactory));
-        assertThat(byteBuddy.ignoredMethods, is((ElementMatcher) methodMatcher));
-        assertThat(byteBuddy.interfaceTypes.size(), is(1));
-        assertThat(byteBuddy.interfaceTypes, hasItem(interfaceTypes));
-        assertThat(byteBuddy.methodGraphCompiler, is(methodGraphCompiler));
-        assertThat(byteBuddy.modifiers.isDefined(), is(true));
-        assertThat(byteBuddy.modifiers.resolve(0), is(MASK));
-        assertThat(byteBuddy.namingStrategy, is(namingStrategy));
-        assertThat(byteBuddy.auxiliaryTypeNamingStrategy, is(auxiliaryTypeNamingStrategy));
-        assertThat(byteBuddy.implementationContextFactory, is(implementationContextFactory));
-        assertThat(byteBuddy.classVisitorWrapperChain, instanceOf(ClassVisitorWrapper.Chain.class));
-        ClassVisitor classVisitor = mock(ClassVisitor.class);
-        byteBuddy.classVisitorWrapperChain.wrap(classVisitor);
-        verify(classVisitorWrapper).wrap(classVisitor);
-        verifyNoMoreInteractions(classVisitorWrapper);
+    public void testInterface() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .makeInterface()
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(Modifier.isPublic(type.getModifiers()), is(true));
+        assertThat(type.isEnum(), is(false));
+        assertThat(type.isInterface(), is(true));
+        assertThat(type.isAnnotation(), is(false));
     }
 
     @Test
-    public void testClassFileVersionConstructor() throws Exception {
-        assertThat(new ByteBuddy(ClassFileVersion.JAVA_V6).classFileVersion, is(ClassFileVersion.JAVA_V6));
+    public void testAnnotation() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .makeAnnotation()
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(Modifier.isPublic(type.getModifiers()), is(true));
+        assertThat(type.isEnum(), is(false));
+        assertThat(type.isInterface(), is(true));
+        assertThat(type.isAnnotation(), is(true));
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(ByteBuddy.class).apply();
-        ObjectPropertyAssertion.of(ByteBuddy.EnumerationImplementation.class).apply();
-        ObjectPropertyAssertion.of(ByteBuddy.EnumerationImplementation.ValuesMethodAppender.class).apply();
-        ObjectPropertyAssertion.of(ByteBuddy.EnumerationImplementation.InitializationAppender.class).apply();
-        ObjectPropertyAssertion.of(ByteBuddy.MethodAnnotationTarget.class).apply();
-        ObjectPropertyAssertion.of(ByteBuddy.OptionalMethodInterception.class).apply();
+    public void testTypeInitializerInstrumentation() throws Exception {
+        Recorder recorder = new Recorder();
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class)
+                .invokable(isTypeInitializer())
+                .intercept(MethodDelegation.to(recorder))
+                .make(new TypeResolutionStrategy.Active())
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredConstructor().newInstance(), instanceOf(type));
+        assertThat(recorder.counter, is(1));
+    }
+
+    @Test
+    public void testImplicitStrategyBootstrap() throws Exception {
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class)
+                .make()
+                .load(ClassLoadingStrategy.BOOTSTRAP_LOADER)
+                .getLoaded();
+        assertThat(type.getClassLoader(), notNullValue(ClassLoader.class));
+    }
+
+    @Test
+    public void testImplicitStrategyNonBootstrap() throws Exception {
+        ClassLoader classLoader = new URLClassLoader(new URL[0], ClassLoadingStrategy.BOOTSTRAP_LOADER);
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class)
+                .make()
+                .load(classLoader)
+                .getLoaded();
+        assertThat(type.getClassLoader(), not(classLoader));
+    }
+
+    @Test
+    public void testImplicitStrategyInjectable() throws Exception {
+        ClassLoader classLoader = new ByteArrayClassLoader(ClassLoadingStrategy.BOOTSTRAP_LOADER, false, Collections.<String, byte[]>emptyMap());
+        Class<?> type = new ByteBuddy()
+                .subclass(Object.class)
+                .make()
+                .load(classLoader)
+                .getLoaded();
+        assertThat(type.getClassLoader(), is(classLoader));
+    }
+
+    public static class Recorder {
+
+        public int counter;
+
+        public void instrument() {
+            counter++;
+        }
     }
 }

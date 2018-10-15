@@ -36,17 +36,23 @@ public enum FieldManifestation implements ModifierContributor.ForField {
         this.mask = mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_FINAL | Opcodes.ACC_VOLATILE;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -75,11 +81,6 @@ public enum FieldManifestation implements ModifierContributor.ForField {
      * @return {@code true} if this manifestation represents a field that is neither {@code final} or {@code volatile}.
      */
     public boolean isPlain() {
-        return !(isFinal() || isVolatile());
-    }
-
-    @Override
-    public String toString() {
-        return "FieldManifestation." + name();
+        return !isFinal() && !isVolatile();
     }
 }

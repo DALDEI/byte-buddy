@@ -14,24 +14,17 @@ public abstract class AbstractMethodListTest<U, V extends MethodDescription> ext
 
     @Test
     @SuppressWarnings("unchecked")
-    public void testTokenWithoutMatcher() throws Exception {
-        assertThat(asList(Collections.singletonList(getFirst())).asTokenList(), is(new ByteCodeElement.Token
-                .TokenList<MethodDescription.Token>(Collections.singletonList(asElement(getFirst()).asToken()))));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
     public void testTokenWithMatcher() throws Exception {
-        assertThat(asList(Collections.singletonList(getFirst())).asTokenList(none()), is(new ByteCodeElement.Token
-                .TokenList<MethodDescription.Token>(Collections.singletonList(asElement(getFirst()).asToken(none())))));
+        assertThat(asList(getFirst()).asTokenList(none()),
+                is(new ByteCodeElement.Token.TokenList<MethodDescription.Token>(asElement(getFirst()).asToken(none()))));
     }
 
     @Test
-    public void testDeclared() throws Exception {
-        assertThat(asList(Collections.singletonList(getFirst())).asDefined(), is(Collections.singletonList(asElement(getFirst()).asDefined())));
+    public void testAsDefined() throws Exception {
+        assertThat(asList(getFirst()).asDefined(), is(Collections.singletonList(asElement(getFirst()).asDefined())));
     }
 
-    public static abstract class Foo {
+    public abstract static class Foo {
 
         abstract void foo();
 

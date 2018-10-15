@@ -5,6 +5,10 @@ import net.bytebuddy.description.type.TypeList;
 import org.objectweb.asm.Opcodes;
 
 import java.io.Serializable;
+import java.lang.reflect.AccessibleObject;
+import java.lang.reflect.AnnotatedElement;
+import java.lang.reflect.GenericDeclaration;
+import java.lang.reflect.Member;
 
 /**
  * Representations of Java types that do not exist in Java 6 but that have a special meaning to the JVM.
@@ -14,22 +18,47 @@ public enum JavaType {
     /**
      * The Java 7 {@code java.lang.invoke.MethodHandle} type.
      */
-    METHOD_HANDLE("java.lang.invoke.MethodHandle", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT),
+    METHOD_HANDLE("java.lang.invoke.MethodHandle", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, Object.class),
+
+    /**
+     * The Java 7 {@code java.lang.invoke.MethodHandles} type.
+     */
+    METHOD_HANDLES("java.lang.invoke.MethodHandles", Opcodes.ACC_PUBLIC, Object.class),
 
     /**
      * The Java 7 {@code java.lang.invoke.MethodType} type.
      */
-    METHOD_TYPE("java.lang.invoke.MethodType", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, Serializable.class),
+    METHOD_TYPE("java.lang.invoke.MethodType", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, Object.class, Serializable.class),
 
     /**
      * The Java 7 {@code java.lang.invoke.MethodTypes.Lookup} type.
      */
-    METHOD_HANDLES_LOOKUP("java.lang.invoke.MethodHandles$Lookup", Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL),
+    METHOD_HANDLES_LOOKUP("java.lang.invoke.MethodHandles$Lookup", Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL, Object.class),
 
     /**
      * The Java 7 {@code java.lang.invoke.CallSite} type.
      */
-    CALL_SITE("java.lang.invoke.CallSite", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT);
+    CALL_SITE("java.lang.invoke.CallSite", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, Object.class),
+
+    /**
+     * The Java 9 {@code java.lang.invoke.VarHandle} type.
+     */
+    VAR_HANDLE("java.lang.invoke.VarHandle", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, Object.class),
+
+    /**
+     * The Java 8 {@code java.lang.reflect.Parameter} type.
+     */
+    PARAMETER("java.lang.reflect.Parameter", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, Object.class, AnnotatedElement.class),
+
+    /**
+     * The {@code java.lang.reflect.Executable} type.
+     */
+    EXECUTABLE("java.lang.reflect.Executable", Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, AccessibleObject.class, Member.class, GenericDeclaration.class),
+
+    /**
+     * The {@code java.lang.Module} type.
+     */
+    MODULE("java.lang.Module", Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, Object.class, AnnotatedElement.class);
 
     /**
      * The type description to represent this type which is either a loaded type or a stub.
@@ -41,14 +70,18 @@ public enum JavaType {
      *
      * @param typeName   The binary name of this type.
      * @param modifiers  The modifiers of this type when creating a stub.
+     * @param superClass The super class of this type when creating a stub.
      * @param interfaces The interfaces of this type when creating a stub.
      */
-    JavaType(String typeName, int modifiers, Class<?>... interfaces) {
+    JavaType(String typeName, int modifiers, Class<?> superClass, Class<?>... interfaces) {
         TypeDescription typeDescription;
         try {
-            typeDescription = new TypeDescription.ForLoadedType(Class.forName(typeName));
+            typeDescription = TypeDescription.ForLoadedType.of(Class.forName(typeName));
         } catch (Exception ignored) {
-            typeDescription = new TypeDescription.Latent(typeName, modifiers, TypeDescription.OBJECT, new TypeList.ForLoadedType(interfaces));
+            typeDescription = new TypeDescription.Latent(typeName,
+                    modifiers,
+                    TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(superClass),
+                    new TypeList.Generic.ForLoadedTypes(interfaces));
         }
         this.typeDescription = typeDescription;
     }
@@ -71,10 +104,5 @@ public enum JavaType {
      */
     public Class<?> load() throws ClassNotFoundException {
         return Class.forName(typeDescription.getName());
-    }
-
-    @Override
-    public String toString() {
-        return "JavaType." + name();
     }
 }

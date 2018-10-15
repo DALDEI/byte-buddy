@@ -1,35 +1,33 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
 import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationList;
+import net.bytebuddy.description.annotation.AnnotationValue;
 import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.method.ParameterList;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeList;
+import net.bytebuddy.description.type.TypeList;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.implementation.MethodAccessorFactory;
 import net.bytebuddy.implementation.auxiliary.AuxiliaryType;
 import net.bytebuddy.implementation.auxiliary.TrivialType;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.constant.NullConstant;
-import net.bytebuddy.utility.RandomString;
+import net.bytebuddy.utility.CompoundList;
 import org.objectweb.asm.Opcodes;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
-import static net.bytebuddy.utility.ByteBuddyCommons.join;
+import static net.bytebuddy.matcher.ElementMatchers.is;
 
 /**
  * A method rebase resolver is responsible for mapping methods of an instrumented type to an alternative signature.
  * This way a method can exist in two versions within a class:
  * <ol>
  * <li>The rebased method which represents the original implementation as it is present in a class file.</li>
- * <li>An overriden method which implements user code which is still able to invoke the original, rebased method.</li>
+ * <li>An overridden method which implements user code which is still able to invoke the original, rebased method.</li>
  * </ol>
  */
 public interface MethodRebaseResolver {
@@ -50,6 +48,13 @@ public interface MethodRebaseResolver {
     List<DynamicType> getAuxiliaryTypes();
 
     /**
+     * Returns a map of all rebasable methods' signature tokens to their resolution.
+     *
+     * @return A map of all rebasable methods' signature tokens to their resolution.
+     */
+    Map<MethodDescription.SignatureToken, Resolution> asTokenMap();
+
+    /**
      * A method rebase resolver that preserves any method in its original form.
      */
     enum Disabled implements MethodRebaseResolver {
@@ -59,150 +64,27 @@ public interface MethodRebaseResolver {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Resolution resolve(MethodDescription.InDefinedShape methodDescription) {
             return new Resolution.Preserved(methodDescription);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public List<DynamicType> getAuxiliaryTypes() {
             return Collections.emptyList();
         }
 
-        @Override
-        public String toString() {
-            return "MethodRebaseResolver.Disabled." + name();
+        /**
+         * {@inheritDoc}
+         */
+        public Map<MethodDescription.SignatureToken, Resolution> asTokenMap() {
+            return Collections.emptyMap();
         }
 
-    }
-
-    /**
-     * A method name transformer provides a unique mapping of a method's name to an alternative name.
-     *
-     * @see MethodRebaseResolver
-     */
-    interface MethodNameTransformer {
-
-        /**
-         * Transforms a method's name to an alternative name. This name must not be equal to any existing method of the
-         * created class.
-         *
-         * @param methodDescription The original method.
-         * @return The alternative name.
-         */
-        String transform(MethodDescription methodDescription);
-
-        /**
-         * A method name transformer that adds a fixed suffix to an original method name, separated by a {@code $}.
-         */
-        class Suffixing implements MethodNameTransformer {
-
-            /**
-             * The default suffix to add to an original method name.
-             */
-            private static final String DEFAULT_SUFFIX = "original$";
-
-            /**
-             * The suffix to append to a method name.
-             */
-            private final String suffix;
-
-            /**
-             * Creates a new suffixing method name transformer which adds a default suffix with a random name component.
-             *
-             * @return A method name transformer that adds a randomized suffix to the original method name.
-             */
-            public static MethodNameTransformer withRandomSuffix() {
-                return new Suffixing(DEFAULT_SUFFIX + RandomString.make());
-            }
-
-            /**
-             * Creates a new suffixing method name transformer.
-             *
-             * @param suffix The suffix to add to the method name before the seed.
-             */
-            public Suffixing(String suffix) {
-                this.suffix = suffix;
-            }
-
-            @Override
-            public String transform(MethodDescription methodDescription) {
-                return String.format("%s$%s", methodDescription.getInternalName(), suffix);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && suffix.equals(((Suffixing) other).suffix);
-            }
-
-            @Override
-            public int hashCode() {
-                return suffix.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodRebaseResolver.MethodNameTransformer.Suffixing{" +
-                        "suffix='" + suffix + '\'' +
-                        '}';
-            }
-        }
-
-        /**
-         * A method name transformer that adds a fixed prefix to an original method name.
-         */
-        class Prefixing implements MethodNameTransformer {
-
-            /**
-             * The default prefix to add to an original method name.
-             */
-            private static final String DEFAULT_PREFIX = "original";
-
-            /**
-             * The prefix that is appended.
-             */
-            private final String prefix;
-
-            /**
-             * Creates a new prefixing method name transformer using a default prefix.
-             */
-            public Prefixing() {
-                this(DEFAULT_PREFIX);
-            }
-
-            /**
-             * Creates a new prefixing method name transformer.
-             *
-             * @param prefix The prefix being used.
-             */
-            public Prefixing(String prefix) {
-                this.prefix = prefix;
-            }
-
-            @Override
-            public String transform(MethodDescription methodDescription) {
-                return String.format("%s%s", prefix, methodDescription.getInternalName());
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && prefix.equals(((Prefixing) other).prefix);
-            }
-
-            @Override
-            public int hashCode() {
-                return prefix.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodRebaseResolver.MethodNameTransformer.Prefixing{" +
-                        "prefix='" + prefix + '\'' +
-                        '}';
-            }
-        }
     }
 
     /**
@@ -236,6 +118,7 @@ public interface MethodRebaseResolver {
         /**
          * A {@link MethodRebaseResolver.Resolution} of a non-rebased method.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Preserved implements Resolution {
 
             /**
@@ -253,41 +136,32 @@ public interface MethodRebaseResolver {
                 this.methodDescription = methodDescription;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isRebased() {
                 return false;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public MethodDescription.InDefinedShape getResolvedMethod() {
                 return methodDescription;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public StackManipulation getAdditionalArguments() {
                 throw new IllegalStateException("Cannot process additional arguments for non-rebased method: " + methodDescription);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && methodDescription.equals(((Preserved) other).methodDescription);
-            }
-
-            @Override
-            public int hashCode() {
-                return methodDescription.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodRebaseResolver.Resolution.Preserved{methodDescription=" + methodDescription + '}';
             }
         }
 
         /**
          * A {@link MethodRebaseResolver.Resolution} of a rebased method.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class ForRebasedMethod implements Resolution {
 
             /**
@@ -307,49 +181,47 @@ public interface MethodRebaseResolver {
             /**
              * Resolves a rebasement for the provided method.
              *
+             * @param instrumentedType      The instrumented type.
              * @param methodDescription     The method to be rebased.
              * @param methodNameTransformer The transformer to use for renaming the method.
              * @return A resolution for rebasing the provided method.
              */
-            public static Resolution of(MethodDescription.InDefinedShape methodDescription, MethodNameTransformer methodNameTransformer) {
-                return new ForRebasedMethod(new RebasedMethod(methodDescription, methodNameTransformer));
+            public static Resolution of(TypeDescription instrumentedType,
+                                        MethodDescription.InDefinedShape methodDescription,
+                                        MethodNameTransformer methodNameTransformer) {
+                return new ForRebasedMethod(new RebasedMethod(instrumentedType, methodDescription, methodNameTransformer));
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isRebased() {
                 return true;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public MethodDescription.InDefinedShape getResolvedMethod() {
                 return methodDescription;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public StackManipulation getAdditionalArguments() {
                 return StackManipulation.Trivial.INSTANCE;
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && methodDescription.equals(((ForRebasedMethod) other).methodDescription);
-            }
-
-            @Override
-            public int hashCode() {
-                return methodDescription.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodRebaseResolver.Resolution.ForRebasedMethod{methodDescription=" + methodDescription + '}';
             }
 
             /**
              * A description of a rebased method.
              */
             protected static class RebasedMethod extends MethodDescription.InDefinedShape.AbstractBase {
+
+                /**
+                 * The instrumented type.
+                 */
+                private final TypeDescription instrumentedType;
 
                 /**
                  * The method that is being rebased.
@@ -364,58 +236,78 @@ public interface MethodRebaseResolver {
                 /**
                  * Creates a new rebased method.
                  *
+                 * @param instrumentedType      The instrumented type.
                  * @param methodDescription     The method that is being rebased.
                  * @param methodNameTransformer The transformer to use for renaming the method.
                  */
-                protected RebasedMethod(InDefinedShape methodDescription, MethodNameTransformer methodNameTransformer) {
+                protected RebasedMethod(TypeDescription instrumentedType, InDefinedShape methodDescription, MethodNameTransformer methodNameTransformer) {
+                    this.instrumentedType = instrumentedType;
                     this.methodDescription = methodDescription;
                     this.methodNameTransformer = methodNameTransformer;
                 }
 
-                @Override
-                public GenericTypeDescription getReturnType() {
-                    return methodDescription.getReturnType().asErasure();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription.Generic getReturnType() {
+                    return methodDescription.getReturnType().asRawType();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
-                    return new ParameterList.Explicit.ForTypes(this, methodDescription.getParameters().asTypeList().asErasures());
+                    return new ParameterList.Explicit.ForTypes(this, methodDescription.getParameters().asTypeList().asRawTypes());
                 }
 
-                @Override
-                public GenericTypeList getExceptionTypes() {
-                    return methodDescription.getExceptionTypes().asErasures().asGenericTypes();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeList.Generic getExceptionTypes() {
+                    return methodDescription.getExceptionTypes().asRawTypes();
                 }
 
-                @Override
-                public Object getDefaultValue() {
-                    return MethodDescription.NO_DEFAULT_VALUE;
+                /**
+                 * {@inheritDoc}
+                 */
+                public AnnotationValue<?, ?> getDefaultValue() {
+                    return AnnotationValue.UNDEFINED;
                 }
 
-                @Override
-                public GenericTypeList getTypeVariables() {
-                    return new GenericTypeList.Empty();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeList.Generic getTypeVariables() {
+                    return new TypeList.Generic.Empty();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public AnnotationList getDeclaredAnnotations() {
                     return new AnnotationList.Empty();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public TypeDescription getDeclaringType() {
                     return methodDescription.getDeclaringType();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public int getModifiers() {
                     return Opcodes.ACC_SYNTHETIC
                             | (methodDescription.isStatic() ? Opcodes.ACC_STATIC : EMPTY_MASK)
                             | (methodDescription.isNative() ? Opcodes.ACC_NATIVE : EMPTY_MASK)
-                            | (methodDescription.getDeclaringType().isInterface() ? Opcodes.ACC_PUBLIC : Opcodes.ACC_PRIVATE);
+                            | (instrumentedType.isInterface() ? Opcodes.ACC_PUBLIC : Opcodes.ACC_PRIVATE);
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public String getInternalName() {
                     return methodNameTransformer.transform(methodDescription);
                 }
@@ -425,6 +317,7 @@ public interface MethodRebaseResolver {
         /**
          * A {@link MethodRebaseResolver.Resolution} of a rebased constructor.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class ForRebasedConstructor implements Resolution {
 
             /**
@@ -452,35 +345,25 @@ public interface MethodRebaseResolver {
                 return new ForRebasedConstructor(new RebasedConstructor(methodDescription, placeholderType));
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isRebased() {
                 return true;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public MethodDescription.InDefinedShape getResolvedMethod() {
                 return methodDescription;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public StackManipulation getAdditionalArguments() {
                 return NullConstant.INSTANCE;
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && methodDescription.equals(((ForRebasedConstructor) other).methodDescription);
-            }
-
-            @Override
-            public int hashCode() {
-                return methodDescription.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodRebaseResolver.Resolution.ForRebasedConstructor{methodDescription=" + methodDescription + '}';
             }
 
             /**
@@ -509,47 +392,65 @@ public interface MethodRebaseResolver {
                     this.placeholderType = placeholderType;
                 }
 
-                @Override
-                public GenericTypeDescription getReturnType() {
-                    return TypeDescription.VOID;
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription.Generic getReturnType() {
+                    return TypeDescription.Generic.VOID;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public ParameterList<ParameterDescription.InDefinedShape> getParameters() {
-                    return new ParameterList.Explicit.ForTypes(this, join(methodDescription.getParameters().asTypeList().asErasures(), placeholderType));
+                    return new ParameterList.Explicit.ForTypes(this, CompoundList.of(methodDescription.getParameters().asTypeList().asErasures(), placeholderType));
                 }
 
-                @Override
-                public GenericTypeList getExceptionTypes() {
-                    return methodDescription.getExceptionTypes().asErasures().asGenericTypes();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeList.Generic getExceptionTypes() {
+                    return methodDescription.getExceptionTypes().asRawTypes();
                 }
 
-                @Override
-                public Object getDefaultValue() {
-                    return MethodDescription.NO_DEFAULT_VALUE;
+                /**
+                 * {@inheritDoc}
+                 */
+                public AnnotationValue<?, ?> getDefaultValue() {
+                    return AnnotationValue.UNDEFINED;
                 }
 
-                @Override
-                public GenericTypeList getTypeVariables() {
-                    return new GenericTypeList.Empty();
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeList.Generic getTypeVariables() {
+                    return new TypeList.Generic.Empty();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public AnnotationList getDeclaredAnnotations() {
                     return new AnnotationList.Empty();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public TypeDescription getDeclaringType() {
                     return methodDescription.getDeclaringType();
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public int getModifiers() {
                     return Opcodes.ACC_SYNTHETIC | Opcodes.ACC_PRIVATE;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public String getInternalName() {
                     return MethodDescription.CONSTRUCTOR_INTERNAL_NAME;
                 }
@@ -560,6 +461,7 @@ public interface MethodRebaseResolver {
     /**
      * A default implementation of a method rebase resolver.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     class Default implements MethodRebaseResolver {
 
         /**
@@ -587,39 +489,43 @@ public interface MethodRebaseResolver {
          * Creates a new method rebase resolver.
          *
          * @param instrumentedType            The instrumented type.
-         * @param rebaseableMethods           The methods that are possible to rebase.
+         * @param rebaseableMethodTokens      Tokens describing all methods that can possibly be rebased.
          * @param classFileVersion            The class file version for the instrumentation.
          * @param auxiliaryTypeNamingStrategy The naming strategy for naming a potential auxiliary type.
          * @param methodNameTransformer       A transformer for method names.
          * @return A method rebase resolver that is capable of rebasing any of the provided methods.
          */
         public static MethodRebaseResolver make(TypeDescription instrumentedType,
-                                                MethodList<MethodDescription.InDefinedShape> rebaseableMethods,
+                                                Set<? extends MethodDescription.Token> rebaseableMethodTokens,
                                                 ClassFileVersion classFileVersion,
                                                 AuxiliaryType.NamingStrategy auxiliaryTypeNamingStrategy,
                                                 MethodNameTransformer methodNameTransformer) {
             DynamicType placeholderType = null;
-            Map<MethodDescription.InDefinedShape, Resolution> resolutions = new HashMap<MethodDescription.InDefinedShape, Resolution>(rebaseableMethods.size());
-            for (MethodDescription.InDefinedShape instrumentedMethod : rebaseableMethods) {
-                Resolution resolution;
-                if (instrumentedMethod.isConstructor()) {
-                    if (placeholderType == null) {
-                        placeholderType = TrivialType.INSTANCE.make(auxiliaryTypeNamingStrategy.name(instrumentedType),
-                                classFileVersion,
-                                AuxiliaryType.MethodAccessorFactory.Illegal.INSTANCE);
+            Map<MethodDescription.InDefinedShape, Resolution> resolutions = new HashMap<MethodDescription.InDefinedShape, Resolution>();
+            for (MethodDescription.InDefinedShape instrumentedMethod : instrumentedType.getDeclaredMethods()) {
+                if (rebaseableMethodTokens.contains(instrumentedMethod.asToken(is(instrumentedType)))) {
+                    Resolution resolution;
+                    if (instrumentedMethod.isConstructor()) {
+                        if (placeholderType == null) {
+                            placeholderType = TrivialType.SIGNATURE_RELEVANT.make(auxiliaryTypeNamingStrategy.name(instrumentedType),
+                                    classFileVersion,
+                                    MethodAccessorFactory.Illegal.INSTANCE);
+                        }
+                        resolution = Resolution.ForRebasedConstructor.of(instrumentedMethod, placeholderType.getTypeDescription());
+                    } else {
+                        resolution = Resolution.ForRebasedMethod.of(instrumentedType, instrumentedMethod, methodNameTransformer);
                     }
-                    resolution = Resolution.ForRebasedConstructor.of(instrumentedMethod, placeholderType.getTypeDescription());
-                } else {
-                    resolution = Resolution.ForRebasedMethod.of(instrumentedMethod, methodNameTransformer);
+                    resolutions.put(instrumentedMethod, resolution);
                 }
-                resolutions.put(instrumentedMethod, resolution);
             }
             return placeholderType == null
                     ? new Default(resolutions, Collections.<DynamicType>emptyList())
                     : new Default(resolutions, Collections.singletonList(placeholderType));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Resolution resolve(MethodDescription.InDefinedShape methodDescription) {
             Resolution resolution = resolutions.get(methodDescription);
             return resolution == null
@@ -627,29 +533,22 @@ public interface MethodRebaseResolver {
                     : resolution;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public List<DynamicType> getAuxiliaryTypes() {
             return dynamicTypes;
         }
 
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && resolutions.equals(((Default) other).resolutions)
-                    && dynamicTypes.equals(((Default) other).dynamicTypes);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * resolutions.hashCode() + dynamicTypes.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodRebaseResolver.Default{" +
-                    "resolutions=" + resolutions +
-                    ", dynamicTypes=" + dynamicTypes +
-                    '}';
+        /**
+         * {@inheritDoc}
+         */
+        public Map<MethodDescription.SignatureToken, Resolution> asTokenMap() {
+            Map<MethodDescription.SignatureToken, Resolution> tokenMap = new HashMap<MethodDescription.SignatureToken, Resolution>();
+            for (Map.Entry<MethodDescription.InDefinedShape, Resolution> entry : resolutions.entrySet()) {
+                tokenMap.put(entry.getKey().asSignatureToken(), entry.getValue());
+            }
+            return tokenMap;
         }
     }
 }

@@ -1,16 +1,15 @@
 package net.bytebuddy.dynamic.loading;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.matcher.ElementMatcher;
 
 import java.io.IOException;
 import java.net.URL;
-import java.security.AccessControlContext;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.*;
 
-import static net.bytebuddy.utility.ByteBuddyCommons.filterUnique;
+import static net.bytebuddy.matcher.ElementMatchers.is;
+import static net.bytebuddy.matcher.ElementMatchers.not;
 
 /**
  * <p>
@@ -42,33 +41,50 @@ public class MultipleParentClassLoader extends ClassLoader {
     /**
      * Creates a new class loader with multiple parents.
      *
-     * @param parents The parents of this class loader in their application order.
+     * @param parents The parents of this class loader in their application order. This list must not contain {@code null},
+     *                i.e. the bootstrap class loader which is an implicit parent of any class loader.
      */
     public MultipleParentClassLoader(List<? extends ClassLoader> parents) {
-        super(null);
+        this(ClassLoadingStrategy.BOOTSTRAP_LOADER, parents);
+    }
+
+    /**
+     * Creates a new class loader with multiple parents.
+     *
+     * @param parent  An explicit parent in compliance with the class loader API. This explicit parent should only be set if
+     *                the current platform does not allow creating a class loader that extends the bootstrap loader.
+     * @param parents The parents of this class loader in their application order. This list must not contain {@code null},
+     *                i.e. the bootstrap class loader which is an implicit parent of any class loader.
+     */
+    public MultipleParentClassLoader(ClassLoader parent, List<? extends ClassLoader> parents) {
+        super(parent);
         this.parents = parents;
     }
 
-    @Override
-    public Class<?> loadClass(String name) throws ClassNotFoundException {
+    /**
+     * {@inheritDoc}
+     */
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         for (ClassLoader parent : parents) {
             try {
-                return parent != null
-                        ? parent.loadClass(name)
-                        : super.loadClass(name);
+                Class<?> type = parent.loadClass(name);
+                if (resolve) {
+                    resolveClass(type);
+                }
+                return type;
             } catch (ClassNotFoundException ignored) {
                 /* try next class loader */
             }
         }
-        return super.loadClass(name);
+        return super.loadClass(name, resolve);
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public URL getResource(String name) {
         for (ClassLoader parent : parents) {
-            URL url = parent != null
-                    ? parent.getResource(name)
-                    : super.getResource(name);
+            URL url = parent.getResource(name);
             if (url != null) {
                 return url;
             }
@@ -76,23 +92,16 @@ public class MultipleParentClassLoader extends ClassLoader {
         return super.getResource(name);
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Enumeration<URL> getResources(String name) throws IOException {
         List<Enumeration<URL>> enumerations = new ArrayList<Enumeration<URL>>(parents.size() + 1);
         for (ClassLoader parent : parents) {
-            enumerations.add(parent != null
-                    ? parent.getResources(name)
-                    : super.getResources(name));
+            enumerations.add(parent.getResources(name));
         }
         enumerations.add(super.getResources(name));
         return new CompoundEnumeration(enumerations);
-    }
-
-    @Override
-    public String toString() {
-        return "MultipleParentClassLoader{" +
-                "parents=" + parents +
-                '}';
     }
 
     /**
@@ -124,7 +133,9 @@ public class MultipleParentClassLoader extends ClassLoader {
             this.enumerations = enumerations;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean hasMoreElements() {
             if (currentEnumeration != null && currentEnumeration.hasMoreElements()) {
                 return true;
@@ -136,7 +147,9 @@ public class MultipleParentClassLoader extends ClassLoader {
             }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         @SuppressFBWarnings(value = "UWF_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR", justification = "Null reference is impossible due to element check")
         public URL nextElement() {
             if (hasMoreElements()) {
@@ -145,22 +158,17 @@ public class MultipleParentClassLoader extends ClassLoader {
                 throw new NoSuchElementException();
             }
         }
-
-        @Override
-        public String toString() {
-            return "MultipleParentClassLoader.CompoundEnumeration{" +
-                    "enumerations=" + enumerations +
-                    ", currentEnumeration=" + currentEnumeration +
-                    '}';
-        }
     }
 
     /**
      * A builder to collect class loader and that creates a
      * {@link net.bytebuddy.dynamic.loading.MultipleParentClassLoader} only if multiple or no
      * {@link java.lang.ClassLoader}s are found in the process. If exactly a single class loader is found,
-     * this class loader is returned. All class loaders are applied in their collection order.
+     * this class loader is returned. All class loaders are applied in their collection order with the exception
+     * of the bootstrap class loader which is represented by {@code null} and which is an implicit parent of any
+     * class loader.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     public static class Builder {
 
         /**
@@ -190,7 +198,8 @@ public class MultipleParentClassLoader extends ClassLoader {
         }
 
         /**
-         * Appends the class loaders of the given types.
+         * Appends the class loaders of the given types. The bootstrap class loader is implicitly skipped as
+         * it is an implicit parent of any class loader.
          *
          * @param type The types of which to collect the class loaders.
          * @return A new builder instance with the additional class loaders of the provided types if they were not
@@ -201,12 +210,13 @@ public class MultipleParentClassLoader extends ClassLoader {
         }
 
         /**
-         * Appends the class loaders of the given types if those class loaders were not yet collected.
+         * Appends the class loaders of the given types if those class loaders were not yet collected. The bootstrap class
+         * loader is implicitly skipped as it is an implicit parent of any class loader.
          *
          * @param types The types of which to collect the class loaders.
          * @return A new builder instance with the additional class loaders.
          */
-        public Builder append(Collection<Class<?>> types) {
+        public Builder append(Collection<? extends Class<?>> types) {
             List<ClassLoader> classLoaders = new ArrayList<ClassLoader>(types.size());
             for (Class<?> type : types) {
                 classLoaders.add(type.getClassLoader());
@@ -215,7 +225,8 @@ public class MultipleParentClassLoader extends ClassLoader {
         }
 
         /**
-         * Appends the given class loaders if they were not yet collected.
+         * Appends the given class loaders if they were not yet collected. The bootstrap class loader is implicitly
+         * skipped as it is an implicit parent of any class loader.
          *
          * @param classLoader The class loaders to be collected.
          * @return A new builder instance with the additional class loaders.
@@ -225,17 +236,26 @@ public class MultipleParentClassLoader extends ClassLoader {
         }
 
         /**
-         * Appends the given class loaders if they were not yet collected.
+         * Appends the given class loaders if they were not yet appended. The bootstrap class loader is never appended as
+         * it is an implicit parent of any class loader.
          *
          * @param classLoaders The class loaders to collected.
          * @return A new builder instance with the additional class loaders.
          */
         public Builder append(List<? extends ClassLoader> classLoaders) {
-            return new Builder(filterUnique(this.classLoaders, classLoaders));
+            List<ClassLoader> filtered = new ArrayList<ClassLoader>(this.classLoaders.size() + classLoaders.size());
+            Set<ClassLoader> registered = new HashSet<ClassLoader>(this.classLoaders);
+            filtered.addAll(this.classLoaders);
+            for (ClassLoader classLoader : classLoaders) {
+                if (classLoader != null && registered.add(classLoader)) {
+                    filtered.add(classLoader);
+                }
+            }
+            return new Builder(filtered);
         }
 
         /**
-         * Removes all class loaders that match the given filter.
+         * Only retains all class loaders that match the given matcher.
          *
          * @param matcher The matcher to be used for filtering.
          * @return A builder that does not longer consider any appended class loaders that matched the provided matcher.
@@ -243,7 +263,7 @@ public class MultipleParentClassLoader extends ClassLoader {
         public Builder filter(ElementMatcher<? super ClassLoader> matcher) {
             List<ClassLoader> classLoaders = new ArrayList<ClassLoader>(this.classLoaders.size());
             for (ClassLoader classLoader : this.classLoaders) {
-                if (!matcher.matches(classLoader)) {
+                if (matcher.matches(classLoader)) {
                     classLoaders.add(classLoader);
                 }
             }
@@ -251,87 +271,56 @@ public class MultipleParentClassLoader extends ClassLoader {
         }
 
         /**
-         * Returns an appropriate class loader that represents all the collected class loaders using the current access control context.
+         * <p>
+         * Returns the only class loader that was appended if exactly one class loader was appended or a multiple parent class loader as
+         * a parent of all supplied class loader and with the bootstrap class loader as an implicit parent. If no class loader was appended,
+         * a new class loader is created that declares no parents. If a class loader is created, its explicit parent is set to be the
+         * bootstrap class loader.
+         * </p>
+         * <p>
+         * <b>Important</b>: Byte Buddy does not provide any access control for the creation of the class loader. It is the responsibility
+         * of the user of this builder to provide such privileges.
+         * </p>
          *
          * @return A suitable class loader.
          */
+        @SuppressFBWarnings(value = "DP_CREATE_CLASSLOADER_INSIDE_DO_PRIVILEGED", justification = "Privilege is explicit user responsibility")
         public ClassLoader build() {
-            return build(AccessController.getContext());
-        }
-
-        /**
-         * Returns an appropriate class loader that represents all the collected class loaders.
-         *
-         * @param accessControlContext The access control context to be used for creating the class loader.
-         * @return A suitable class loader.
-         */
-        public ClassLoader build(AccessControlContext accessControlContext) {
             return classLoaders.size() == 1
                     ? classLoaders.get(ONLY)
-                    : AccessController.doPrivileged(new ClassLoaderCreationAction(classLoaders), accessControlContext);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            Builder builder = (Builder) other;
-            return classLoaders.equals(builder.classLoaders);
-        }
-
-        @Override
-        public int hashCode() {
-            return classLoaders.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MultipleParentClassLoader.Builder{" +
-                    "classLoaders=" + classLoaders +
-                    '}';
+                    : new MultipleParentClassLoader(classLoaders);
         }
 
         /**
-         * A privileged action for creating a multiple-parent class loader.
+         * <p>
+         * Returns the only class loader that was appended if exactly one class loader was appended or a multiple parent class loader as
+         * a parent of all supplied class loader and with the bootstrap class loader as an implicit parent. If no class loader was appended,
+         * or if only the supplied parent to this method was included, this class loader is returned,
+         * </p>
+         * <p>
+         * <b>Important</b>: Byte Buddy does not provide any access control for the creation of the class loader. It is the responsibility
+         * of the user of this builder to provide such privileges.
+         * </p>
+         *
+         * @param parent The class loader's contractual parent which is accessible via {@link ClassLoader#getParent()}. If this class loader
+         *               is also included in the appended class loaders, it is not
+         * @return A suitable class loader.
          */
-        protected static class ClassLoaderCreationAction implements PrivilegedAction<ClassLoader> {
+        public ClassLoader build(ClassLoader parent) {
+            return classLoaders.isEmpty() || (classLoaders.size() == 1 && classLoaders.contains(parent))
+                    ? parent
+                    : filter(not(is(parent))).doBuild(parent);
+        }
 
-            /**
-             * The class loaders to combine.
-             */
-            private final List<? extends ClassLoader> classLoaders;
-
-            /**
-             * Creates a new action for creating a multiple-parent class loader.
-             *
-             * @param classLoaders The class loaders to combine.
-             */
-            protected ClassLoaderCreationAction(List<? extends ClassLoader> classLoaders) {
-                this.classLoaders = classLoaders;
-            }
-
-            @Override
-            public ClassLoader run() {
-                return new MultipleParentClassLoader(classLoaders);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && classLoaders.equals(((ClassLoaderCreationAction) other).classLoaders);
-            }
-
-            @Override
-            public int hashCode() {
-                return classLoaders.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MultipleParentClassLoader.Builder.ClassLoaderCreationAction{" +
-                        "classLoaders=" + classLoaders +
-                        '}';
-            }
+        /**
+         * Creates a multiple parent class loader with an explicit parent.
+         *
+         * @param parent The explicit parent class loader.
+         * @return A multiple parent class loader that includes all collected class loaders and the explicit parent.
+         */
+        @SuppressFBWarnings(value = "DP_CREATE_CLASSLOADER_INSIDE_DO_PRIVILEGED", justification = "Privilege is explicit user responsibility")
+        private ClassLoader doBuild(ClassLoader parent) {
+            return new MultipleParentClassLoader(parent, classLoaders);
         }
     }
 }

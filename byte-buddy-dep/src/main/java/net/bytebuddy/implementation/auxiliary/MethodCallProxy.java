@@ -1,18 +1,26 @@
 package net.bytebuddy.implementation.auxiliary;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+import net.bytebuddy.description.annotation.AnnotationDescription;
+import net.bytebuddy.description.annotation.AnnotationValue;
 import net.bytebuddy.description.field.FieldDescription;
 import net.bytebuddy.description.field.FieldList;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.ParameterDescription;
-import net.bytebuddy.description.method.ParameterList;
 import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.description.type.TypeVariableToken;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
+import net.bytebuddy.dynamic.scaffold.MethodGraph;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.bytebuddy.dynamic.scaffold.subclass.ConstructorStrategy;
 import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.MethodAccessorFactory;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.implementation.bytecode.Duplication;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
@@ -23,11 +31,10 @@ import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Callable;
 
 import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
@@ -44,6 +51,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
  * <li>All arguments for the called method in the order in which they are required.</li>
  * </ol>
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class MethodCallProxy implements AuxiliaryType {
 
     /**
@@ -74,8 +82,7 @@ public class MethodCallProxy implements AuxiliaryType {
      * @param specialMethodInvocation The special method invocation which should be invoked by this method call proxy.
      * @param serializableProxy       Determines if the generated proxy should be serializableProxy.
      */
-    public MethodCallProxy(Implementation.SpecialMethodInvocation specialMethodInvocation,
-                           boolean serializableProxy) {
+    public MethodCallProxy(Implementation.SpecialMethodInvocation specialMethodInvocation, boolean serializableProxy) {
         this(specialMethodInvocation, serializableProxy, Assigner.DEFAULT);
     }
 
@@ -88,9 +95,7 @@ public class MethodCallProxy implements AuxiliaryType {
      *                                {@link java.util.concurrent.Callable#call()} or {@link Runnable#run()}} methods'
      *                                return values.
      */
-    public MethodCallProxy(Implementation.SpecialMethodInvocation specialMethodInvocation,
-                           boolean serializableProxy,
-                           Assigner assigner) {
+    public MethodCallProxy(Implementation.SpecialMethodInvocation specialMethodInvocation, boolean serializableProxy, Assigner assigner) {
         this.specialMethodInvocation = specialMethodInvocation;
         this.serializableProxy = serializableProxy;
         this.assigner = assigner;
@@ -104,13 +109,12 @@ public class MethodCallProxy implements AuxiliaryType {
      * method, including a reference to the instance of the instrumented type that is invoked if applicable.
      */
     private static LinkedHashMap<String, TypeDescription> extractFields(MethodDescription methodDescription) {
-        ParameterList<?> parameters = methodDescription.getParameters();
-        LinkedHashMap<String, TypeDescription> typeDescriptions = new LinkedHashMap<String, TypeDescription>((methodDescription.isStatic() ? 0 : 1) + parameters.size());
+        LinkedHashMap<String, TypeDescription> typeDescriptions = new LinkedHashMap<String, TypeDescription>();
         int currentIndex = 0;
         if (!methodDescription.isStatic()) {
             typeDescriptions.put(fieldName(currentIndex++), methodDescription.getDeclaringType().asErasure());
         }
-        for (ParameterDescription parameterDescription : parameters) {
+        for (ParameterDescription parameterDescription : methodDescription.getParameters()) {
             typeDescriptions.put(fieldName(currentIndex++), parameterDescription.getType().asErasure());
         }
         return typeDescriptions;
@@ -123,22 +127,26 @@ public class MethodCallProxy implements AuxiliaryType {
      * @return The name for the given parameter.
      */
     private static String fieldName(int index) {
-        return String.format("%s%d", FIELD_NAME_PREFIX, index);
+        return FIELD_NAME_PREFIX + index;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public DynamicType make(String auxiliaryTypeName,
                             ClassFileVersion classFileVersion,
                             MethodAccessorFactory methodAccessorFactory) {
-        MethodDescription accessorMethod = methodAccessorFactory.registerAccessorFor(specialMethodInvocation);
+        MethodDescription accessorMethod = methodAccessorFactory.registerAccessorFor(specialMethodInvocation, MethodAccessorFactory.AccessType.DEFAULT);
         LinkedHashMap<String, TypeDescription> parameterFields = extractFields(accessorMethod);
         DynamicType.Builder<?> builder = new ByteBuddy(classFileVersion)
+                .with(TypeValidation.DISABLED)
+                .with(PrecomputedMethodGraph.INSTANCE)
                 .subclass(Object.class, ConstructorStrategy.Default.NO_CONSTRUCTORS)
                 .name(auxiliaryTypeName)
                 .modifiers(DEFAULT_TYPE_MODIFIER)
                 .implement(Runnable.class, Callable.class).intercept(new MethodCall(accessorMethod, assigner))
                 .implement(serializableProxy ? new Class<?>[]{Serializable.class} : new Class<?>[0])
-                .defineConstructor(new ArrayList<TypeDescription>(parameterFields.values()))
+                .defineConstructor().withParameters(parameterFields.values())
                 .intercept(ConstructorCall.INSTANCE);
         for (Map.Entry<String, TypeDescription> field : parameterFields.entrySet()) {
             builder = builder.defineField(field.getKey(), field.getValue(), Visibility.PRIVATE);
@@ -146,31 +154,66 @@ public class MethodCallProxy implements AuxiliaryType {
         return builder.make();
     }
 
-    @Override
-    public boolean equals(Object other) {
-        if (this == other) return true;
-        if (other == null || getClass() != other.getClass()) return false;
-        MethodCallProxy that = (MethodCallProxy) other;
-        return serializableProxy == that.serializableProxy
-                && assigner.equals(that.assigner)
-                && specialMethodInvocation.equals(that.specialMethodInvocation);
-    }
+    /**
+     * A precomputed method graph that only displays the methods that are relevant for creating a method call proxy.
+     */
+    protected enum PrecomputedMethodGraph implements MethodGraph.Compiler {
 
-    @Override
-    public int hashCode() {
-        int result = specialMethodInvocation.hashCode();
-        result = 31 * result + (serializableProxy ? 1 : 0);
-        result = 31 * result + assigner.hashCode();
-        return result;
-    }
+        /**
+         * The singleton instance.
+         */
+        INSTANCE;
 
-    @Override
-    public String toString() {
-        return "MethodCallProxy{" +
-                "specialMethodInvocation=" + specialMethodInvocation +
-                ", serializableProxy=" + serializableProxy +
-                ", assigner=" + assigner +
-                '}';
+        /**
+         * The precomputed method graph.
+         */
+        private final MethodGraph.Linked methodGraph;
+
+        /**
+         * Creates the precomputed method graph.
+         */
+        @SuppressFBWarnings(value = "SE_BAD_FIELD_STORE", justification = "Precomputed method graph is not intended for serialization")
+        PrecomputedMethodGraph() {
+            LinkedHashMap<MethodDescription.SignatureToken, MethodGraph.Node> nodes = new LinkedHashMap<MethodDescription.SignatureToken, MethodGraph.Node>();
+            MethodDescription callMethod = new MethodDescription.Latent(TypeDescription.ForLoadedType.of(Callable.class),
+                    "call",
+                    Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT,
+                    Collections.<TypeVariableToken>emptyList(),
+                    TypeDescription.Generic.OBJECT,
+                    Collections.<ParameterDescription.Token>emptyList(),
+                    Collections.singletonList(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(Exception.class)),
+                    Collections.<AnnotationDescription>emptyList(),
+                    AnnotationValue.UNDEFINED,
+                    TypeDescription.Generic.UNDEFINED);
+            nodes.put(callMethod.asSignatureToken(), new MethodGraph.Node.Simple(callMethod));
+            MethodDescription runMethod = new MethodDescription.Latent(TypeDescription.ForLoadedType.of(Runnable.class),
+                    "run",
+                    Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT,
+                    Collections.<TypeVariableToken>emptyList(),
+                    TypeDescription.Generic.VOID,
+                    Collections.<ParameterDescription.Token>emptyList(),
+                    Collections.<TypeDescription.Generic>emptyList(),
+                    Collections.<AnnotationDescription>emptyList(),
+                    AnnotationValue.UNDEFINED,
+                    TypeDescription.Generic.UNDEFINED);
+            nodes.put(runMethod.asSignatureToken(), new MethodGraph.Node.Simple(runMethod));
+            MethodGraph methodGraph = new MethodGraph.Simple(nodes);
+            this.methodGraph = new MethodGraph.Linked.Delegation(methodGraph, methodGraph, Collections.<TypeDescription, MethodGraph>emptyMap());
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public MethodGraph.Linked compile(TypeDescription typeDescription) {
+            return compile(typeDescription, typeDescription);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public MethodGraph.Linked compile(TypeDefinition typeDefinition, TypeDescription viewPoint) {
+            return methodGraph;
+        }
     }
 
     /**
@@ -195,24 +238,24 @@ public class MethodCallProxy implements AuxiliaryType {
             objectTypeDefaultConstructor = TypeDescription.OBJECT.getDeclaredMethods().filter(isConstructor()).getOnly();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public InstrumentedType prepare(InstrumentedType instrumentedType) {
             return instrumentedType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public ByteCodeAppender appender(Target implementationTarget) {
-            return new Appender(implementationTarget.getTypeDescription());
-        }
-
-        @Override
-        public String toString() {
-            return "MethodCallProxy.ConstructorCall." + name();
+            return new Appender(implementationTarget.getInstrumentedType());
         }
 
         /**
          * The appender for implementing the {@link net.bytebuddy.implementation.auxiliary.MethodCallProxy.ConstructorCall}.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         protected static class Appender implements ByteCodeAppender {
 
             /**
@@ -229,44 +272,28 @@ public class MethodCallProxy implements AuxiliaryType {
                 this.instrumentedType = instrumentedType;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Context implementationContext, MethodDescription instrumentedMethod) {
-                StackManipulation thisReference = MethodVariableAccess.REFERENCE.loadOffset(0);
                 FieldList<?> fieldList = instrumentedType.getDeclaredFields();
                 StackManipulation[] fieldLoading = new StackManipulation[fieldList.size()];
                 int index = 0;
                 for (FieldDescription fieldDescription : fieldList) {
                     fieldLoading[index] = new StackManipulation.Compound(
-                            thisReference,
-                            MethodVariableAccess.forType(fieldDescription.getType().asErasure())
-                                    .loadOffset(instrumentedMethod.getParameters().get(index).getOffset()),
-                            FieldAccess.forField(fieldDescription).putter()
+                            MethodVariableAccess.loadThis(),
+                            MethodVariableAccess.load(instrumentedMethod.getParameters().get(index)),
+                            FieldAccess.forField(fieldDescription).write()
                     );
                     index++;
                 }
                 StackManipulation.Size stackSize = new StackManipulation.Compound(
-                        thisReference,
+                        MethodVariableAccess.loadThis(),
                         MethodInvocation.invoke(ConstructorCall.INSTANCE.objectTypeDefaultConstructor),
                         new StackManipulation.Compound(fieldLoading),
                         MethodReturn.VOID
                 ).apply(methodVisitor, implementationContext);
                 return new Size(stackSize.getMaximalSize(), instrumentedMethod.getStackSize());
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && instrumentedType.equals(((Appender) other).instrumentedType);
-            }
-
-            @Override
-            public int hashCode() {
-                return instrumentedType.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodCallProxy.ConstructorCall.Appender{instrumentedType=" + instrumentedType + '}';
             }
         }
     }
@@ -274,6 +301,7 @@ public class MethodCallProxy implements AuxiliaryType {
     /**
      * An implementation for a method of a {@link net.bytebuddy.implementation.auxiliary.MethodCallProxy}.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class MethodCall implements Implementation {
 
         /**
@@ -297,39 +325,24 @@ public class MethodCallProxy implements AuxiliaryType {
             this.assigner = assigner;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public InstrumentedType prepare(InstrumentedType instrumentedType) {
             return instrumentedType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public ByteCodeAppender appender(Target implementationTarget) {
-            return new Appender(implementationTarget.getTypeDescription());
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && accessorMethod.equals(((MethodCall) other).accessorMethod)
-                    && assigner.equals(((MethodCall) other).assigner);
-        }
-
-        @Override
-        public int hashCode() {
-            return accessorMethod.hashCode() + 31 * assigner.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodCallProxy.MethodCall{" +
-                    "accessorMethod=" + accessorMethod +
-                    ", assigner=" + assigner +
-                    '}';
+            return new Appender(implementationTarget.getInstrumentedType());
         }
 
         /**
          * The appender for implementing the {@link net.bytebuddy.implementation.auxiliary.MethodCallProxy.MethodCall}.
          */
+        @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
         protected class Appender implements ByteCodeAppender {
 
             /**
@@ -346,55 +359,24 @@ public class MethodCallProxy implements AuxiliaryType {
                 this.instrumentedType = instrumentedType;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor,
                               Context implementationContext,
                               MethodDescription instrumentedMethod) {
-                StackManipulation thisReference = MethodVariableAccess.forType(instrumentedType).loadOffset(0);
                 FieldList<?> fieldList = instrumentedType.getDeclaredFields();
-                StackManipulation[] fieldLoading = new StackManipulation[fieldList.size()];
-                int index = 0;
+                List<StackManipulation> fieldLoadings = new ArrayList<StackManipulation>(fieldList.size());
                 for (FieldDescription fieldDescription : fieldList) {
-                    fieldLoading[index++] = new StackManipulation.Compound(thisReference, FieldAccess.forField(fieldDescription).getter());
+                    fieldLoadings.add(new StackManipulation.Compound(MethodVariableAccess.loadThis(), FieldAccess.forField(fieldDescription).read()));
                 }
                 StackManipulation.Size stackSize = new StackManipulation.Compound(
-                        new StackManipulation.Compound(fieldLoading),
+                        new StackManipulation.Compound(fieldLoadings),
                         MethodInvocation.invoke(accessorMethod),
-                        assigner.assign(accessorMethod.getReturnType().asErasure(),
-                                instrumentedMethod.getReturnType().asErasure(),
-                                Assigner.Typing.DYNAMIC),
-                        MethodReturn.returning(instrumentedMethod.getReturnType().asErasure())
+                        assigner.assign(accessorMethod.getReturnType(), instrumentedMethod.getReturnType(), Assigner.Typing.DYNAMIC),
+                        MethodReturn.of(instrumentedMethod.getReturnType())
                 ).apply(methodVisitor, implementationContext);
                 return new Size(stackSize.getMaximalSize(), instrumentedMethod.getStackSize());
-            }
-
-            /**
-             * Returns the outer instance.
-             *
-             * @return The outer instance.
-             */
-            private MethodCall getMethodCall() {
-                return MethodCall.this;
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && instrumentedType.equals(((Appender) other).instrumentedType)
-                        && MethodCall.this.equals(((Appender) other).getMethodCall());
-            }
-
-            @Override
-            public int hashCode() {
-                return 31 * MethodCall.this.hashCode() + instrumentedType.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodCallProxy.MethodCall.Appender{" +
-                        "methodCall=" + MethodCall.this +
-                        ", instrumentedType=" + instrumentedType +
-                        '}';
             }
         }
     }
@@ -405,6 +387,7 @@ public class MethodCallProxy implements AuxiliaryType {
      * are loaded onto the stack what is only possible if this instance is used from a method with an identical signature such
      * as the target method itself.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     public static class AssignableSignatureCall implements StackManipulation {
 
         /**
@@ -432,41 +415,25 @@ public class MethodCallProxy implements AuxiliaryType {
             this.serializable = serializable;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             TypeDescription auxiliaryType = implementationContext
                     .register(new MethodCallProxy(specialMethodInvocation, serializable));
             return new Compound(
-                    TypeCreation.forType(auxiliaryType),
+                    TypeCreation.of(auxiliaryType),
                     Duplication.SINGLE,
                     MethodVariableAccess.allArgumentsOf(specialMethodInvocation.getMethodDescription()).prependThisReference(),
                     MethodInvocation.invoke(auxiliaryType.getDeclaredMethods().filter(isConstructor()).getOnly())
             ).apply(methodVisitor, implementationContext);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && serializable == ((AssignableSignatureCall) other).serializable
-                    && specialMethodInvocation.equals(((AssignableSignatureCall) other).specialMethodInvocation);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * specialMethodInvocation.hashCode() + (serializable ? 1 : 0);
-        }
-
-        @Override
-        public String toString() {
-            return "MethodCallProxy.AssignableSignatureCall{" +
-                    "specialMethodInvocation=" + specialMethodInvocation +
-                    ", serializableProxy=" + serializable +
-                    '}';
         }
     }
 }

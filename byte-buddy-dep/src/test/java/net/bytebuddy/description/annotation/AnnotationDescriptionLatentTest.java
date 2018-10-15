@@ -7,7 +7,7 @@ public class AnnotationDescriptionLatentTest extends AbstractAnnotationDescripti
 
     @SuppressWarnings("unchecked")
     private static AnnotationDescription build(Annotation annotation) throws Exception {
-        AnnotationDescription.Builder builder = AnnotationDescription.Builder.forType(annotation.annotationType());
+        AnnotationDescription.Builder builder = AnnotationDescription.Builder.ofType(annotation.annotationType());
         for (Method method : annotation.annotationType().getDeclaredMethods()) {
             Object value = method.invoke(annotation);
             if (value instanceof Annotation) {
@@ -62,10 +62,9 @@ public class AnnotationDescriptionLatentTest extends AbstractAnnotationDescripti
                 throw new IllegalArgumentException("Cannot handle: " + method);
             }
         }
-        return builder.make();
+        return builder.build();
     }
 
-    @Override
     protected AnnotationDescription describe(Annotation annotation, Class<?> declaringType) {
         try {
             return build(annotation);

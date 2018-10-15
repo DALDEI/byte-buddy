@@ -68,10 +68,27 @@ public class SuperClassInvocationBenchmark {
     private double doubleValue = 42d;
 
     /**
+     * A casual instance that serves as a baseline.
+     */
+    private ExampleClass baselineInstance;
+
+    /**
      * An instance created by Byte Buddy for performing benchmarks on. This instance is created by adding
      * auxiliary classes that allow for an invocation of a method from a delegation target.
      */
-    private ExampleClass byteBuddyWithAnnotationsInstance;
+    private ExampleClass byteBuddyWithProxyInstance;
+
+    /**
+     * An instance created by Byte Buddy for performing benchmarks on. This instance is created by adding
+     * super invocation methods which are exposed via the reflection API.
+     */
+    private ExampleClass byteBuddyWithAccessorInstance;
+
+    /**
+     * An instance created by Byte Buddy for performing benchmarks on. This instance is created by a delegation
+     * followed by a hard-coded super method call.
+     */
+    private ExampleClass byteBuddyWithPrefixInstance;
 
     /**
      * An instance created by Byte Buddy for performing benchmarks on. This instance is created by hard-coding
@@ -98,41 +115,136 @@ public class SuperClassInvocationBenchmark {
     @Setup
     public void setUp() throws Exception {
         ClassByExtensionBenchmark classByExtensionBenchmark = new ClassByExtensionBenchmark();
-        byteBuddyWithAnnotationsInstance = classByExtensionBenchmark.benchmarkByteBuddyWithAnnotations();
+        baselineInstance = classByExtensionBenchmark.baseline();
+        byteBuddyWithProxyInstance = classByExtensionBenchmark.benchmarkByteBuddyWithProxy();
+        byteBuddyWithAccessorInstance = classByExtensionBenchmark.benchmarkByteBuddyWithAccessor();
+        byteBuddyWithPrefixInstance = classByExtensionBenchmark.benchmarkByteBuddyWithPrefix();
         byteBuddySpecializedInstance = classByExtensionBenchmark.benchmarkByteBuddySpecialized();
         cglibInstance = classByExtensionBenchmark.benchmarkCglib();
         javassistInstance = classByExtensionBenchmark.benchmarkJavassist();
     }
 
     /**
-     * Performs a benchmark of a super method invocation using Byte Buddy. This benchmark uses an annotation-based
-     * approach which is by its reflective nature more difficult to optimize by the JIT compiler.
+     * Performs a benchmark for a casual class as a baseline.
      *
      * @param blackHole A black hole for avoiding JIT erasure.
      */
     @Benchmark
     @OperationsPerInvocation(20)
-    public void benchmarkByteBuddyWithAnnotations(Blackhole blackHole) {
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(booleanValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(byteValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(shortValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(intValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(charValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(intValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(longValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(floatValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(doubleValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(stringValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(booleanValue, booleanValue, booleanValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(byteValue, byteValue, byteValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(shortValue, shortValue, shortValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(intValue, intValue, intValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(charValue, charValue, charValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(intValue, intValue, intValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(longValue, longValue, longValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(floatValue, floatValue, floatValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(doubleValue, doubleValue, doubleValue));
-        blackHole.consume(byteBuddyWithAnnotationsInstance.method(stringValue, stringValue, stringValue));
+    public void baseline(Blackhole blackHole) {
+        blackHole.consume(baselineInstance.method(booleanValue));
+        blackHole.consume(baselineInstance.method(byteValue));
+        blackHole.consume(baselineInstance.method(shortValue));
+        blackHole.consume(baselineInstance.method(intValue));
+        blackHole.consume(baselineInstance.method(charValue));
+        blackHole.consume(baselineInstance.method(intValue));
+        blackHole.consume(baselineInstance.method(longValue));
+        blackHole.consume(baselineInstance.method(floatValue));
+        blackHole.consume(baselineInstance.method(doubleValue));
+        blackHole.consume(baselineInstance.method(stringValue));
+        blackHole.consume(baselineInstance.method(booleanValue, booleanValue, booleanValue));
+        blackHole.consume(baselineInstance.method(byteValue, byteValue, byteValue));
+        blackHole.consume(baselineInstance.method(shortValue, shortValue, shortValue));
+        blackHole.consume(baselineInstance.method(intValue, intValue, intValue));
+        blackHole.consume(baselineInstance.method(charValue, charValue, charValue));
+        blackHole.consume(baselineInstance.method(intValue, intValue, intValue));
+        blackHole.consume(baselineInstance.method(longValue, longValue, longValue));
+        blackHole.consume(baselineInstance.method(floatValue, floatValue, floatValue));
+        blackHole.consume(baselineInstance.method(doubleValue, doubleValue, doubleValue));
+        blackHole.consume(baselineInstance.method(stringValue, stringValue, stringValue));
+    }
+
+    /**
+     * Performs a benchmark of a super method invocation using Byte Buddy. This benchmark uses an annotation-based
+     * approach which is more difficult to optimize by the JIT compiler.
+     *
+     * @param blackHole A black hole for avoiding JIT erasure.
+     */
+    @Benchmark
+    @OperationsPerInvocation(20)
+    public void benchmarkByteBuddyWithProxy(Blackhole blackHole) {
+        blackHole.consume(byteBuddyWithProxyInstance.method(booleanValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(byteValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(shortValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(intValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(charValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(intValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(longValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(floatValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(doubleValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(stringValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(booleanValue, booleanValue, booleanValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(byteValue, byteValue, byteValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(shortValue, shortValue, shortValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(charValue, charValue, charValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(longValue, longValue, longValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(floatValue, floatValue, floatValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(doubleValue, doubleValue, doubleValue));
+        blackHole.consume(byteBuddyWithProxyInstance.method(stringValue, stringValue, stringValue));
+    }
+
+    /**
+     * Performs a benchmark of a super method invocation using Byte Buddy. This benchmark also uses the annotation-based approach
+     * but creates delegation methods which do not require the creation of additional classes.
+     *
+     * @param blackHole A black hole for avoiding JIT erasure.
+     */
+    @Benchmark
+    @OperationsPerInvocation(20)
+    public void benchmarkByteBuddyWithAccessor(Blackhole blackHole) {
+        blackHole.consume(byteBuddyWithAccessorInstance.method(booleanValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(byteValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(shortValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(intValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(charValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(intValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(longValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(floatValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(doubleValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(stringValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(booleanValue, booleanValue, booleanValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(byteValue, byteValue, byteValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(shortValue, shortValue, shortValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(charValue, charValue, charValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(longValue, longValue, longValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(floatValue, floatValue, floatValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(doubleValue, doubleValue, doubleValue));
+        blackHole.consume(byteBuddyWithAccessorInstance.method(stringValue, stringValue, stringValue));
+    }
+
+    /**
+     * Performs a benchmark of a super method invocation using Byte Buddy. This benchmark also uses the annotation-based approach
+     * but hard-codes the super method call subsequently to the method.
+     *
+     * @param blackHole A black hole for avoiding JIT erasure.
+     */
+    @Benchmark
+    @OperationsPerInvocation(20)
+    public void benchmarkByteBuddyWithPrefix(Blackhole blackHole) {
+        blackHole.consume(byteBuddyWithPrefixInstance.method(booleanValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(byteValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(shortValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(intValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(charValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(intValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(longValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(floatValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(doubleValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(stringValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(booleanValue, booleanValue, booleanValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(byteValue, byteValue, byteValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(shortValue, shortValue, shortValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(charValue, charValue, charValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(intValue, intValue, intValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(longValue, longValue, longValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(floatValue, floatValue, floatValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(doubleValue, doubleValue, doubleValue));
+        blackHole.consume(byteBuddyWithPrefixInstance.method(stringValue, stringValue, stringValue));
     }
 
     /**

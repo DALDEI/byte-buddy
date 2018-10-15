@@ -1,12 +1,11 @@
 package net.bytebuddy.implementation.bind;
 
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 public class MethodDelegationBinderAmbiguityResolverChainTest extends AbstractAmbiguityResolverTest {
@@ -16,11 +15,10 @@ public class MethodDelegationBinderAmbiguityResolverChainTest extends AbstractAm
 
     private MethodDelegationBinder.AmbiguityResolver chain;
 
-    @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        chain = new MethodDelegationBinder.AmbiguityResolver.Chain(first, second);
+        chain = new MethodDelegationBinder.AmbiguityResolver.Compound(first, second);
     }
 
     @Test
@@ -41,10 +39,5 @@ public class MethodDelegationBinderAmbiguityResolverChainTest extends AbstractAm
         verifyNoMoreInteractions(first);
         verify(second).resolve(source, left, right);
         verifyNoMoreInteractions(second);
-    }
-
-    @Test
-    public void testEqualsHashCode() throws Exception {
-        ObjectPropertyAssertion.of(MethodDelegationBinder.AmbiguityResolver.Chain.class).apply();
     }
 }

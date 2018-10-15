@@ -1,11 +1,11 @@
 package net.bytebuddy.implementation.bind.annotation;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.auxiliary.TypeProxy;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
@@ -71,38 +71,38 @@ public @interface Default {
          * Extracts method references of the default annotation.
          */
         static {
-            MethodList<MethodDescription.InDefinedShape> annotationProperties = new TypeDescription.ForLoadedType(Default.class).getDeclaredMethods();
+            MethodList<MethodDescription.InDefinedShape> annotationProperties = TypeDescription.ForLoadedType.of(Default.class).getDeclaredMethods();
             SERIALIZABLE_PROXY = annotationProperties.filter(named("serializableProxy")).getOnly();
             PROXY_TYPE = annotationProperties.filter(named("proxyType")).getOnly();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<Default> getHandledType() {
             return Default.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<Default> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
-            TypeDescription proxyType = TypeLocator.ForType.of(annotation.getValue(PROXY_TYPE, TypeDescription.class)).resolve(target.getType());
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
+            TypeDescription proxyType = TypeLocator.ForType.of(annotation.getValue(PROXY_TYPE).resolve(TypeDescription.class)).resolve(target.getType());
             if (!proxyType.isInterface()) {
                 throw new IllegalStateException(target + " uses the @Default annotation on an invalid type");
             }
-            if (source.isStatic() || !implementationTarget.getTypeDescription().getInterfaces().asErasures().contains(proxyType)) {
+            if (source.isStatic() || !implementationTarget.getInstrumentedType().getInterfaces().asErasures().contains(proxyType)) {
                 return MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
             } else {
                 return new MethodDelegationBinder.ParameterBinding.Anonymous(new TypeProxy.ForDefaultMethod(proxyType,
                         implementationTarget,
-                        annotation.getValue(SERIALIZABLE_PROXY, Boolean.class)));
+                        annotation.getValue(SERIALIZABLE_PROXY).resolve(Boolean.class)));
             }
-        }
-
-        @Override
-        public String toString() {
-            return "Default.Binder." + name();
         }
 
         /**
@@ -116,7 +116,7 @@ public @interface Default {
              * @param parameterType The type of the target parameter.
              * @return The proxy type.
              */
-            TypeDescription resolve(GenericTypeDescription parameterType);
+            TypeDescription resolve(TypeDescription.Generic parameterType);
 
             /**
              * A type locator that yields the target parameter's type.
@@ -128,20 +128,18 @@ public @interface Default {
                  */
                 INSTANCE;
 
-                @Override
-                public TypeDescription resolve(GenericTypeDescription parameterType) {
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription resolve(TypeDescription.Generic parameterType) {
                     return parameterType.asErasure();
-                }
-
-                @Override
-                public String toString() {
-                    return "Default.Binder.TypeLocator.ForParameterType." + name();
                 }
             }
 
             /**
              * A type locator that returns a given type.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             class ForType implements TypeLocator {
 
                 /**
@@ -174,32 +172,14 @@ public @interface Default {
                     }
                 }
 
-                @Override
-                public TypeDescription resolve(GenericTypeDescription parameterType) {
+                /**
+                 * {@inheritDoc}
+                 */
+                public TypeDescription resolve(TypeDescription.Generic parameterType) {
                     if (!typeDescription.isAssignableTo(parameterType.asErasure())) {
                         throw new IllegalStateException("Impossible to assign " + typeDescription + " to parameter of type " + parameterType);
                     }
                     return typeDescription;
-                }
-
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    ForType forType = (ForType) other;
-                    return typeDescription.equals(forType.typeDescription);
-                }
-
-                @Override
-                public int hashCode() {
-                    return typeDescription.hashCode();
-                }
-
-                @Override
-                public String toString() {
-                    return "Default.Binder.TypeLocator.ForType{" +
-                            "typeDescription=" + typeDescription +
-                            '}';
                 }
             }
         }

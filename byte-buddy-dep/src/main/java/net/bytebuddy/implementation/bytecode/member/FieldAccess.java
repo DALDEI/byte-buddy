@@ -1,9 +1,10 @@
 package net.bytebuddy.implementation.bytecode.member;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.enumeration.EnumerationDescription;
 import net.bytebuddy.description.field.FieldDescription;
 import net.bytebuddy.description.field.FieldList;
-import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.StackSize;
@@ -65,10 +66,12 @@ public enum FieldAccess {
      * @return A stack manipulation for reading the enumeration.
      */
     public static StackManipulation forEnumeration(EnumerationDescription enumerationDescription) {
-        FieldList<?> fieldList = enumerationDescription.getEnumerationType().getDeclaredFields().filter(named(enumerationDescription.getValue()));
+        FieldList<FieldDescription.InDefinedShape> fieldList = enumerationDescription.getEnumerationType()
+                .getDeclaredFields()
+                .filter(named(enumerationDescription.getValue()));
         return fieldList.size() != 1 || !fieldList.getOnly().isStatic() || !fieldList.getOnly().isPublic() || !fieldList.getOnly().isEnum()
                 ? StackManipulation.Illegal.INSTANCE
-                : STATIC.new AccessDispatcher(fieldList.getOnly()).getter();
+                : STATIC.new AccessDispatcher(fieldList.getOnly()).read();
     }
 
     /**
@@ -97,13 +100,8 @@ public enum FieldAccess {
                 : OfGenericField.of(fieldDescription, forField(declaredField));
     }
 
-    @Override
-    public String toString() {
-        return "FieldAccess." + name();
-    }
-
     /**
-     * Representation of a field access for which a getter and a putter can be created.
+     * Representation of a field access for which a getter and a setter can be created.
      */
     public interface Defined {
 
@@ -112,25 +110,26 @@ public enum FieldAccess {
          *
          * @return A stack manipulation representing the retrieval of a field value.
          */
-        StackManipulation getter();
+        StackManipulation read();
 
         /**
-         * Creates a putter representation for a given field.
+         * Creates a setter representation for a given field.
          *
          * @return A stack manipulation representing the setting of a field value.
          */
-        StackManipulation putter();
+        StackManipulation write();
     }
 
     /**
      * A dispatcher for implementing a generic read or write access on a field.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class OfGenericField implements Defined {
 
         /**
          * The resolved generic field type.
          */
-        private final TypeDescription targetType;
+        private final TypeDefinition targetType;
 
         /**
          * An accessor for the field in its defined shape.
@@ -143,7 +142,7 @@ public enum FieldAccess {
          * @param targetType The resolved generic field type.
          * @param defined    An accessor for the field in its defined shape.
          */
-        protected OfGenericField(TypeDescription targetType, Defined defined) {
+        protected OfGenericField(TypeDefinition targetType, Defined defined) {
             this.targetType = targetType;
             this.defined = defined;
         }
@@ -156,99 +155,56 @@ public enum FieldAccess {
          * @return A field access dispatcher for the given field.
          */
         protected static Defined of(FieldDescription fieldDescription, Defined fieldAccess) {
-            return new OfGenericField(fieldDescription.getType().asErasure(), fieldAccess);
+            return new OfGenericField(fieldDescription.getType(), fieldAccess);
         }
 
-        @Override
-        public StackManipulation getter() {
-            return new StackManipulation.Compound(defined.getter(), TypeCasting.to(targetType));
+        /**
+         * {@inheritDoc}
+         */
+        public StackManipulation read() {
+            return new StackManipulation.Compound(defined.read(), TypeCasting.to(targetType));
         }
 
-        @Override
-        public StackManipulation putter() {
-            return defined.putter();
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            OfGenericField that = (OfGenericField) other;
-            return targetType.equals(that.targetType) && defined.equals(that.defined);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = targetType.hashCode();
-            result = 31 * result + defined.hashCode();
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "FieldAccess.OfGenericField{" +
-                    "targetType=" + targetType +
-                    ", defined=" + defined +
-                    '}';
+        /**
+         * {@inheritDoc}
+         */
+        public StackManipulation write() {
+            return defined.write();
         }
     }
 
     /**
      * A dispatcher for implementing a non-generic read or write access on a field.
      */
+    @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
     protected class AccessDispatcher implements Defined {
 
         /**
          * A description of the accessed field.
          */
-        private final FieldDescription fieldDescription;
+        private final FieldDescription.InDefinedShape fieldDescription;
 
         /**
          * Creates a new access dispatcher.
          *
          * @param fieldDescription A description of the accessed field.
          */
-        protected AccessDispatcher(FieldDescription fieldDescription) {
+        protected AccessDispatcher(FieldDescription.InDefinedShape fieldDescription) {
             this.fieldDescription = fieldDescription;
         }
 
-        @Override
-        public StackManipulation getter() {
+        /**
+         * {@inheritDoc}
+         */
+        public StackManipulation read() {
             return new FieldGetInstruction();
         }
 
-        @Override
-        public StackManipulation putter() {
-            return new FieldPutInstruction();
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && FieldAccess.this.equals(((AccessDispatcher) other).getFieldAccess())
-                    && fieldDescription.equals(((AccessDispatcher) other).fieldDescription);
-        }
-
-        @Override
-        public int hashCode() {
-            return fieldDescription.hashCode() + 31 * FieldAccess.this.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "FieldAccess.AccessDispatcher{" +
-                    "fieldAccess=" + FieldAccess.this +
-                    ", fieldDescription=" + fieldDescription +
-                    '}';
-        }
-
         /**
-         * Returns the outer instance.
-         *
-         * @return The outer instance.
+         * {@inheritDoc}
          */
-        private FieldAccess getFieldAccess() {
-            return FieldAccess.this;
+        public StackManipulation write() {
+            return new FieldPutInstruction();
         }
 
         /**
@@ -256,15 +212,19 @@ public enum FieldAccess {
          */
         private abstract class AbstractFieldInstruction implements StackManipulation {
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isValid() {
                 return true;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
                 methodVisitor.visitFieldInsn(getOpcode(),
-                        fieldDescription.getDeclaringType().asErasure().getInternalName(),
+                        fieldDescription.getDeclaringType().getInternalName(),
                         fieldDescription.getInternalName(),
                         fieldDescription.getDescriptor());
                 return resolveSize(fieldDescription.getType().getStackSize());
@@ -289,6 +249,7 @@ public enum FieldAccess {
         /**
          * A reading field access operation.
          */
+        @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
         protected class FieldGetInstruction extends AbstractFieldInstruction {
 
             @Override
@@ -301,36 +262,12 @@ public enum FieldAccess {
                 int sizeChange = fieldSize.getSize() - targetSizeChange;
                 return new Size(sizeChange, sizeChange);
             }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && getAccessDispatcher().equals(((FieldGetInstruction) other).getAccessDispatcher());
-            }
-
-            @Override
-            public int hashCode() {
-                return getAccessDispatcher().hashCode() + 7;
-            }
-
-            @Override
-            public String toString() {
-                return "FieldAccess.AccessDispatcher.FieldGetInstruction{fieldDescription=" + fieldDescription + '}';
-            }
-
-            /**
-             * Returns the outer instance.
-             *
-             * @return The outer instance.
-             */
-            private AccessDispatcher getAccessDispatcher() {
-                return AccessDispatcher.this;
-            }
         }
 
         /**
          * A writing field access operation.
          */
+        @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
         protected class FieldPutInstruction extends AbstractFieldInstruction {
 
             @Override
@@ -341,31 +278,6 @@ public enum FieldAccess {
             @Override
             protected Size resolveSize(StackSize fieldSize) {
                 return new Size(-1 * (fieldSize.getSize() + targetSizeChange), 0);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && getAccessDispatcher().equals(((FieldPutInstruction) other).getAccessDispatcher());
-            }
-
-            @Override
-            public int hashCode() {
-                return getAccessDispatcher().hashCode() + 14;
-            }
-
-            @Override
-            public String toString() {
-                return "FieldAccess.AccessDispatcher.FieldPutInstruction{fieldDescription=" + fieldDescription + '}';
-            }
-
-            /**
-             * Returns the outer instance.
-             *
-             * @return The outer instance.
-             */
-            private AccessDispatcher getAccessDispatcher() {
-                return AccessDispatcher.this;
             }
         }
     }

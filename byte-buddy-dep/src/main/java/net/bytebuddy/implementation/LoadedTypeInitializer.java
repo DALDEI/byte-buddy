@@ -1,9 +1,14 @@
 package net.bytebuddy.implementation;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+import net.bytebuddy.utility.privilege.SetAccessibleAction;
+
 import java.io.Serializable;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.security.AccessController;
-import java.security.PrivilegedAction;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,28 +45,27 @@ public interface LoadedTypeInitializer {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public void onLoad(Class<?> type) {
             /* do nothing */
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isAlive() {
             return false;
-        }
-
-        @Override
-        public String toString() {
-            return "LoadedTypeInitializer.NoOp." + name();
         }
     }
 
     /**
      * A type initializer for setting a value for a static field.
-     *
-     * @param <T> The type of the value that is set as a value to the field.
      */
-    class ForStaticField<T> implements LoadedTypeInitializer, Serializable {
+    @HashCodeAndEqualsPlugin.Enhance
+    class ForStaticField implements LoadedTypeInitializer, Serializable {
+
         /**
          * This class's serial version UID.
          */
@@ -80,56 +84,27 @@ public interface LoadedTypeInitializer {
         /**
          * The value of the field.
          */
-        private final T value;
-
-        /**
-         * Determines if the field needs to be made accessible for setting it.
-         */
-        private final boolean makeAccessible;
+        private final Object value;
 
         /**
          * Creates a new {@link LoadedTypeInitializer} for setting a static field.
          *
-         * @param fieldName      the name of the field.
-         * @param value          The value to be set.
-         * @param makeAccessible Whether the field should be made accessible.
+         * @param fieldName the name of the field.
+         * @param value     The value to be set.
          */
-        protected ForStaticField(String fieldName, T value, boolean makeAccessible) {
+        protected ForStaticField(String fieldName, Object value) {
             this.fieldName = fieldName;
             this.value = value;
-            this.makeAccessible = makeAccessible;
         }
 
         /**
-         * Creates a {@link LoadedTypeInitializer} for given field name and value where the
-         * field is accessible by reflection.
-         *
-         * @param fieldName The name of the field.
-         * @param value     The value to set.
-         * @return A corresponding {@link LoadedTypeInitializer}.
+         * {@inheritDoc}
          */
-        public static LoadedTypeInitializer accessible(String fieldName, Object value) {
-            return new ForStaticField<Object>(fieldName, value, false);
-        }
-
-        /**
-         * Creates a {@link LoadedTypeInitializer} for given field name and value where the
-         * field is not accessible by reflection and needs to be prepared accordingly.
-         *
-         * @param fieldName The name of the field.
-         * @param value     The value to set.
-         * @return A corresponding {@link LoadedTypeInitializer}.
-         */
-        public static LoadedTypeInitializer nonAccessible(String fieldName, Object value) {
-            return new ForStaticField<Object>(fieldName, value, true);
-        }
-
-        @Override
         public void onLoad(Class<?> type) {
             try {
                 Field field = type.getDeclaredField(fieldName);
-                if (makeAccessible) {
-                    AccessController.doPrivileged(new FieldAccessibilityAction(field));
+                if (!Modifier.isPublic(field.getModifiers()) || !Modifier.isPublic(field.getDeclaringClass().getModifiers())) {
+                    AccessController.doPrivileged(new SetAccessibleAction<Field>(field));
                 }
                 field.set(STATIC_FIELD, value);
             } catch (IllegalAccessException exception) {
@@ -139,92 +114,19 @@ public interface LoadedTypeInitializer {
             }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isAlive() {
             return true;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) return true;
-            if (other == null || getClass() != other.getClass()) return false;
-            ForStaticField that = (ForStaticField) other;
-            return makeAccessible == that.makeAccessible
-                    && fieldName.equals(that.fieldName)
-                    && value.equals(that.value);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = fieldName.hashCode();
-            result = 31 * result + value.hashCode();
-            result = 31 * result + (makeAccessible ? 1 : 0);
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "LoadedTypeInitializer.ForStaticField{" +
-                    "fieldName='" + fieldName + '\'' +
-                    ", value=" + value +
-                    ", makeAccessible=" + makeAccessible +
-                    '}';
-        }
-
-        /**
-         * Sets a field accessible.
-         */
-        protected static class FieldAccessibilityAction implements PrivilegedAction<Void> {
-
-            /**
-             * Indicates that this action returns nothing.
-             */
-            private static final Void NOTHING = null;
-
-            /**
-             * The field to make accessible.
-             */
-            private final Field field;
-
-            /**
-             * Creates a new field accessibility action.
-             * @param field The field to make accessible.
-             */
-            protected FieldAccessibilityAction(Field field) {
-                this.field = field;
-            }
-
-            @Override
-            public Void run() {
-                field.setAccessible(true);
-                return NOTHING;
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                if (this == other) return true;
-                if (other == null || getClass() != other.getClass()) return false;
-                FieldAccessibilityAction that = (FieldAccessibilityAction) other;
-                return field.equals(that.field);
-            }
-
-            @Override
-            public int hashCode() {
-                return field.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "LoadedTypeInitializer.ForStaticField.FieldAccessibilityAction{" +
-                        "field=" + field +
-                        '}';
-            }
         }
     }
 
     /**
      * A compound loaded type initializer that combines several type initializers.
      */
+    @SuppressFBWarnings(value = "SE_BAD_FIELD", justification = "Serialization is considered opt-in for a rare use case")
+    @HashCodeAndEqualsPlugin.Enhance
     class Compound implements LoadedTypeInitializer, Serializable {
 
         /**
@@ -235,7 +137,7 @@ public interface LoadedTypeInitializer {
         /**
          * The loaded type initializers that are represented by this compound type initializer.
          */
-        private final LoadedTypeInitializer[] loadedTypeInitializer;
+        private final List<LoadedTypeInitializer> loadedTypeInitializers;
 
         /**
          * Creates a new compound loaded type initializer.
@@ -243,7 +145,7 @@ public interface LoadedTypeInitializer {
          * @param loadedTypeInitializer A number of loaded type initializers in their invocation order.
          */
         public Compound(LoadedTypeInitializer... loadedTypeInitializer) {
-            this.loadedTypeInitializer = loadedTypeInitializer;
+            this(Arrays.asList(loadedTypeInitializer));
         }
 
         /**
@@ -252,40 +154,35 @@ public interface LoadedTypeInitializer {
          * @param loadedTypeInitializers A number of loaded type initializers in their invocation order.
          */
         public Compound(List<? extends LoadedTypeInitializer> loadedTypeInitializers) {
-            this.loadedTypeInitializer = loadedTypeInitializers.toArray(new LoadedTypeInitializer[loadedTypeInitializers.size()]);
+            this.loadedTypeInitializers = new ArrayList<LoadedTypeInitializer>();
+            for (LoadedTypeInitializer loadedTypeInitializer : loadedTypeInitializers) {
+                if (loadedTypeInitializer instanceof Compound) {
+                    this.loadedTypeInitializers.addAll(((Compound) loadedTypeInitializer).loadedTypeInitializers);
+                } else if (!(loadedTypeInitializer instanceof NoOp)) {
+                    this.loadedTypeInitializers.add(loadedTypeInitializer);
+                }
+            }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public void onLoad(Class<?> type) {
-            for (LoadedTypeInitializer loadedTypeInitializer : this.loadedTypeInitializer) {
+            for (LoadedTypeInitializer loadedTypeInitializer : loadedTypeInitializers) {
                 loadedTypeInitializer.onLoad(type);
             }
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isAlive() {
-            for (LoadedTypeInitializer loadedTypeInitializer : this.loadedTypeInitializer) {
+            for (LoadedTypeInitializer loadedTypeInitializer : loadedTypeInitializers) {
                 if (loadedTypeInitializer.isAlive()) {
                     return true;
                 }
             }
             return false;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && Arrays.equals(loadedTypeInitializer, ((Compound) other).loadedTypeInitializer);
-        }
-
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(loadedTypeInitializer);
-        }
-
-        @Override
-        public String toString() {
-            return "LoadedTypeInitializer.Compound{loadedTypeInitializer=" + Arrays.toString(loadedTypeInitializer) + '}';
         }
     }
 }

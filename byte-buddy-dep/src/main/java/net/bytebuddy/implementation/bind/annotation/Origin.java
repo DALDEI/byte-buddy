@@ -6,19 +6,26 @@ import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.implementation.bytecode.constant.*;
+import net.bytebuddy.utility.JavaConstant;
 import net.bytebuddy.utility.JavaType;
 
 import java.lang.annotation.*;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
 /**
+ * <p>
  * The origin annotation provides some meta information about the source method that is bound to this method where
  * the binding is dependant of the parameter's type:
+ * </p>
  * <ol>
- * <li>If the annotated parameter is of type {@link java.lang.reflect.Method}, the parameter is assigned a reference
- * to the method it intercepts.</li>
+ * <li>If the annotated parameter is of type {@link java.lang.reflect.Method}, {@link java.lang.reflect.Constructor} or
+ * {@code java.lang.reflect.Executable}, the parameter is assigned a reference to the method or constructor it
+ * instruments. If the reference is not assignable to the sort of the intercepted source, the target is not considered
+ * for binding.</li>
  * <li>If the annotated parameter is of type {@link java.lang.Class}, the parameter is assigned a reference of the
  * type of the instrumented type.</li>
  * <li>If the annotated parameter is of type {@link java.lang.String}, the parameter is assigned a string with
@@ -32,7 +39,13 @@ import java.lang.reflect.Method;
  * <li>If the annotated type is {@code java.lang.invoke.MethodType}, a description of the intercepted method's type
  * is injected. Method type descriptions are only supported for byte code versions starting from Java 7.</li>
  * </ol>
+ * <p>
  * Any other parameter type will cause an {@link java.lang.IllegalStateException}.
+ * </p>
+ * <p>
+ * <b>Important:</b> A method handle or method type reference can only be used if the referenced method's types are all visible
+ * to the instrumented type or an {@link IllegalAccessError} will be thrown at runtime.
+ * </p>
  *
  * @see net.bytebuddy.implementation.MethodDelegation
  * @see net.bytebuddy.implementation.bind.annotation.TargetMethodAnnotationDrivenBinder
@@ -52,8 +65,15 @@ public @interface Origin {
     boolean cache() default true;
 
     /**
-     * A binder for binding parameters that are annotated with
-     * {@link net.bytebuddy.implementation.bind.annotation.Origin}.
+     * Determines if the method should be resolved by using an {@link java.security.AccessController} using the privileges of the generated class.
+     * Doing so requires the generation of an auxiliary class that implements {@link java.security.PrivilegedExceptionAction}.
+     *
+     * @return {@code true} if the class should be looked up using an {@link java.security.AccessController}.
+     */
+    boolean privileged() default false;
+
+    /**
+     * A binder for binding parameters that are annotated with {@link net.bytebuddy.implementation.bind.annotation.Origin}.
      *
      * @see TargetMethodAnnotationDrivenBinder
      */
@@ -64,42 +84,62 @@ public @interface Origin {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * Loads a method constant onto the operand stack.
+         *
+         * @param origin            The origin annotation.
+         * @param methodDescription The method description to load.
+         * @return An appropriate stack manipulation.
+         */
+        private static StackManipulation methodConstant(Origin origin, MethodDescription.InDefinedShape methodDescription) {
+            MethodConstant.CanCache methodConstant = origin.privileged()
+                    ? MethodConstant.ofPrivileged(methodDescription)
+                    : MethodConstant.of(methodDescription);
+            return origin.cache() ? methodConstant.cached() : methodConstant;
+        }
+
+        /**
+         * {@inheritDoc}
+         */
         public Class<Origin> getHandledType() {
             return Origin.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<Origin> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             TypeDescription parameterType = target.getType().asErasure();
             if (parameterType.represents(Class.class)) {
-                return new MethodDelegationBinder.ParameterBinding.Anonymous(ClassConstant.of(implementationTarget.getOriginType()));
+                return new MethodDelegationBinder.ParameterBinding.Anonymous(ClassConstant.of(implementationTarget.getOriginType().asErasure()));
             } else if (parameterType.represents(Method.class)) {
-                return new MethodDelegationBinder.ParameterBinding.Anonymous(annotation.loadSilent().cache()
-                        ? MethodConstant.forMethod(source.asDefined()).cached()
-                        : MethodConstant.forMethod(source.asDefined()));
+                return source.isMethod()
+                        ? new MethodDelegationBinder.ParameterBinding.Anonymous(methodConstant(annotation.loadSilent(), source.asDefined()))
+                        : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
+            } else if (parameterType.represents(Constructor.class)) {
+                return source.isConstructor()
+                        ? new MethodDelegationBinder.ParameterBinding.Anonymous(methodConstant(annotation.loadSilent(), source.asDefined()))
+                        : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
+            } else if (JavaType.EXECUTABLE.getTypeStub().equals(parameterType)) {
+                return new MethodDelegationBinder.ParameterBinding.Anonymous(methodConstant(annotation.loadSilent(), source.asDefined()));
             } else if (parameterType.represents(String.class)) {
                 return new MethodDelegationBinder.ParameterBinding.Anonymous(new TextConstant(source.toString()));
             } else if (parameterType.represents(int.class)) {
                 return new MethodDelegationBinder.ParameterBinding.Anonymous(IntegerConstant.forValue(source.getModifiers()));
             } else if (parameterType.equals(JavaType.METHOD_HANDLE.getTypeStub())) {
-                return new MethodDelegationBinder.ParameterBinding.Anonymous(MethodHandleConstant.of(source.asDefined()));
+                return new MethodDelegationBinder.ParameterBinding.Anonymous(new JavaConstantValue(JavaConstant.MethodHandle.of(source.asDefined())));
             } else if (parameterType.equals(JavaType.METHOD_TYPE.getTypeStub())) {
-                return new MethodDelegationBinder.ParameterBinding.Anonymous(MethodTypeConstant.of(source.asDefined()));
+                return new MethodDelegationBinder.ParameterBinding.Anonymous(new JavaConstantValue(JavaConstant.MethodType.of(source.asDefined())));
             } else {
                 throw new IllegalStateException("The " + target + " method's " + target.getIndex() +
                         " parameter is annotated with a Origin annotation with an argument not representing a Class," +
-                        " Method, String, int, MethodType or MethodHandle type");
+                        " Method, Constructor, String, int, MethodType or MethodHandle type");
             }
-        }
-
-        @Override
-        public String toString() {
-            return "Origin.Binder." + name();
         }
     }
 }

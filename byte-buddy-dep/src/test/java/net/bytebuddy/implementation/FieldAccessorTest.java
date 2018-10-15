@@ -1,8 +1,10 @@
 package net.bytebuddy.implementation;
 
-import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.test.utility.CallTraceable;
+import org.hamcrest.CoreMatchers;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -13,9 +15,9 @@ import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Collection;
 
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertNotEquals;
 
 @RunWith(Parameterized.class)
 public class FieldAccessorTest<T extends CallTraceable,
@@ -23,7 +25,7 @@ public class FieldAccessorTest<T extends CallTraceable,
         U extends CallTraceable,
         V extends CallTraceable,
         X extends CallTraceable,
-        Y extends CallTraceable> extends AbstractImplementationTest {
+        Y extends CallTraceable> {
 
     private static final String FOO = "foo";
 
@@ -137,91 +139,104 @@ public class FieldAccessorTest<T extends CallTraceable,
 
     @Test
     public void testInstanceGetterBeanProperty() throws Exception {
-        testGetter(instanceGetter, FieldAccessor.ofBeanProperty(), false);
+        testGetter(instanceGetter, FieldAccessor.ofBeanProperty());
     }
 
     @Test
     public void testStaticGetterBeanProperty() throws Exception {
-        testGetter(staticGetter, FieldAccessor.ofBeanProperty(), false);
+        testGetter(staticGetter, FieldAccessor.ofBeanProperty());
     }
 
     @Test
     public void testInstanceGetterExplicit() throws Exception {
-        testGetter(instanceGetter, FieldAccessor.ofField(FOO), false);
+        testGetter(instanceGetter, FieldAccessor.ofField(FOO));
     }
 
     @Test
     public void testStaticGetterExplicit() throws Exception {
-        testGetter(staticGetter, FieldAccessor.ofField(FOO), false);
+        testGetter(staticGetter, FieldAccessor.ofField(FOO));
     }
 
     @Test
-    public void testDefineFieldGetter() throws Exception {
-        testGetter(instanceGetter, FieldAccessor.ofField(FOO).defineAs(propertyType, Visibility.PUBLIC), true);
+    public void testInstanceGetterField() throws Exception {
+        testGetter(instanceGetter, FieldAccessor.of(instanceGetter.getDeclaredField(FOO)));
+    }
+
+    @Test
+    public void testStaticGetterField() throws Exception {
+        testGetter(staticGetter, FieldAccessor.of(staticGetter.getDeclaredField(FOO)));
     }
 
     @Test
     public void testInstanceSetterBeanProperty() throws Exception {
-        testSetter(instanceSetter, FieldAccessor.ofBeanProperty(), false);
+        testSetter(instanceSetter, FieldAccessor.ofBeanProperty());
     }
 
     @Test
     public void testStaticSetterBeanProperty() throws Exception {
-        testSetter(staticSetter, FieldAccessor.ofBeanProperty(), false);
+        testSetter(staticSetter, FieldAccessor.ofBeanProperty());
     }
 
     @Test
     public void testInstanceSetterExplicit() throws Exception {
-        testSetter(instanceSetter, FieldAccessor.ofField(FOO), false);
+        testSetter(instanceSetter, FieldAccessor.ofField(FOO));
     }
 
     @Test
     public void testStaticSetterExplicit() throws Exception {
-        testSetter(staticSetter, FieldAccessor.ofField(FOO), false);
+        testSetter(staticSetter, FieldAccessor.ofField(FOO));
     }
 
     @Test
-    public void testDefineFieldSetter() throws Exception {
-        testSetter(instanceSetter, FieldAccessor.ofField(FOO).defineAs(propertyType, Visibility.PUBLIC), true);
+    public void testStaticSetterField() throws Exception {
+        testSetter(staticSetter, FieldAccessor.of(staticSetter.getDeclaredField(FOO)));
+    }
+
+    @Test
+    public void testInstanceSetterField() throws Exception {
+        testSetter(instanceSetter, FieldAccessor.of(instanceSetter.getDeclaredField(FOO)));
     }
 
     @SuppressWarnings("unchecked")
-    private <Z extends CallTraceable> void testGetter(Class<Z> target,
-                                                      Implementation implementation,
-                                                      boolean definesField) throws Exception {
-        DynamicType.Loaded<Z> loaded = implement(target, implementation);
+    private <Z extends CallTraceable> void testGetter(Class<Z> target, Implementation implementation) throws Exception {
+        DynamicType.Loaded<Z> loaded = new ByteBuddy()
+                .subclass(target)
+                .method(isDeclaredBy(target))
+                .intercept(implementation)
+                .make()
+                .load(target.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
-        assertThat(loaded.getLoaded().getDeclaredFields().length, is(definesField ? 1 : 0));
-        Z instance = loaded.getLoaded().newInstance();
-        if (definesField) {
-            initializeField(instance);
-        }
-        assertNotEquals(target, instance.getClass());
+        assertThat(loaded.getLoaded().getDeclaredFields().length, is(0));
+        Z instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(target)));
         assertThat(instance, instanceOf(target));
         Method getter = loaded.getLoaded()
                 .getDeclaredMethod(GET + Character.toUpperCase(FOO.charAt(0)) + FOO.substring(1));
         assertThat(getter.invoke(instance), is(value));
         instance.assertZeroCalls();
-        assertFieldValue(definesField ? loaded.getLoaded() : target, instance);
+        assertFieldValue(target, instance);
     }
 
     @SuppressWarnings("unchecked")
-    private <Z extends CallTraceable> void testSetter(Class<Z> target,
-                                                      Implementation implementation,
-                                                      boolean definesField) throws Exception {
-        DynamicType.Loaded<Z> loaded = implement(target, implementation);
+    private <Z extends CallTraceable> void testSetter(Class<Z> target, Implementation implementation) throws Exception {
+        DynamicType.Loaded<Z> loaded = new ByteBuddy()
+                .subclass(target)
+                .method(isDeclaredBy(target))
+                .intercept(implementation)
+                .make()
+                .load(target.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
-        assertThat(loaded.getLoaded().getDeclaredFields().length, is(definesField ? 1 : 0));
-        Z instance = loaded.getLoaded().newInstance();
-        assertNotEquals(target, instance.getClass());
+        assertThat(loaded.getLoaded().getDeclaredFields().length, is(0));
+        Z instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(target)));
         assertThat(instance, instanceOf(target));
         Method setter = loaded.getLoaded()
                 .getDeclaredMethod(SET + Character.toUpperCase(FOO.charAt(0)) + FOO.substring(1), propertyType);
         assertThat(setter.invoke(instance, value), nullValue());
         instance.assertZeroCalls();
-        assertFieldValue(definesField ? loaded.getLoaded() : target, instance);
+        assertFieldValue(target, instance);
     }
 
     private void assertFieldValue(Class<?> fieldHolder, Object instance) throws Exception {
@@ -229,16 +244,6 @@ public class FieldAccessorTest<T extends CallTraceable,
         boolean isStatic = (Modifier.STATIC & field.getModifiers()) != 0;
         Object fieldValue = isStatic ? field.get(STATIC_FIELD) : field.get(instance);
         assertThat(fieldValue, is(value));
-    }
-
-    private void initializeField(Object instance) throws Exception {
-        Field field = instance.getClass().getDeclaredField(FOO);
-        boolean isStatic = (Modifier.STATIC & field.getModifiers()) != 0;
-        if (isStatic) {
-            field.set(STATIC_FIELD, value);
-        } else {
-            field.set(instance, value);
-        }
     }
 
     public static class BooleanInstanceGetter extends CallTraceable {

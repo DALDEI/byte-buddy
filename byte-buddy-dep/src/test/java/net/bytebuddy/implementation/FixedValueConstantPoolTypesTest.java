@@ -1,7 +1,10 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.test.utility.CallTraceable;
+import org.hamcrest.CoreMatchers;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -9,14 +12,12 @@ import org.junit.runners.Parameterized;
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
+import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertNotEquals;
-import static org.mockito.Mockito.mock;
 
 @RunWith(Parameterized.class)
-public class FixedValueConstantPoolTypesTest<T extends CallTraceable> extends AbstractImplementationTest {
+public class FixedValueConstantPoolTypesTest<T extends CallTraceable> {
 
     private static final String FOO = "foo", BAR = "bar";
 
@@ -78,19 +79,23 @@ public class FixedValueConstantPoolTypesTest<T extends CallTraceable> extends Ab
                 {INT_VALUE, IntTarget.class},
                 {LONG_VALUE, LongTarget.class},
                 {FLOAT_VALUE, FloatTarget.class},
-                {DOUBLE_VALUE, DoubleTarget.class},
-                {NULL_VALUE, NullTarget.class}
+                {DOUBLE_VALUE, DoubleTarget.class}
         });
     }
 
     @Test
     public void testConstantPool() throws Exception {
-        DynamicType.Loaded<T> loaded = implement(helperClass, FixedValue.value(fixedValue));
+        DynamicType.Loaded<T> loaded = new ByteBuddy()
+                .subclass(helperClass)
+                .method(isDeclaredBy(helperClass))
+                .intercept(FixedValue.value(fixedValue))
+                .make()
+                .load(helperClass.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(2));
         assertThat(loaded.getLoaded().getDeclaredFields().length, is(0));
-        T instance = loaded.getLoaded().newInstance();
-        assertNotEquals(StringTarget.class, instance.getClass());
+        T instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(StringTarget.class)));
         assertThat(instance, instanceOf(helperClass));
         assertThat(loaded.getLoaded().getDeclaredMethod(FOO).invoke(instance), is(fixedValue));
         assertThat(loaded.getLoaded().getDeclaredMethod(BAR).invoke(instance), is(fixedValue));
@@ -99,12 +104,17 @@ public class FixedValueConstantPoolTypesTest<T extends CallTraceable> extends Ab
 
     @Test
     public void testStaticField() throws Exception {
-        DynamicType.Loaded<T> loaded = implement(helperClass, FixedValue.reference(fixedValue));
+        DynamicType.Loaded<T> loaded = new ByteBuddy()
+                .subclass(helperClass)
+                .method(isDeclaredBy(helperClass))
+                .intercept(FixedValue.reference(fixedValue))
+                .make()
+                .load(helperClass.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(2));
         assertThat(loaded.getLoaded().getDeclaredFields().length, is(fixedValue == null ? 0 : 1));
-        T instance = loaded.getLoaded().newInstance();
-        assertNotEquals(StringTarget.class, instance.getClass());
+        T instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(StringTarget.class)));
         assertThat(instance, instanceOf(helperClass));
         assertThat(loaded.getLoaded().getDeclaredMethod(FOO).invoke(instance), is(fixedValue));
         assertThat(loaded.getLoaded().getDeclaredMethod(BAR).invoke(instance), is(fixedValue));
@@ -234,20 +244,6 @@ public class FixedValueConstantPoolTypesTest<T extends CallTraceable> extends Ab
         public Double bar() {
             register(BAR);
             return DOUBLE_DEFAULT_VALUE;
-        }
-    }
-
-    @SuppressWarnings("unused")
-    public static class NullTarget extends CallTraceable {
-
-        public Object foo() {
-            register(FOO);
-            return mock(Runnable.class);
-        }
-
-        public Runnable bar() {
-            register(BAR);
-            return mock(Runnable.class);
         }
     }
 }

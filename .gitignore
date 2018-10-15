@@ -17,11 +17,11 @@ target/
 site/
 
 # Gradle
+byte-buddy-gradle-plugin/build/
 .gradle/
-build/
-
-# jRebel
-rebel.xml
 
 # Shade plugin
 dependency-reduced-pom.xml
+
+# Android
+*/gen/*

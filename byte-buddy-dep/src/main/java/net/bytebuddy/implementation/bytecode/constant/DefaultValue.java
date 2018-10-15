@@ -1,6 +1,6 @@
 package net.bytebuddy.implementation.bytecode.constant;
 
-import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import org.objectweb.asm.MethodVisitor;
@@ -39,7 +39,7 @@ public enum DefaultValue implements StackManipulation {
     /**
      * The default value of a reference type which resembles the {@code null} reference.
      */
-    ANY_REFERENCE(NullConstant.INSTANCE);
+    REFERENCE(NullConstant.INSTANCE);
 
     /**
      * The stack manipulation that represents the loading of a given default value onto the operand stack.
@@ -59,39 +59,38 @@ public enum DefaultValue implements StackManipulation {
     /**
      * Creates a stack assignment that loads the default value for a given type.
      *
-     * @param typeDescription The type for which a default value should be loaded onto the operand stack.
+     * @param typeDefinition The type for which a default value should be loaded onto the operand stack.
      * @return A stack manipulation loading the default value for the given type.
      */
-    public static StackManipulation of(TypeDescription typeDescription) {
-        if (typeDescription.isPrimitive()) {
-            if (typeDescription.represents(long.class)) {
+    public static StackManipulation of(TypeDefinition typeDefinition) {
+        if (typeDefinition.isPrimitive()) {
+            if (typeDefinition.represents(long.class)) {
                 return LONG;
-            } else if (typeDescription.represents(double.class)) {
+            } else if (typeDefinition.represents(double.class)) {
                 return DOUBLE;
-            } else if (typeDescription.represents(float.class)) {
+            } else if (typeDefinition.represents(float.class)) {
                 return FLOAT;
-            } else if (typeDescription.represents(void.class)) {
+            } else if (typeDefinition.represents(void.class)) {
                 return VOID;
             } else {
                 return INTEGER;
             }
         } else {
-            return ANY_REFERENCE;
+            return REFERENCE;
         }
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isValid() {
         return stackManipulation.isValid();
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
         return stackManipulation.apply(methodVisitor, implementationContext);
-    }
-
-    @Override
-    public String toString() {
-        return "DefaultValue." + name();
     }
 }

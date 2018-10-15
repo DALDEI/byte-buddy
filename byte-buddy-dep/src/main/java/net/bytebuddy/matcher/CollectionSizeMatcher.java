@@ -1,6 +1,7 @@
 package net.bytebuddy.matcher;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 
 import java.util.Collection;
 
@@ -9,6 +10,7 @@ import java.util.Collection;
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class CollectionSizeMatcher<T extends Iterable<?>> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
@@ -25,7 +27,9 @@ public class CollectionSizeMatcher<T extends Iterable<?>> extends ElementMatcher
         this.size = size;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     @SuppressFBWarnings(value = "DLS_DEAD_LOCAL_STORE", justification = "Iteration required to count size of an iterable")
     public boolean matches(T target) {
         if (target instanceof Collection) {
@@ -39,18 +43,9 @@ public class CollectionSizeMatcher<T extends Iterable<?>> extends ElementMatcher
         }
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && size == ((CollectionSizeMatcher) other).size;
-    }
-
-    @Override
-    public int hashCode() {
-        return size;
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return "ofSize(" + size + ')';
     }

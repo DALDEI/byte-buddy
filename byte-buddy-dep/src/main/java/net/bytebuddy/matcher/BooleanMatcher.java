@@ -1,10 +1,13 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 /**
  * An element matcher that returns a fixed result.
  *
  * @param <T> The actual matched type of this matcher.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class BooleanMatcher<T> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
@@ -21,23 +24,16 @@ public class BooleanMatcher<T> extends ElementMatcher.Junction.AbstractBase<T> {
         this.matches = matches;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         return matches;
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && matches == ((BooleanMatcher) other).matches;
-    }
-
-    @Override
-    public int hashCode() {
-        return (matches ? 1 : 0);
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return Boolean.toString(matches);
     }

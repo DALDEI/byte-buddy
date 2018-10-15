@@ -1,34 +1,35 @@
 package net.bytebuddy.dynamic.loading;
 
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.test.utility.ClassFileExtraction;
+import net.bytebuddy.dynamic.ClassFileLocator;
+import net.bytebuddy.test.utility.ClassReflectionInjectionAvailableRule;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.MethodRule;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
 
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.security.AccessControlContext;
 import java.security.ProtectionDomain;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static junit.framework.TestCase.assertEquals;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.*;
 
 public class ClassLoadingStrategyDefaultTest {
 
     @Rule
     public TestRule mockitoRule = new MockitoRule(this);
+
+    @Rule
+    public MethodRule classInjectionAvailableRule = new ClassReflectionInjectionAvailableRule();
 
     private ClassLoader classLoader;
 
@@ -45,8 +46,8 @@ public class ClassLoadingStrategyDefaultTest {
     public void setUp() throws Exception {
         classLoader = new URLClassLoader(new URL[0], null);
         binaryRepresentations = new LinkedHashMap<TypeDescription, byte[]>();
-        typeDescription = new TypeDescription.ForLoadedType(Foo.class);
-        binaryRepresentations.put(typeDescription, ClassFileExtraction.extract(Foo.class));
+        typeDescription = TypeDescription.ForLoadedType.of(Foo.class);
+        binaryRepresentations.put(typeDescription, ClassFileLocator.ForClassLoader.read(Foo.class));
         protectionDomain = getClass().getProtectionDomain();
         when(packageDefinitionStrategy.define(any(ClassLoader.class), any(String.class), any(String.class)))
                 .thenReturn(PackageDefinitionStrategy.Definition.Undefined.INSTANCE);
@@ -89,6 +90,7 @@ public class ClassLoadingStrategyDefaultTest {
     }
 
     @Test
+    @ClassReflectionInjectionAvailableRule.Enforce
     public void testInjection() throws Exception {
         Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.INJECTION.load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
@@ -99,7 +101,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testWrapperWithProtectionDomain() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER.withProtectionDomain(protectionDomain)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER.with(protectionDomain)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -109,7 +111,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testWrapperPersistentWithProtectionDomain() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER_PERSISTENT.withProtectionDomain(protectionDomain)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER_PERSISTENT.with(protectionDomain)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -119,7 +121,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testChildFirstWithProtectionDomain() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST.withProtectionDomain(protectionDomain)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST.with(protectionDomain)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -129,7 +131,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testChildFirstPersistentWithProtectionDomain() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST_PERSISTENT.withProtectionDomain(protectionDomain)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST_PERSISTENT.with(protectionDomain)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -138,8 +140,9 @@ public class ClassLoadingStrategyDefaultTest {
     }
 
     @Test
+    @ClassReflectionInjectionAvailableRule.Enforce
     public void testInjectionWithProtectionDomain() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.INJECTION.withProtectionDomain(protectionDomain)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.INJECTION.with(protectionDomain)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -149,7 +152,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testWrapperWithPackageDefiner() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER.withPackageDefinitionStrategy(packageDefinitionStrategy)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER.with(packageDefinitionStrategy)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -160,7 +163,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testWrapperPersistentWithPackageDefinitionStrategy() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER_PERSISTENT.withPackageDefinitionStrategy(packageDefinitionStrategy)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.WRAPPER_PERSISTENT.with(packageDefinitionStrategy)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -171,7 +174,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testChildFirstWithPackageDefinitionStrategy() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST.withPackageDefinitionStrategy(packageDefinitionStrategy)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST.with(packageDefinitionStrategy)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -182,7 +185,7 @@ public class ClassLoadingStrategyDefaultTest {
 
     @Test
     public void testChildFirstPersistentWithPackageDefinitionStrategy() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST_PERSISTENT.withPackageDefinitionStrategy(packageDefinitionStrategy)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.CHILD_FIRST_PERSISTENT.with(packageDefinitionStrategy)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -192,8 +195,9 @@ public class ClassLoadingStrategyDefaultTest {
     }
 
     @Test
+    @ClassReflectionInjectionAvailableRule.Enforce
     public void testInjectionWithPackageDefinitionStrategy() throws Exception {
-        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.INJECTION.withPackageDefinitionStrategy(packageDefinitionStrategy)
+        Map<TypeDescription, Class<?>> loaded = ClassLoadingStrategy.Default.INJECTION.with(packageDefinitionStrategy)
                 .load(classLoader, binaryRepresentations);
         assertThat(loaded.size(), is(1));
         Class<?> type = loaded.get(typeDescription);
@@ -242,23 +246,6 @@ public class ClassLoadingStrategyDefaultTest {
                 .load(ClassLoader.getSystemClassLoader(), Collections.singletonMap(TypeDescription.STRING, new byte[0]));
         assertThat(types.size(), is(1));
         assertEquals(String.class, types.get(TypeDescription.STRING));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(ClassLoadingStrategy.Default.class).apply();
-        ObjectPropertyAssertion.of(ClassLoadingStrategy.Default.WrappingDispatcher.class).create(new ObjectPropertyAssertion.Creator<AccessControlContext>() {
-            @Override
-            public AccessControlContext create() {
-                return new AccessControlContext(new ProtectionDomain[]{mock(ProtectionDomain.class)});
-            }
-        }).apply();
-        ObjectPropertyAssertion.of(ClassLoadingStrategy.Default.InjectionDispatcher.class).create(new ObjectPropertyAssertion.Creator<AccessControlContext>() {
-            @Override
-            public AccessControlContext create() {
-                return new AccessControlContext(new ProtectionDomain[]{mock(ProtectionDomain.class)});
-            }
-        }).skipSynthetic().apply();
     }
 
     private static class Foo {

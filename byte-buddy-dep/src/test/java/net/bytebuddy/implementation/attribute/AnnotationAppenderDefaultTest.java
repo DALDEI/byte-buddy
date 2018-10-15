@@ -1,42 +1,32 @@
 package net.bytebuddy.implementation.attribute;
 
 import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.loading.ByteArrayClassLoader;
-import net.bytebuddy.dynamic.loading.PackageDefinitionStrategy;
+import net.bytebuddy.test.utility.JavaVersionRule;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.MethodRule;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
-import org.objectweb.asm.AnnotationVisitor;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.Type;
+import org.objectweb.asm.*;
 
 import java.lang.annotation.Annotation;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.security.AccessController;
-import java.security.ProtectionDomain;
 import java.util.Collections;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
 import static org.mockito.Mockito.*;
 
 public class AnnotationAppenderDefaultTest {
-
-    private static final ProtectionDomain DEFAULT_PROTECTION_DOMAIN = null;
-
-    private static final int ASM_MANUAL = 0;
 
     private static final String BAR = "net.bytebuddy.test.Bar";
 
@@ -45,17 +35,20 @@ public class AnnotationAppenderDefaultTest {
     @Rule
     public TestRule mockitoRule = new MockitoRule(this);
 
+    @Rule
+    public MethodRule javaVersionRule = new JavaVersionRule();
+
     @Mock
     private AnnotationAppender.Target target;
 
     @Mock
-    private AnnotationAppender.ValueFilter valueFilter;
+    private AnnotationValueFilter valueFilter;
 
     private AnnotationAppender annotationAppender;
 
     @Before
     public void setUp() throws Exception {
-        annotationAppender = new AnnotationAppender.Default(target, valueFilter);
+        annotationAppender = new AnnotationAppender.Default(target);
     }
 
     @Test
@@ -101,13 +94,71 @@ public class AnnotationAppenderDefaultTest {
         assertThat(bar.getAnnotation(Baz.class).array(), is(array));
         assertThat(bar.getAnnotation(Baz.class).annotation(), is((Foo) new Foo.Instance()));
         assertThat(bar.getAnnotation(Baz.class).enumeration(), is(Baz.Enum.VALUE));
-        assertEquals(Void.class, bar.getAnnotation(Baz.class).type());
+        assertThat(bar.getAnnotation(Baz.class).type(), CoreMatchers.<Class<?>>is(Void.class));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testNoArgumentTypeAnnotation() throws Exception {
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new Foo.Instance());
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(1));
+        assertThat(annotationReader.asList().isAnnotationPresent(Foo.class), is(true));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testNoArgumentTypeAnnotationSourceCodeRetention() throws Exception {
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new FooSourceCodeRetention.Instance());
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(0));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testNoArgumentTypeAnnotationByteCodeRetention() throws Exception {
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new FooByteCodeRetention.Instance());
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(0));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testNoArgumentTypeAnnotationNoRetention() throws Exception {
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new FooNoRetention.Instance());
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(0));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testSingleTypeArgumentAnnotation() throws Exception {
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new Qux.Instance(FOOBAR));
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(1));
+        assertThat(annotationReader.asList().isAnnotationPresent(Qux.class), is(true));
+        assertThat(annotationReader.asList().ofType(Qux.class).load().value(), is(FOOBAR));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testMultipleTypeArgumentAnnotation() throws Exception {
+        int[] array = {2, 3, 4};
+        Class<?> bar = makeTypeWithSuperClassAnnotation(new Baz.Instance(FOOBAR, array, new Foo.Instance(), Baz.Enum.VALUE, Void.class));
+        TypeDescription.Generic.AnnotationReader annotationReader = TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveSuperClassType(bar);
+        assertThat(annotationReader.asList().size(), is(1));
+        assertThat(annotationReader.asList().isAnnotationPresent(Baz.class), is(true));
+        assertThat(annotationReader.asList().ofType(Baz.class).load().value(), is(FOOBAR));
+        assertThat(annotationReader.asList().ofType(Baz.class).load().array(), is(array));
+        assertThat(annotationReader.asList().ofType(Baz.class).load().annotation(), is((Foo) new Foo.Instance()));
+        assertThat(annotationReader.asList().ofType(Baz.class).load().enumeration(), is(Baz.Enum.VALUE));
+        assertThat(annotationReader.asList().ofType(Baz.class).load().type(), CoreMatchers.<Class<?>>is(Void.class));
     }
 
     private Class<?> makeTypeWithAnnotation(Annotation annotation) throws Exception {
         when(valueFilter.isRelevant(any(AnnotationDescription.class), any(MethodDescription.InDefinedShape.class))).thenReturn(true);
-        ClassWriter classWriter = new ClassWriter(ASM_MANUAL);
-        classWriter.visit(ClassFileVersion.forCurrentJavaVersion().getVersion(),
+        ClassWriter classWriter = new ClassWriter(AsmVisitorWrapper.NO_FLAGS);
+        classWriter.visit(ClassFileVersion.ofThisVm().getMinorMajorVersion(),
                 Opcodes.ACC_PUBLIC,
                 BAR.replace('.', '/'),
                 null,
@@ -116,68 +167,65 @@ public class AnnotationAppenderDefaultTest {
         AnnotationVisitor annotationVisitor = classWriter.visitAnnotation(Type.getDescriptor(annotation.annotationType()), true);
         when(target.visit(any(String.class), anyBoolean())).thenReturn(annotationVisitor);
         AnnotationDescription annotationDescription = AnnotationDescription.ForLoadedAnnotation.of(annotation);
-        AnnotationAppender.AnnotationVisibility annotationVisibility = AnnotationAppender.AnnotationVisibility.of(annotationDescription);
-        annotationAppender.append(annotationDescription, annotationVisibility);
-        switch (annotationVisibility) {
-            case RUNTIME:
-            case CLASS_FILE:
-                verify(target).visit(Type.getDescriptor(annotation.annotationType()), annotationVisibility == AnnotationAppender.AnnotationVisibility.RUNTIME);
-                verifyNoMoreInteractions(target);
-                for (MethodDescription.InDefinedShape methodDescription : annotationDescription.getAnnotationType().getDeclaredMethods()) {
-                    verify(valueFilter).isRelevant(annotationDescription, methodDescription);
-                }
-                verifyNoMoreInteractions(valueFilter);
-                break;
-            case INVISIBLE:
-                verifyZeroInteractions(target);
-                break;
-            default:
-                fail("Unknown annotation visibility");
-        }
+        annotationAppender.append(annotationDescription, valueFilter);
         classWriter.visitEnd();
-        Class<?> bar = new ByteArrayClassLoader(getClass().getClassLoader(),
-                Collections.singletonMap(BAR, classWriter.toByteArray()),
-                DEFAULT_PROTECTION_DOMAIN,
-                AccessController.getContext(),
-                ByteArrayClassLoader.PersistenceHandler.LATENT,
-                PackageDefinitionStrategy.NoOp.INSTANCE).loadClass(BAR);
+        Class<?> bar = new ByteArrayClassLoader(getClass().getClassLoader(), Collections.singletonMap(BAR, classWriter.toByteArray())).loadClass(BAR);
         assertThat(bar.getName(), is(BAR));
-        assertEquals(Object.class, bar.getSuperclass());
+        assertThat(bar.getSuperclass(), CoreMatchers.<Class<?>>is(Object.class));
+        return bar;
+    }
+
+    private Class<?> makeTypeWithSuperClassAnnotation(Annotation annotation) throws Exception {
+        when(valueFilter.isRelevant(any(AnnotationDescription.class), any(MethodDescription.InDefinedShape.class))).thenReturn(true);
+        ClassWriter classWriter = new ClassWriter(AsmVisitorWrapper.NO_FLAGS);
+        classWriter.visit(ClassFileVersion.ofThisVm().getMinorMajorVersion(),
+                Opcodes.ACC_PUBLIC,
+                BAR.replace('.', '/'),
+                null,
+                Type.getInternalName(Object.class),
+                null);
+        AnnotationVisitor annotationVisitor = classWriter.visitTypeAnnotation(TypeReference.newSuperTypeReference(-1).getValue(),
+                null,
+                Type.getDescriptor(annotation.annotationType()),
+                true);
+        when(target.visit(any(String.class), anyBoolean())).thenReturn(annotationVisitor);
+        AnnotationDescription annotationDescription = AnnotationDescription.ForLoadedAnnotation.of(annotation);
+        annotationAppender.append(annotationDescription, valueFilter);
+        classWriter.visitEnd();
+        Class<?> bar = new ByteArrayClassLoader(getClass().getClassLoader(), Collections.singletonMap(BAR, classWriter.toByteArray())).loadClass(BAR);
+        assertThat(bar.getName(), is(BAR));
+        assertThat(bar.getSuperclass(), CoreMatchers.<Class<?>>is(Object.class));
         return bar;
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    public void testSkipValues() throws Exception {
-        when(valueFilter.isRelevant(any(AnnotationDescription.class), any(MethodDescription.InDefinedShape.class))).thenReturn(false);
-        MethodDescription.InDefinedShape methodDescription = mock(MethodDescription.InDefinedShape.class);
-        TypeDescription annotationType = mock(TypeDescription.class);
-        when(annotationType.getDeclaredMethods())
-                .thenReturn((MethodList) new MethodList.Explicit<MethodDescription>(Collections.singletonList(methodDescription)));
-        AnnotationDescription annotationDescription = mock(AnnotationDescription.class);
-        when(annotationDescription.getAnnotationType()).thenReturn(annotationType);
+    public void testSourceRetentionAnnotation() throws Exception {
         AnnotationVisitor annotationVisitor = mock(AnnotationVisitor.class);
         when(target.visit(anyString(), anyBoolean())).thenReturn(annotationVisitor);
-        annotationAppender.append(annotationDescription, AnnotationAppender.AnnotationVisibility.RUNTIME);
-        verify(valueFilter).isRelevant(annotationDescription, methodDescription);
-        verifyNoMoreInteractions(valueFilter);
-        verify(annotationVisitor).visitEnd();
-        verifyNoMoreInteractions(annotationVisitor);
-
+        AnnotationDescription annotationDescription = mock(AnnotationDescription.class);
+        when(annotationDescription.getRetention()).thenReturn(RetentionPolicy.SOURCE);
+        annotationAppender.append(annotationDescription, valueFilter);
+        verifyZeroInteractions(valueFilter);
+        verifyZeroInteractions(annotationVisitor);
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(AnnotationAppender.Default.class).apply();
-        ObjectPropertyAssertion.of(AnnotationAppender.AnnotationVisibility.class).apply();
+    public void testSourceRetentionTypeAnnotation() throws Exception {
+        AnnotationVisitor annotationVisitor = mock(AnnotationVisitor.class);
+        when(target.visit(anyString(), anyBoolean())).thenReturn(annotationVisitor);
+        AnnotationDescription annotationDescription = mock(AnnotationDescription.class);
+        when(annotationDescription.getRetention()).thenReturn(RetentionPolicy.SOURCE);
+        annotationAppender.append(annotationDescription, valueFilter, 0, null);
+        verifyZeroInteractions(valueFilter);
+        verifyZeroInteractions(annotationVisitor);
     }
 
     @Retention(RetentionPolicy.RUNTIME)
     public @interface Foo {
 
+        @SuppressWarnings("all")
         class Instance implements Foo {
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return Foo.class;
             }
@@ -187,9 +235,9 @@ public class AnnotationAppenderDefaultTest {
     @Retention(RetentionPolicy.SOURCE)
     public @interface FooSourceCodeRetention {
 
+        @SuppressWarnings("all")
         class Instance implements FooSourceCodeRetention {
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return FooSourceCodeRetention.class;
             }
@@ -199,9 +247,9 @@ public class AnnotationAppenderDefaultTest {
     @Retention(RetentionPolicy.CLASS)
     public @interface FooByteCodeRetention {
 
+        @SuppressWarnings("all")
         class Instance implements FooByteCodeRetention {
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return FooByteCodeRetention.class;
             }
@@ -210,9 +258,9 @@ public class AnnotationAppenderDefaultTest {
 
     public @interface FooNoRetention {
 
+        @SuppressWarnings("all")
         class Instance implements FooNoRetention {
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return FooNoRetention.class;
             }
@@ -224,6 +272,7 @@ public class AnnotationAppenderDefaultTest {
 
         String value();
 
+        @SuppressWarnings("all")
         class Instance implements Qux {
 
             private final String value;
@@ -232,12 +281,10 @@ public class AnnotationAppenderDefaultTest {
                 this.value = value;
             }
 
-            @Override
             public String value() {
                 return value;
             }
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return Qux.class;
             }
@@ -261,6 +308,7 @@ public class AnnotationAppenderDefaultTest {
             VALUE
         }
 
+        @SuppressWarnings("all")
         class Instance implements Baz {
 
             private final String value;
@@ -281,32 +329,26 @@ public class AnnotationAppenderDefaultTest {
                 this.type = type;
             }
 
-            @Override
             public String value() {
                 return value;
             }
 
-            @Override
             public int[] array() {
                 return array;
             }
 
-            @Override
             public Foo annotation() {
                 return annotation;
             }
 
-            @Override
             public Enum enumeration() {
                 return enumeration;
             }
 
-            @Override
             public Class<?> type() {
                 return type;
             }
 
-            @Override
             public Class<? extends Annotation> annotationType() {
                 return Baz.class;
             }

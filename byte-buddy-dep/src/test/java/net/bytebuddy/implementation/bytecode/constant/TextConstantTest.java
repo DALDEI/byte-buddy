@@ -3,15 +3,14 @@ package net.bytebuddy.implementation.bytecode.constant;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
 import org.objectweb.asm.MethodVisitor;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 public class TextConstantTest {
@@ -35,10 +34,5 @@ public class TextConstantTest {
         verify(methodVisitor).visitLdcInsn(FOO);
         verifyNoMoreInteractions(methodVisitor);
         verifyZeroInteractions(implementationContext);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(TextConstant.class).apply();
     }
 }

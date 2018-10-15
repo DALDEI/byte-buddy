@@ -1,52 +1,48 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 /**
  * An element matcher that matches all {@link java.lang.ClassLoader}s in the matched class loaders hierarchy
  * against a given matcher.
  *
  * @param <T> The exact type of the class loader that is matched.
  */
-public class ClassLoaderHierarchyMatcher<T extends ClassLoader> implements ElementMatcher<T> {
+@HashCodeAndEqualsPlugin.Enhance
+public class ClassLoaderHierarchyMatcher<T extends ClassLoader> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The matcher to apply on each class loader in the hierarchy.
      */
-    private final ElementMatcher<? super ClassLoader> classLoaderMatcher;
+    private final ElementMatcher<? super ClassLoader> matcher;
 
     /**
      * Creates a new class loader hierarchy matcher.
      *
-     * @param classLoaderMatcher The matcher to apply on each class loader in the hierarchy.
+     * @param matcher The matcher to apply on each class loader in the hierarchy.
      */
-    public ClassLoaderHierarchyMatcher(ElementMatcher<? super ClassLoader> classLoaderMatcher) {
-        this.classLoaderMatcher = classLoaderMatcher;
+    public ClassLoaderHierarchyMatcher(ElementMatcher<? super ClassLoader> matcher) {
+        this.matcher = matcher;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         ClassLoader current = target;
         while (current != null) {
-            if (classLoaderMatcher.matches(current)) {
+            if (matcher.matches(current)) {
                 return true;
             }
             current = current.getParent();
         }
-        return classLoaderMatcher.matches(null);
+        return matcher.matches(null);
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && classLoaderMatcher.equals(((ClassLoaderHierarchyMatcher<?>) other).classLoaderMatcher);
-    }
-
-    @Override
-    public int hashCode() {
-        return classLoaderMatcher.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
-        return "hasChild(" + classLoaderMatcher + ')';
+        return "hasChild(" + matcher + ')';
     }
 }

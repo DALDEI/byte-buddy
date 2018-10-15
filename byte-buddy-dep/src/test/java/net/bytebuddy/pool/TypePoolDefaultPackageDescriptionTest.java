@@ -11,7 +11,7 @@ public class TypePoolDefaultPackageDescriptionTest extends AbstractPackageDescri
 
     @Before
     public void setUp() throws Exception {
-        typePool = TypePool.Default.ofClassPath();
+        typePool = TypePool.Default.ofSystemLoader();
     }
 
     @After
@@ -19,7 +19,6 @@ public class TypePoolDefaultPackageDescriptionTest extends AbstractPackageDescri
         typePool.clear();
     }
 
-    @Override
     protected PackageDescription describe(Class<?> type) {
         return typePool.describe(type.getName()).resolve().getPackage();
     }

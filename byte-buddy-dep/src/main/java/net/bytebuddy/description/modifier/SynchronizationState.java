@@ -32,26 +32,22 @@ public enum SynchronizationState implements ModifierContributor.ForMethod {
     }
 
     /**
-     * Creates a synchronization state from a boolean value indicating if a method is supposed to be synchronized.
-     *
-     * @param isSynchronized {@code true} if the state is supposed to be synchronized.
-     * @return The corresponding synthetic state.
+     * {@inheritDoc}
      */
-    public static SynchronizationState is(boolean isSynchronized) {
-        return isSynchronized ? SYNCHRONIZED : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_SYNCHRONIZED;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -63,10 +59,5 @@ public enum SynchronizationState implements ModifierContributor.ForMethod {
      */
     public boolean isSynchronized() {
         return this == SYNCHRONIZED;
-    }
-
-    @Override
-    public String toString() {
-        return "SynchronizationState." + name();
     }
 }

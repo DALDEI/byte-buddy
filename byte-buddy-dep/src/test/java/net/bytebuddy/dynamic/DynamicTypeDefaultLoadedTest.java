@@ -3,7 +3,7 @@ package net.bytebuddy.dynamic;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.LoadedTypeInitializer;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -14,10 +14,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.hamcrest.CoreMatchers.hasItem;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.hamcrest.core.IsCollectionContaining.hasItem;
-import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -52,15 +51,10 @@ public class DynamicTypeDefaultLoadedTest {
 
     @Test
     public void testLoadedTypeDescription() throws Exception {
-        assertEquals(MAIN_TYPE, dynamicType.getLoaded());
+        assertThat(dynamicType.getLoaded(), CoreMatchers.<Class<?>>is(MAIN_TYPE));
         assertThat(dynamicType.getTypeDescription(), is(mainTypeDescription));
         assertThat(dynamicType.getLoadedAuxiliaryTypes().size(), is(1));
         assertThat(dynamicType.getLoadedAuxiliaryTypes().keySet(), hasItem(auxiliaryTypeDescription));
-        assertEquals(AUXILIARY_TYPE, dynamicType.getLoadedAuxiliaryTypes().get(auxiliaryTypeDescription));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(DynamicType.Default.Loaded.class).apply();
+        assertThat(dynamicType.getLoadedAuxiliaryTypes().get(auxiliaryTypeDescription), CoreMatchers.<Class<?>>is(AUXILIARY_TYPE));
     }
 }

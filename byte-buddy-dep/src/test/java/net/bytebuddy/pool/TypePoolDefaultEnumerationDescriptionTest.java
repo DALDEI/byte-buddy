@@ -15,7 +15,7 @@ public class TypePoolDefaultEnumerationDescriptionTest extends AbstractEnumerati
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        typePool = TypePool.Default.ofClassPath();
+        typePool = TypePool.Default.ofSystemLoader();
     }
 
     @After
@@ -23,14 +23,13 @@ public class TypePoolDefaultEnumerationDescriptionTest extends AbstractEnumerati
         typePool.clear();
     }
 
-    @Override
     protected EnumerationDescription describe(Enum<?> enumeration,
                                               Class<?> carrierType,
                                               MethodDescription.InDefinedShape annotationMethod) {
         TypeDescription typeDescription = typePool.describe(carrierType.getName()).resolve();
         for (AnnotationDescription annotationDescription : typeDescription.getDeclaredAnnotations()) {
             if (annotationDescription.getAnnotationType().equals(annotationDescription.getAnnotationType())) {
-                return annotationDescription.getValue(annotationMethod, EnumerationDescription.class);
+                return annotationDescription.getValue(annotationMethod).resolve(EnumerationDescription.class);
             }
         }
         throw new AssertionError();

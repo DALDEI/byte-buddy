@@ -1,11 +1,14 @@
 package net.bytebuddy.pool;
 
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import org.hamcrest.CoreMatchers;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.CoreMatchers.sameInstance;
@@ -46,8 +49,9 @@ public class TypePoolCacheProviderTest {
     }
 
     @Test
-    public void testSimpleObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(TypePool.CacheProvider.NoOp.class).apply();
-        ObjectPropertyAssertion.of(TypePool.CacheProvider.Simple.class).applyBasic();
+    public void testSimpleMap() {
+        ConcurrentMap<String, TypePool.Resolution> storage = new ConcurrentHashMap<String, TypePool.Resolution>();
+        TypePool.CacheProvider.Simple cacheProvider = new TypePool.CacheProvider.Simple(storage);
+        assertThat(cacheProvider.getStorage(), sameInstance(storage));
     }
 }

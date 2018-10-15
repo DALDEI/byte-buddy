@@ -4,7 +4,7 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.LoadedTypeInitializer;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -13,13 +13,10 @@ import org.mockito.Mock;
 
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.*;
 
 public class DynamicTypeDefaultUnloadedTest {
@@ -39,7 +36,10 @@ public class DynamicTypeDefaultUnloadedTest {
     private ClassLoader classLoader;
 
     @Mock
-    private ClassLoadingStrategy classLoadingStrategy;
+    private ClassLoadingStrategy<ClassLoader> classLoadingStrategy;
+
+    @Mock
+    private TypeResolutionStrategy.Resolved typeResolutionStrategy;
 
     @Mock
     private TypeDescription typeDescription, auxiliaryTypeDescription;
@@ -47,7 +47,6 @@ public class DynamicTypeDefaultUnloadedTest {
     private byte[] binaryRepresentation, auxiliaryTypeByte;
 
     private DynamicType.Unloaded<?> unloaded;
-
 
     @Before
     @SuppressWarnings("unchecked")
@@ -57,15 +56,18 @@ public class DynamicTypeDefaultUnloadedTest {
         unloaded = new DynamicType.Default.Unloaded<Object>(typeDescription,
                 binaryRepresentation,
                 mainLoadedTypeInitializer,
-                Collections.singletonList(auxiliaryType));
+                Collections.singletonList(auxiliaryType),
+                typeResolutionStrategy);
         Map<TypeDescription, Class<?>> loadedTypes = new HashMap<TypeDescription, Class<?>>();
         loadedTypes.put(typeDescription, MAIN_TYPE);
         loadedTypes.put(auxiliaryTypeDescription, AUXILIARY_TYPE);
-        when(classLoadingStrategy.load(any(ClassLoader.class), any(LinkedHashMap.class))).thenReturn(loadedTypes);
         when(auxiliaryType.getTypeDescription()).thenReturn(auxiliaryTypeDescription);
         when(auxiliaryType.getBytes()).thenReturn(auxiliaryTypeByte);
         when(auxiliaryType.getLoadedTypeInitializers()).thenReturn(Collections.singletonMap(auxiliaryTypeDescription, auxiliaryLoadedTypeInitializer));
-        when(auxiliaryType.getRawAuxiliaryTypes()).thenReturn(Collections.<TypeDescription, byte[]>emptyMap());
+        when(auxiliaryType.getAuxiliaryTypes()).thenReturn(Collections.<TypeDescription, byte[]>emptyMap());
+        when(typeResolutionStrategy.initialize(unloaded, classLoader, classLoadingStrategy)).thenReturn(loadedTypes);
+        when(typeDescription.getName()).thenReturn(MAIN_TYPE.getName());
+        when(auxiliaryTypeDescription.getName()).thenReturn(AUXILIARY_TYPE.getName());
     }
 
     @Test
@@ -73,17 +75,17 @@ public class DynamicTypeDefaultUnloadedTest {
         DynamicType.Loaded<?> loaded = unloaded.load(classLoader, classLoadingStrategy);
         assertThat(loaded.getTypeDescription(), is(typeDescription));
         assertThat(loaded.getBytes(), is(binaryRepresentation));
-        assertThat(loaded.getRawAuxiliaryTypes(), is(Collections.singletonMap(auxiliaryTypeDescription, auxiliaryTypeByte)));
+        assertThat(loaded.getAuxiliaryTypes(), is(Collections.singletonMap(auxiliaryTypeDescription, auxiliaryTypeByte)));
     }
 
     @Test
     public void testTypeLoading() throws Exception {
         DynamicType.Loaded<?> loaded = unloaded.load(classLoader, classLoadingStrategy);
-        assertEquals(MAIN_TYPE, loaded.getLoaded());
+        assertThat(loaded.getLoaded(), CoreMatchers.<Class<?>>is(MAIN_TYPE));
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(1));
-        assertEquals(AUXILIARY_TYPE, loaded.getLoadedAuxiliaryTypes().get(auxiliaryTypeDescription));
-        verify(mainLoadedTypeInitializer).onLoad(MAIN_TYPE);
-        verify(auxiliaryLoadedTypeInitializer).onLoad(AUXILIARY_TYPE);
+        assertThat(loaded.getLoadedAuxiliaryTypes().get(auxiliaryTypeDescription), CoreMatchers.<Class<?>>is(AUXILIARY_TYPE));
+        verify(typeResolutionStrategy).initialize(unloaded, classLoader, classLoadingStrategy);
+        verifyNoMoreInteractions(typeResolutionStrategy);
     }
 
     @Test
@@ -92,13 +94,8 @@ public class DynamicTypeDefaultUnloadedTest {
         TypeDescription additionalTypeDescription = mock(TypeDescription.class);
         when(additionalType.getTypeDescription()).thenReturn(additionalTypeDescription);
         DynamicType.Unloaded<?> dynamicType = unloaded.include(additionalType);
-        assertThat(dynamicType.getRawAuxiliaryTypes().size(), is(2));
-        assertThat(dynamicType.getRawAuxiliaryTypes().containsKey(additionalTypeDescription), is(true));
-        assertThat(dynamicType.getRawAuxiliaryTypes().containsKey(auxiliaryTypeDescription), is(true));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(DynamicType.Default.Unloaded.class).apply();
+        assertThat(dynamicType.getAuxiliaryTypes().size(), is(2));
+        assertThat(dynamicType.getAuxiliaryTypes().containsKey(additionalTypeDescription), is(true));
+        assertThat(dynamicType.getAuxiliaryTypes().containsKey(auxiliaryTypeDescription), is(true));
     }
 }

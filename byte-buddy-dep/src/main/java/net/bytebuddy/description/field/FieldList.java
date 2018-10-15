@@ -2,17 +2,13 @@ package net.bytebuddy.description.field;
 
 import net.bytebuddy.description.ByteCodeElement;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.FilterableList;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
-
-import static net.bytebuddy.matcher.ElementMatchers.none;
 
 /**
  * Implementations represent a list of field descriptions.
@@ -22,20 +18,13 @@ import static net.bytebuddy.matcher.ElementMatchers.none;
 public interface FieldList<T extends FieldDescription> extends FilterableList<T, FieldList<T>> {
 
     /**
-     * Transforms the list of field descriptions into a list of detached tokens.
-     *
-     * @return The transformed token list.
-     */
-    ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList();
-
-    /**
      * Transforms the list of field descriptions into a list of detached tokens. All types that are matched by the provided
      * target type matcher are substituted by {@link net.bytebuddy.dynamic.TargetType}.
      *
-     * @param targetTypeMatcher A matcher that indicates type substitution.
+     * @param matcher A matcher that indicates type substitution.
      * @return The transformed token list.
      */
-    ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super GenericTypeDescription> targetTypeMatcher);
+    ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super TypeDescription> matcher);
 
     /**
      * Returns this list of these field descriptions resolved to their defined shape.
@@ -51,21 +40,20 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
      */
     abstract class AbstractBase<S extends FieldDescription> extends FilterableList.AbstractBase<S, FieldList<S>> implements FieldList<S> {
 
-        @Override
-        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList() {
-            return asTokenList(none());
-        }
-
-        @Override
-        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super GenericTypeDescription> targetTypeMatcher) {
+        /**
+         * {@inheritDoc}
+         */
+        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super TypeDescription> matcher) {
             List<FieldDescription.Token> tokens = new ArrayList<FieldDescription.Token>(size());
             for (FieldDescription fieldDescription : this) {
-                tokens.add(fieldDescription.asToken(targetTypeMatcher));
+                tokens.add(fieldDescription.asToken(matcher));
             }
             return new ByteCodeElement.Token.TokenList<FieldDescription.Token>(tokens);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public FieldList<FieldDescription.InDefinedShape> asDefined() {
             List<FieldDescription.InDefinedShape> declaredForms = new ArrayList<FieldDescription.InDefinedShape>(size());
             for (FieldDescription fieldDescription : this) {
@@ -83,7 +71,7 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
     /**
      * An implementation of a field list for an array of loaded fields.
      */
-    class ForLoadedField extends AbstractBase<FieldDescription.InDefinedShape> {
+    class ForLoadedFields extends AbstractBase<FieldDescription.InDefinedShape> {
 
         /**
          * The loaded fields this field list represents.
@@ -95,7 +83,7 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
          *
          * @param field An array of fields to be represented by this field list.
          */
-        public ForLoadedField(Field... field) {
+        public ForLoadedFields(Field... field) {
             this(Arrays.asList(field));
         }
 
@@ -104,16 +92,20 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
          *
          * @param fields An array of fields to be represented by this field list.
          */
-        public ForLoadedField(List<? extends Field> fields) {
+        public ForLoadedFields(List<? extends Field> fields) {
             this.fields = fields;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public FieldDescription.InDefinedShape get(int index) {
             return new FieldDescription.ForLoadedField(fields.get(index));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int size() {
             return fields.size();
         }
@@ -134,18 +126,32 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
         /**
          * Creates a new immutable wrapper field list.
          *
+         * @param fieldDescription The list of fields to be represented by this field list.
+         */
+        @SuppressWarnings("unchecked")
+        public Explicit(S... fieldDescription) {
+            this(Arrays.asList(fieldDescription));
+        }
+
+        /**
+         * Creates a new immutable wrapper field list.
+         *
          * @param fieldDescriptions The list of fields to be represented by this field list.
          */
         public Explicit(List<? extends S> fieldDescriptions) {
             this.fieldDescriptions = fieldDescriptions;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public S get(int index) {
             return fieldDescriptions.get(index);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int size() {
             return fieldDescriptions.size();
         }
@@ -170,6 +176,16 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
          * Creates a new field list from a list of field tokens.
          *
          * @param declaringType The declaring type of the represented fields.
+         * @param token         A list of the represented fields' tokens.
+         */
+        public ForTokens(TypeDescription declaringType, FieldDescription.Token... token) {
+            this(declaringType, Arrays.asList(token));
+        }
+
+        /**
+         * Creates a new field list from a list of field tokens.
+         *
+         * @param declaringType The declaring type of the represented fields.
          * @param tokens        A list of the represented fields' tokens.
          */
         public ForTokens(TypeDescription declaringType, List<? extends FieldDescription.Token> tokens) {
@@ -177,12 +193,16 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
             this.tokens = tokens;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public FieldDescription.InDefinedShape get(int index) {
             return new FieldDescription.Latent(declaringType, tokens.get(index));
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int size() {
             return tokens.size();
         }
@@ -191,12 +211,12 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
     /**
      * A list of field descriptions that yields {@link net.bytebuddy.description.field.FieldDescription.TypeSubstituting}.
      */
-    class TypeSubstituting extends AbstractBase<FieldDescription> {
+    class TypeSubstituting extends AbstractBase<FieldDescription.InGenericShape> {
 
         /**
          * The field's actual declaring type.
          */
-        private final GenericTypeDescription declaringType;
+        private final TypeDescription.Generic declaringType;
 
         /**
          * The field descriptions to be transformed.
@@ -206,7 +226,7 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
         /**
          * The visitor to apply to a field description.
          */
-        private final GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor;
+        private final TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor;
 
         /**
          * Creates a new type substituting field list.
@@ -215,20 +235,24 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
          * @param fieldDescriptions The field descriptions to be transformed.
          * @param visitor           The visitor to apply to a field description.
          */
-        public TypeSubstituting(GenericTypeDescription declaringType,
+        public TypeSubstituting(TypeDescription.Generic declaringType,
                                 List<? extends FieldDescription> fieldDescriptions,
-                                GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor) {
+                                TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor) {
             this.declaringType = declaringType;
             this.fieldDescriptions = fieldDescriptions;
             this.visitor = visitor;
         }
 
-        @Override
-        public FieldDescription get(int index) {
+        /**
+         * {@inheritDoc}
+         */
+        public FieldDescription.InGenericShape get(int index) {
             return new FieldDescription.TypeSubstituting(declaringType, fieldDescriptions.get(index), visitor);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int size() {
             return fieldDescriptions.size();
         }
@@ -236,23 +260,24 @@ public interface FieldList<T extends FieldDescription> extends FilterableList<T,
 
     /**
      * An implementation of an empty field list.
+     *
+     * @param <S> The type of parameter descriptions represented by this list.
      */
-    class Empty extends FilterableList.Empty<FieldDescription.InDefinedShape, FieldList<FieldDescription.InDefinedShape>>
-            implements FieldList<FieldDescription.InDefinedShape> {
+    class Empty<S extends FieldDescription> extends FilterableList.Empty<S, FieldList<S>> implements FieldList<S> {
 
-        @Override
-        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList() {
-            return new ByteCodeElement.Token.TokenList<FieldDescription.Token>(Collections.<FieldDescription.Token>emptyList());
+        /**
+         * {@inheritDoc}
+         */
+        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super TypeDescription> matcher) {
+            return new ByteCodeElement.Token.TokenList<FieldDescription.Token>();
         }
 
-        @Override
-        public ByteCodeElement.Token.TokenList<FieldDescription.Token> asTokenList(ElementMatcher<? super GenericTypeDescription> targetTypeMatcher) {
-            return new ByteCodeElement.Token.TokenList<FieldDescription.Token>(Collections.<FieldDescription.Token>emptyList());
-        }
-
-        @Override
+        /**
+         * {@inheritDoc}
+         */
+        @SuppressWarnings("unchecked")
         public FieldList<FieldDescription.InDefinedShape> asDefined() {
-            return this;
+            return (FieldList<FieldDescription.InDefinedShape>) this;
         }
     }
 }

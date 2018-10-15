@@ -1,5 +1,6 @@
 package net.bytebuddy.implementation.bind.annotation;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
@@ -8,7 +9,9 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.auxiliary.MethodCallProxy;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
+import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 
 import java.lang.annotation.*;
 import java.util.concurrent.Callable;
@@ -52,6 +55,13 @@ public @interface DefaultCall {
     boolean serializableProxy() default false;
 
     /**
+     * Assigns {@code null} to the parameter if it is impossible to invoke the super method or a possible dominant default method, if permitted.
+     *
+     * @return {@code true} if a {@code null} constant should be assigned to this parameter in case that a legal binding is impossible.
+     */
+    boolean nullIfImpossible() default false;
+
+    /**
      * A binder for handling the
      * {@link net.bytebuddy.implementation.bind.annotation.DefaultCall}
      * annotation.
@@ -75,43 +85,58 @@ public @interface DefaultCall {
          */
         private static final MethodDescription.InDefinedShape SERIALIZABLE_PROXY;
 
+        /**
+         * A reference to the null if possible method of the default call annotation.
+         */
+        private static final MethodDescription.InDefinedShape NULL_IF_IMPOSSIBLE;
+
         /*
-         * Finds references to the methods of the default call annotation.
+         * Looks up method constants of the default call annotation.
          */
         static {
-            MethodList<MethodDescription.InDefinedShape> annotationProperties = new TypeDescription.ForLoadedType(DefaultCall.class).getDeclaredMethods();
+            MethodList<MethodDescription.InDefinedShape> annotationProperties = TypeDescription.ForLoadedType.of(DefaultCall.class).getDeclaredMethods();
             TARGET_TYPE = annotationProperties.filter(named("targetType")).getOnly();
             SERIALIZABLE_PROXY = annotationProperties.filter(named("serializableProxy")).getOnly();
+            NULL_IF_IMPOSSIBLE = annotationProperties.filter(named("nullIfImpossible")).getOnly();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Class<DefaultCall> getHandledType() {
             return DefaultCall.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<DefaultCall> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             TypeDescription targetType = target.getType().asErasure();
             if (!targetType.represents(Runnable.class) && !targetType.represents(Callable.class) && !targetType.represents(Object.class)) {
                 throw new IllegalStateException("A default method call proxy can only be assigned to Runnable or Callable types: " + target);
+            } else if (source.isConstructor()) {
+                return annotation.getValue(NULL_IF_IMPOSSIBLE).resolve(Boolean.class)
+                        ? new MethodDelegationBinder.ParameterBinding.Anonymous(NullConstant.INSTANCE)
+                        : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
             }
-            TypeDescription typeDescription = annotation.getValue(TARGET_TYPE, TypeDescription.class);
+            TypeDescription typeDescription = annotation.getValue(TARGET_TYPE).resolve(TypeDescription.class);
             Implementation.SpecialMethodInvocation specialMethodInvocation = (typeDescription.represents(void.class)
                     ? DefaultMethodLocator.Implicit.INSTANCE
                     : new DefaultMethodLocator.Explicit(typeDescription)).resolve(implementationTarget, source);
-            return specialMethodInvocation.isValid()
-                    ? new MethodDelegationBinder.ParameterBinding.Anonymous(new MethodCallProxy
-                    .AssignableSignatureCall(specialMethodInvocation, annotation.getValue(SERIALIZABLE_PROXY, Boolean.class)))
-                    : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
-        }
-
-        @Override
-        public String toString() {
-            return "DefaultCall.Binder." + name();
+            StackManipulation stackManipulation;
+            if (specialMethodInvocation.isValid()) {
+                stackManipulation = new MethodCallProxy.AssignableSignatureCall(specialMethodInvocation, annotation.getValue(SERIALIZABLE_PROXY).resolve(Boolean.class));
+            } else if (annotation.loadSilent().nullIfImpossible()) {
+                stackManipulation = NullConstant.INSTANCE;
+            } else {
+                return MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
+            }
+            return new MethodDelegationBinder.ParameterBinding.Anonymous(stackManipulation);
         }
 
         /**
@@ -141,32 +166,18 @@ public @interface DefaultCall {
                  */
                 INSTANCE;
 
-                @Override
-                public Implementation.SpecialMethodInvocation resolve(Implementation.Target implementationTarget,
-                                                                      MethodDescription source) {
-                    Implementation.SpecialMethodInvocation specialMethodInvocation = null;
-                    for (TypeDescription candidate : implementationTarget.getTypeDescription().getInterfaces().asErasures()) {
-                        if (source.isSpecializableFor(candidate)) {
-                            if (specialMethodInvocation != null) {
-                                return Implementation.SpecialMethodInvocation.Illegal.INSTANCE;
-                            }
-                            specialMethodInvocation = implementationTarget.invokeDefault(candidate, source.asToken());
-                        }
-                    }
-                    return specialMethodInvocation != null
-                            ? specialMethodInvocation
-                            : Implementation.SpecialMethodInvocation.Illegal.INSTANCE;
-                }
-
-                @Override
-                public String toString() {
-                    return "DefaultCall.Binder.DefaultMethodLocator.Implicit." + name();
+                /**
+                 * {@inheritDoc}
+                 */
+                public Implementation.SpecialMethodInvocation resolve(Implementation.Target implementationTarget, MethodDescription source) {
+                    return implementationTarget.invokeDefault(source.asSignatureToken());
                 }
             }
 
             /**
              * An explicit default method locator attempts to look up a default method in the specified interface type.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             class Explicit implements DefaultMethodLocator {
 
                 /**
@@ -184,29 +195,14 @@ public @interface DefaultCall {
                     this.typeDescription = typeDescription;
                 }
 
-                @Override
-                public Implementation.SpecialMethodInvocation resolve(Implementation.Target implementationTarget,
-                                                                      MethodDescription source) {
+                /**
+                 * {@inheritDoc}
+                 */
+                public Implementation.SpecialMethodInvocation resolve(Implementation.Target implementationTarget, MethodDescription source) {
                     if (!typeDescription.isInterface()) {
                         throw new IllegalStateException(source + " method carries default method call parameter on non-interface type");
                     }
-                    return implementationTarget.invokeDefault(typeDescription, source.asToken());
-                }
-
-                @Override
-                public boolean equals(Object other) {
-                    return this == other || !(other == null || getClass() != other.getClass())
-                            && typeDescription.equals(((Explicit) other).typeDescription);
-                }
-
-                @Override
-                public int hashCode() {
-                    return typeDescription.hashCode();
-                }
-
-                @Override
-                public String toString() {
-                    return "DefaultCall.Binder.DefaultMethodLocator.Explicit{typeDescription=" + typeDescription + '}';
+                    return implementationTarget.invokeDefault(source.asSignatureToken(), typeDescription);
                 }
             }
         }

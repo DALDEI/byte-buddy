@@ -1,11 +1,6 @@
 package net.bytebuddy.implementation;
 
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
-
-import java.lang.reflect.Field;
-import java.util.Arrays;
-import java.util.Iterator;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -17,7 +12,7 @@ public class LoadedTypeInitializerForStaticFieldTest {
     @Test
     public void testAccessibleField() throws Exception {
         Object object = new Object();
-        LoadedTypeInitializer loadedTypeInitializer = LoadedTypeInitializer.ForStaticField.accessible(FOO, object);
+        LoadedTypeInitializer loadedTypeInitializer = new LoadedTypeInitializer.ForStaticField(FOO, object);
         assertThat(loadedTypeInitializer.isAlive(), is(true));
         loadedTypeInitializer.onLoad(Foo.class);
         assertThat(Foo.foo, is(object));
@@ -26,30 +21,24 @@ public class LoadedTypeInitializerForStaticFieldTest {
     @Test
     public void testNonAccessibleField() throws Exception {
         Object object = new Object();
-        LoadedTypeInitializer loadedTypeInitializer = LoadedTypeInitializer.ForStaticField.nonAccessible(FOO, object);
+        LoadedTypeInitializer loadedTypeInitializer = new LoadedTypeInitializer.ForStaticField(FOO, object);
         assertThat(loadedTypeInitializer.isAlive(), is(true));
         loadedTypeInitializer.onLoad(Bar.class);
         assertThat(Bar.foo, is(object));
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testNonAccessibleFieldThrowsException() throws Exception {
+    @Test
+    public void testNonAccessibleType() throws Exception {
         Object object = new Object();
-        LoadedTypeInitializer loadedTypeInitializer = LoadedTypeInitializer.ForStaticField.accessible(FOO, object);
+        LoadedTypeInitializer loadedTypeInitializer = new LoadedTypeInitializer.ForStaticField(FOO, object);
         assertThat(loadedTypeInitializer.isAlive(), is(true));
-        loadedTypeInitializer.onLoad(Bar.class);
+        loadedTypeInitializer.onLoad(Qux.class);
+        assertThat(Qux.foo, is(object));
     }
 
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(LoadedTypeInitializer.ForStaticField.class).apply();
-        final Iterator<Field> fields = Arrays.asList(Baz.class.getDeclaredFields()).iterator();
-        ObjectPropertyAssertion.of(LoadedTypeInitializer.ForStaticField.FieldAccessibilityAction.class).create(new ObjectPropertyAssertion.Creator<Field>() {
-            @Override
-            public Field create() {
-                return fields.next();
-            }
-        }).apply();
+    @Test(expected = IllegalArgumentException.class)
+    public void testNonAssignableField() throws Exception {
+        new LoadedTypeInitializer.ForStaticField(FOO, new Object()).onLoad(FooBar.class);
     }
 
     @SuppressWarnings("unused")
@@ -65,8 +54,20 @@ public class LoadedTypeInitializerForStaticFieldTest {
     }
 
     @SuppressWarnings("unused")
+    private static class Qux {
+
+        public static Object foo;
+    }
+
+    @SuppressWarnings("unused")
     private static class Baz {
 
         String foo, bar;
+    }
+
+    @SuppressWarnings("unused")
+    public static class FooBar {
+
+        public static String foo;
     }
 }

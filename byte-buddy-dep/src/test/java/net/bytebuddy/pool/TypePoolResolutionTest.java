@@ -1,7 +1,6 @@
 package net.bytebuddy.pool;
 
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 
 import static org.hamcrest.CoreMatchers.is;
@@ -40,15 +39,8 @@ public class TypePoolResolutionTest {
         TypePool.Resolution resolution = mock(TypePool.Resolution.class);
         when(resolution.isResolved()).thenReturn(true);
         when(resolution.resolve()).thenReturn(mock(TypeDescription.class));
-        assertThat(TypePool.Default.ArrayTypeResolution.of(resolution, 1), not(is(resolution)));
+        assertThat(TypePool.Default.ArrayTypeResolution.of(resolution, 1), not(resolution));
         TypeDescription typeDescription = TypePool.Default.ArrayTypeResolution.of(resolution, 1).resolve();
         assertThat(typeDescription.isArray(), is(true));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(TypePool.Resolution.Simple.class).apply();
-        ObjectPropertyAssertion.of(TypePool.Resolution.Illegal.class).apply();
-        ObjectPropertyAssertion.of(TypePool.Default.ArrayTypeResolution.class).apply();
     }
 }

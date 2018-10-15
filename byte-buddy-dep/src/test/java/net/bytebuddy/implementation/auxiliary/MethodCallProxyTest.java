@@ -1,12 +1,13 @@
 package net.bytebuddy.implementation.auxiliary;
 
 import net.bytebuddy.test.utility.CallTraceable;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Type;
 import java.util.concurrent.Callable;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 
@@ -66,12 +67,12 @@ public class MethodCallProxyTest extends AbstractMethodCallProxyTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(MethodCallProxy.class).apply();
-        ObjectPropertyAssertion.of(MethodCallProxy.AssignableSignatureCall.class).apply();
-        ObjectPropertyAssertion.of(MethodCallProxy.ConstructorCall.class).apply();
-        ObjectPropertyAssertion.of(MethodCallProxy.MethodCall.class).apply();
-        ObjectPropertyAssertion.of(MethodCallProxy.MethodCall.Appender.class).skipSynthetic().apply();
+    public void testNonGenericParameter() throws Exception {
+        Class<?> auxiliaryType = proxyOnlyDeclaredMethodOf(GenericType.class);
+        assertThat(auxiliaryType.getTypeParameters().length, is(0));
+        assertThat(auxiliaryType.getDeclaredMethod("call").getGenericReturnType(), is((Type) Object.class));
+        assertThat(auxiliaryType.getDeclaredFields()[1].getGenericType(), is((Type) Object.class));
+        assertThat(auxiliaryType.getDeclaredFields()[2].getGenericType(), is((Type) Number.class));
     }
 
     @SuppressWarnings("unused")
@@ -85,7 +86,7 @@ public class MethodCallProxyTest extends AbstractMethodCallProxyTest {
     @SuppressWarnings("unused")
     public static class StaticMethod extends CallTraceable {
 
-        public static CallTraceable CALL_TRACEABLE = new CallTraceable();
+        public static final CallTraceable CALL_TRACEABLE = new CallTraceable();
 
         public static void foo() {
             CALL_TRACEABLE.register(FOO);
@@ -97,6 +98,14 @@ public class MethodCallProxyTest extends AbstractMethodCallProxyTest {
 
         public void foo(long l, String s, int i, boolean b) {
             register(FOO, this, l, s, i, b);
+        }
+    }
+
+    @SuppressWarnings("unused")
+    public static class GenericType<T, S extends Number> {
+
+        T foo(T t, S s) {
+            return t;
         }
     }
 }

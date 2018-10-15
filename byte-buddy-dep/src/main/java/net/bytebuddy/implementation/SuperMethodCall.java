@@ -1,5 +1,6 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
@@ -8,8 +9,6 @@ import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import org.objectweb.asm.MethodVisitor;
-
-import static net.bytebuddy.utility.ByteBuddyCommons.nonNull;
 
 /**
  * This implementation will create a new method which simply calls its super method. If no such method is defined,
@@ -21,37 +20,39 @@ import static net.bytebuddy.utility.ByteBuddyCommons.nonNull;
  * annotations. Furthermore, this implementation allows to hard code a super method call to be performed after
  * performing another {@link Implementation}.
  */
-public enum SuperMethodCall implements Implementation {
+public enum SuperMethodCall implements Implementation.Composable {
 
     /**
      * The singleton instance.
      */
     INSTANCE;
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public InstrumentedType prepare(InstrumentedType instrumentedType) {
         return instrumentedType;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public ByteCodeAppender appender(Target implementationTarget) {
         return new Appender(implementationTarget, Appender.TerminationHandler.RETURNING);
     }
 
     /**
-     * Appends another implementation to a super method call.
-     *
-     * @param implementation The implementation to append.
-     * @return An implementation that first invokes the instrumented method's super method and then applies
-     * the given implementation.
+     * {@inheritDoc}
      */
     public Implementation andThen(Implementation implementation) {
-        return new Compound(WithoutReturn.INSTANCE, nonNull(implementation));
+        return new Compound(WithoutReturn.INSTANCE, implementation);
     }
 
-    @Override
-    public String toString() {
-        return "SuperMethodCall." + name();
+    /**
+     * {@inheritDoc}
+     */
+    public Composable andThen(Composable implementation) {
+        return new Compound.Composable(WithoutReturn.INSTANCE, implementation);
     }
 
     /**
@@ -64,25 +65,25 @@ public enum SuperMethodCall implements Implementation {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public InstrumentedType prepare(InstrumentedType instrumentedType) {
             return instrumentedType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public ByteCodeAppender appender(Target implementationTarget) {
             return new Appender(implementationTarget, Appender.TerminationHandler.DROPPING);
-        }
-
-        @Override
-        public String toString() {
-            return "SuperMethodCall.WithoutReturn." + name();
         }
     }
 
     /**
      * An appender for implementing a {@link net.bytebuddy.implementation.SuperMethodCall}.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class Appender implements ByteCodeAppender {
 
         /**
@@ -106,9 +107,11 @@ public enum SuperMethodCall implements Implementation {
             this.terminationHandler = terminationHandler;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext, MethodDescription instrumentedMethod) {
-            StackManipulation superMethodCall = implementationTarget.invokeDominant(instrumentedMethod.asToken());
+            StackManipulation superMethodCall = implementationTarget.invokeDominant(instrumentedMethod.asSignatureToken());
             if (!superMethodCall.isValid()) {
                 throw new IllegalStateException("Cannot call super (or default) method for " + instrumentedMethod);
             }
@@ -118,26 +121,6 @@ public enum SuperMethodCall implements Implementation {
                     terminationHandler.of(instrumentedMethod)
             ).apply(methodVisitor, implementationContext);
             return new Size(stackSize.getMaximalSize(), instrumentedMethod.getStackSize());
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && implementationTarget.equals(((Appender) other).implementationTarget)
-                    && terminationHandler.equals(((Appender) other).terminationHandler);
-        }
-
-        @Override
-        public int hashCode() {
-            return implementationTarget.hashCode() + 31 * terminationHandler.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "SuperMethodCall.Appender{" +
-                    "implementationTarget=" + implementationTarget +
-                    ", terminationHandler=" + terminationHandler +
-                    '}';
         }
 
         /**
@@ -151,7 +134,7 @@ public enum SuperMethodCall implements Implementation {
             RETURNING {
                 @Override
                 protected StackManipulation of(MethodDescription methodDescription) {
-                    return MethodReturn.returning(methodDescription.getReturnType().asErasure());
+                    return MethodReturn.of(methodDescription.getReturnType());
                 }
             },
 
@@ -161,7 +144,7 @@ public enum SuperMethodCall implements Implementation {
             DROPPING {
                 @Override
                 protected StackManipulation of(MethodDescription methodDescription) {
-                    return Removal.pop(methodDescription.getReturnType().asErasure());
+                    return Removal.of(methodDescription.getReturnType());
                 }
             };
 
@@ -173,11 +156,6 @@ public enum SuperMethodCall implements Implementation {
              * @return The stack manipulation that implements this handler.
              */
             protected abstract StackManipulation of(MethodDescription methodDescription);
-
-            @Override
-            public String toString() {
-                return "SuperMethodCall.Appender.TerminationHandler." + name();
-            }
         }
     }
 }

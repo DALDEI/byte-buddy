@@ -3,7 +3,7 @@ package net.bytebuddy.implementation.bind.annotation;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.bind.MethodDelegationBinder;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -23,64 +23,61 @@ public class PipeBinderTest extends AbstractAnnotationBinderTest<Pipe> {
     @Mock
     private TypeDescription targetMethodType;
 
+    @Mock
+    private TypeDescription.Generic genericTargetMethodType;
+
     public PipeBinderTest() {
         super(Pipe.class);
     }
 
-    @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
         when(targetMethod.getDeclaringType()).thenReturn(targetMethodType);
+        when(genericTargetMethodType.asErasure()).thenReturn(targetMethodType);
         binder = new Pipe.Binder(targetMethod);
-        when(targetMethodType.asErasure()).thenReturn(targetMethodType);
     }
 
-    @Override
     protected TargetMethodAnnotationDrivenBinder.ParameterBinder<Pipe> getSimpleBinder() {
         return binder;
     }
 
     @Test
     public void testParameterBinding() throws Exception {
-        when(target.getType()).thenReturn(targetMethodType);
+        when(target.getType()).thenReturn(genericTargetMethodType);
         MethodDelegationBinder.ParameterBinding<?> parameterBinding = binder.bind(annotationDescription,
                 source,
                 target,
                 implementationTarget,
-                assigner);
+                assigner,
+                Assigner.Typing.STATIC);
         assertThat(parameterBinding.isValid(), is(true));
     }
 
     @Test
     public void testCannotPipeStaticMethod() throws Exception {
-        when(target.getType()).thenReturn(targetMethodType);
+        when(target.getType()).thenReturn(genericTargetMethodType);
         when(source.isStatic()).thenReturn(true);
         MethodDelegationBinder.ParameterBinding<?> parameterBinding = binder.bind(annotationDescription,
                 source,
                 target,
                 implementationTarget,
-                assigner);
+                assigner,
+                Assigner.Typing.STATIC);
         assertThat(parameterBinding.isValid(), is(false));
     }
 
     @Test(expected = IllegalStateException.class)
     public void testParameterBindingOnIllegalTargetTypeThrowsException() throws Exception {
-        TypeDescription targetType = mock(TypeDescription.class);
-        when(targetType.asErasure()).thenReturn(targetType);
+        TypeDescription.Generic targetType = mock(TypeDescription.Generic.class);
+        TypeDescription rawTargetType = mock(TypeDescription.class);
+        when(targetType.asErasure()).thenReturn(rawTargetType);
         when(target.getType()).thenReturn(targetType);
         binder.bind(annotationDescription,
                 source,
                 target,
                 implementationTarget,
-                assigner);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(Pipe.Binder.class).apply();
-        ObjectPropertyAssertion.of(Pipe.Binder.Redirection.class).apply();
-        ObjectPropertyAssertion.of(Pipe.Binder.Redirection.MethodCall.class).skipSynthetic().apply();
-        ObjectPropertyAssertion.of(Pipe.Binder.Redirection.ConstructorCall.class).apply();
+                assigner,
+                Assigner.Typing.STATIC);
     }
 }

@@ -1,5 +1,6 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.method.ParameterList;
@@ -9,40 +10,34 @@ import net.bytebuddy.description.method.ParameterList;
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class MethodParametersMatcher<T extends MethodDescription> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The matcher to apply to the parameters.
      */
-    private final ElementMatcher<? super ParameterList<?>> parameterMatcher;
+    private final ElementMatcher<? super ParameterList<?>> matcher;
 
     /**
      * Creates a new matcher for a method's parameters.
      *
-     * @param parameterMatcher The matcher to apply to the parameters.
+     * @param matcher The matcher to apply to the parameters.
      */
-    public MethodParametersMatcher(ElementMatcher<? super ParameterList<? extends ParameterDescription>> parameterMatcher) {
-        this.parameterMatcher = parameterMatcher;
+    public MethodParametersMatcher(ElementMatcher<? super ParameterList<? extends ParameterDescription>> matcher) {
+        this.matcher = matcher;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
-        return parameterMatcher.matches(target.getParameters());
+        return matcher.matches(target.getParameters());
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && parameterMatcher.equals(((MethodParametersMatcher<?>) other).parameterMatcher);
-    }
-
-    @Override
-    public int hashCode() {
-        return parameterMatcher.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
-        return "hasParameter(" + parameterMatcher + ")";
+        return "hasParameter(" + matcher + ")";
     }
 }

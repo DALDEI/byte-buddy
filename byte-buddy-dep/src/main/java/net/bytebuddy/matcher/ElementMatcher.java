@@ -1,5 +1,7 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 /**
  * An element matcher is used as a predicate for identifying code elements such as types, methods, fields or
  * annotations. They are similar to Java 8's {@code Predicate}s but compatible to Java 6 and Java 7 and represent
@@ -58,12 +60,16 @@ public interface ElementMatcher<T> {
          */
         abstract class AbstractBase<V> implements Junction<V> {
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public <U extends V> Junction<U> and(ElementMatcher<? super U> other) {
                 return new Conjunction<U>(this, other);
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public <U extends V> Junction<U> or(ElementMatcher<? super U> other) {
                 return new Disjunction<U>(this, other);
             }
@@ -74,6 +80,7 @@ public interface ElementMatcher<T> {
          *
          * @param <W> The type of the object that is being matched.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Conjunction<W> extends AbstractBase<W> {
 
             /**
@@ -93,24 +100,16 @@ public interface ElementMatcher<T> {
                 this.right = right;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean matches(W target) {
                 return left.matches(target) && right.matches(target);
             }
 
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && left.equals(((Conjunction) other).left)
-                        && right.equals(((Conjunction) other).right);
-            }
-
-            @Override
-            public int hashCode() {
-                return 31 * left.hashCode() + right.hashCode();
-            }
-
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public String toString() {
                 return "(" + left + " and " + right + ')';
             }
@@ -121,6 +120,7 @@ public interface ElementMatcher<T> {
          *
          * @param <W> The type of the object that is being matched.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Disjunction<W> extends AbstractBase<W> {
 
             /**
@@ -140,24 +140,16 @@ public interface ElementMatcher<T> {
                 this.right = right;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean matches(W target) {
                 return left.matches(target) || right.matches(target);
             }
 
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && left.equals(((Disjunction) other).left)
-                        && right.equals(((Disjunction) other).right);
-            }
-
-            @Override
-            public int hashCode() {
-                return 27 * left.hashCode() + right.hashCode();
-            }
-
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public String toString() {
                 return "(" + left + " or " + right + ')';
             }

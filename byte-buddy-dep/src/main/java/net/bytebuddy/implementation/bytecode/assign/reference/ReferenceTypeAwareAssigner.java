@@ -16,25 +16,21 @@ public enum ReferenceTypeAwareAssigner implements Assigner {
      */
     INSTANCE;
 
-    @Override
-    public StackManipulation assign(TypeDescription sourceType, TypeDescription targetType, Typing typing) {
-        if (sourceType.isPrimitive() || targetType.isPrimitive()) {
-            if (sourceType.equals(targetType)) {
-                return StackManipulation.Trivial.INSTANCE;
-            } else {
-                return StackManipulation.Illegal.INSTANCE;
-            }
-        } else if (targetType.isAssignableFrom(sourceType)) {
+    /**
+     * {@inheritDoc}
+     */
+    public StackManipulation assign(TypeDescription.Generic source, TypeDescription.Generic target, Typing typing) {
+        if (source.isPrimitive() || target.isPrimitive()) {
+            return source.equals(target)
+                    ? StackManipulation.Trivial.INSTANCE
+                    : StackManipulation.Illegal.INSTANCE;
+
+        } else if (source.asErasure().isAssignableTo(target.asErasure())) {
             return StackManipulation.Trivial.INSTANCE;
         } else if (typing.isDynamic()) {
-            return TypeCasting.to(targetType);
+            return TypeCasting.to(target);
         } else {
             return StackManipulation.Illegal.INSTANCE;
         }
-    }
-
-    @Override
-    public String toString() {
-        return "ReferenceTypeAwareAssigner." + name();
     }
 }

@@ -3,7 +3,7 @@ package net.bytebuddy.agent.builder;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import net.bytebuddy.utility.JavaModule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
@@ -27,27 +27,27 @@ public class AgentBuilderTransformerTest {
     @Mock
     private TypeDescription typeDescription;
 
+    @Mock
+    private ClassLoader classLoader;
+
+    @Mock
+    private JavaModule module;
+
     @Test
     @SuppressWarnings("unchecked")
     public void testNoOp() throws Exception {
-        assertThat(AgentBuilder.Transformer.NoOp.INSTANCE.transform(builder, typeDescription), sameInstance((DynamicType.Builder) builder));
+        assertThat(AgentBuilder.Transformer.NoOp.INSTANCE.transform(builder, typeDescription, classLoader, module), sameInstance((DynamicType.Builder) builder));
     }
 
     @Test
     @SuppressWarnings("unchecked")
     public void testCompound() throws Exception {
-        when(first.transform(builder, typeDescription)).thenReturn((DynamicType.Builder) builder);
-        when(second.transform(builder, typeDescription)).thenReturn((DynamicType.Builder) builder);
-        assertThat(new AgentBuilder.Transformer.Compound(first, second).transform(builder, typeDescription), sameInstance((DynamicType.Builder) builder));
-        verify(first).transform(builder, typeDescription);
+        when(first.transform(builder, typeDescription, classLoader, module)).thenReturn((DynamicType.Builder) builder);
+        when(second.transform(builder, typeDescription, classLoader, module)).thenReturn((DynamicType.Builder) builder);
+        assertThat(new AgentBuilder.Transformer.Compound(first, second).transform(builder, typeDescription, classLoader, module), sameInstance((DynamicType.Builder) builder));
+        verify(first).transform(builder, typeDescription, classLoader, module);
         verifyNoMoreInteractions(first);
-        verify(second).transform(builder, typeDescription);
+        verify(second).transform(builder, typeDescription, classLoader, module);
         verifyNoMoreInteractions(second);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(AgentBuilder.Transformer.NoOp.class).apply();
-        ObjectPropertyAssertion.of(AgentBuilder.Transformer.Compound.class).apply();
     }
 }

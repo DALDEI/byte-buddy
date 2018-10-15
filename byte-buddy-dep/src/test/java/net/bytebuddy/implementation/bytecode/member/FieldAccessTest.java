@@ -14,14 +14,14 @@ import org.junit.rules.TestRule;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.mockito.Mock;
-import org.mockito.asm.Opcodes;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 import java.util.Arrays;
 import java.util.Collection;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -45,6 +45,9 @@ public class FieldAccessTest {
 
     @Mock
     private TypeDescription declaringType, fieldType;
+
+    @Mock
+    private TypeDescription.Generic genericFieldType;
 
     @Mock
     private MethodVisitor methodVisitor;
@@ -84,11 +87,12 @@ public class FieldAccessTest {
     public void setUp() throws Exception {
         when(declaringType.asErasure()).thenReturn(declaringType);
         when(fieldDescription.getDeclaringType()).thenReturn(declaringType);
-        when(fieldDescription.getType()).thenReturn(fieldType);
+        when(fieldDescription.getType()).thenReturn(genericFieldType);
+        when(genericFieldType.asErasure()).thenReturn(fieldType);
+        when(genericFieldType.getStackSize()).thenReturn(fieldSize);
         when(declaringType.getInternalName()).thenReturn(FOO);
         when(fieldDescription.getInternalName()).thenReturn(BAR);
         when(fieldDescription.getDescriptor()).thenReturn(QUX);
-        when(fieldType.getStackSize()).thenReturn(fieldSize);
         when(fieldDescription.isStatic()).thenReturn(isStatic);
     }
 
@@ -100,8 +104,8 @@ public class FieldAccessTest {
     @Test
     public void testGetter() throws Exception {
         FieldAccess.Defined getter = FieldAccess.forField(fieldDescription);
-        assertThat(getter.getter().isValid(), is(true));
-        StackManipulation.Size size = getter.getter().apply(methodVisitor, implementationContext);
+        assertThat(getter.read().isValid(), is(true));
+        StackManipulation.Size size = getter.read().apply(methodVisitor, implementationContext);
         assertThat(size.getSizeImpact(), is(getterChange));
         assertThat(size.getMaximalSize(), is(getterMaximum));
         verify(methodVisitor).visitFieldInsn(getterOpcode, FOO, BAR, QUX);
@@ -111,8 +115,8 @@ public class FieldAccessTest {
     @Test
     public void testPutter() throws Exception {
         FieldAccess.Defined setter = FieldAccess.forField(fieldDescription);
-        assertThat(setter.putter().isValid(), is(true));
-        StackManipulation.Size size = setter.putter().apply(methodVisitor, implementationContext);
+        assertThat(setter.write().isValid(), is(true));
+        StackManipulation.Size size = setter.write().apply(methodVisitor, implementationContext);
         assertThat(size.getSizeImpact(), is(putterChange));
         assertThat(size.getMaximalSize(), is(putterMaximum));
         verify(methodVisitor).visitFieldInsn(putterOpcode, FOO, BAR, QUX);

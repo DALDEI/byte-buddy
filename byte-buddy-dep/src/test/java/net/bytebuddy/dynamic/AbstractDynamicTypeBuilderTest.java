@@ -1,31 +1,42 @@
 package net.bytebuddy.dynamic;
 
-import net.bytebuddy.asm.ClassVisitorWrapper;
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.annotation.AnnotationDescription;
+import net.bytebuddy.description.annotation.AnnotationValue;
 import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
 import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
-import net.bytebuddy.description.modifier.MethodManifestation;
-import net.bytebuddy.description.modifier.Ownership;
-import net.bytebuddy.description.modifier.TypeManifestation;
-import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.description.modifier.*;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
+import net.bytebuddy.description.type.TypeVariableToken;
 import net.bytebuddy.dynamic.loading.ByteArrayClassLoader;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
-import net.bytebuddy.dynamic.loading.PackageDefinitionStrategy;
+import net.bytebuddy.dynamic.loading.InjectionClassLoader;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
-import net.bytebuddy.implementation.Implementation;
-import net.bytebuddy.implementation.MethodCall;
+import net.bytebuddy.implementation.*;
 import net.bytebuddy.implementation.bind.annotation.SuperCall;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 import net.bytebuddy.implementation.bytecode.constant.TextConstant;
+import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
+import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.test.utility.CallTraceable;
-import net.bytebuddy.test.utility.ClassFileExtraction;
+import net.bytebuddy.test.utility.JavaVersionRule;
+import net.bytebuddy.test.utility.MockitoRule;
+import net.bytebuddy.utility.OpenedClassReader;
 import org.hamcrest.CoreMatchers;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestRule;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.objectweb.asm.ClassVisitor;
@@ -36,32 +47,27 @@ import org.objectweb.asm.Opcodes;
 import java.lang.annotation.Annotation;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
+import java.lang.reflect.*;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.security.AccessController;
-import java.security.ProtectionDomain;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import static net.bytebuddy.matcher.ElementMatchers.isTypeInitializer;
 import static net.bytebuddy.matcher.ElementMatchers.named;
-import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 public abstract class AbstractDynamicTypeBuilderTest {
 
-    private static final ProtectionDomain DEFAULT_PROTECTION_DOMAIN = null;
-
     private static final String FOO = "foo", BAR = "bar", QUX = "qux", TO_STRING = "toString";
+
+    private static final String TYPE_VARIABLE_NAME = "net.bytebuddy.test.precompiled.TypeAnnotation", VALUE = "value";
 
     private static final int MODIFIERS = Opcodes.ACC_PUBLIC;
 
@@ -93,51 +99,64 @@ public abstract class AbstractDynamicTypeBuilderTest {
 
     private static final String STRING_FIELD = "stringField";
 
+    @Rule
+    public TestRule mockitoRule = new MockitoRule(this);
+
+    private Type list, fooVariable;
+
     protected abstract DynamicType.Builder<?> createPlain();
+
+    protected abstract DynamicType.Builder<?> createPlainWithoutValidation();
+
+    @Before
+    public void setUp() throws Exception {
+        list = Holder.class.getDeclaredField("list").getGenericType();
+        fooVariable = ((ParameterizedType) Holder.class.getDeclaredField("fooList").getGenericType()).getActualTypeArguments()[0];
+    }
 
     @Test
     public void testMethodDefinition() throws Exception {
         Class<?> type = createPlain()
-                .defineMethod(FOO, Object.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .defineMethod(FOO, Object.class, Visibility.PUBLIC)
                 .throwing(Exception.class)
                 .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         Method method = type.getDeclaredMethod(FOO);
-        assertEquals(Object.class, method.getReturnType());
-        assertArrayEquals(new Class<?>[]{Exception.class}, method.getExceptionTypes());
+        assertThat(method.getReturnType(), CoreMatchers.<Class<?>>is(Object.class));
+        assertThat(method.getExceptionTypes(), is(new Class<?>[]{Exception.class}));
         assertThat(method.getModifiers(), is(Modifier.PUBLIC));
-        assertThat(method.invoke(type.newInstance()), is((Object) FOO));
+        assertThat(method.invoke(type.getDeclaredConstructor().newInstance()), is((Object) FOO));
     }
 
     @Test
     public void testAbstractMethodDefinition() throws Exception {
         Class<?> type = createPlain()
                 .modifiers(Visibility.PUBLIC, TypeManifestation.ABSTRACT)
-                .defineMethod(FOO, Object.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .defineMethod(FOO, Object.class, Visibility.PUBLIC)
                 .throwing(Exception.class)
                 .withoutCode()
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         Method method = type.getDeclaredMethod(FOO);
-        assertEquals(Object.class, method.getReturnType());
-        assertArrayEquals(new Class<?>[]{Exception.class}, method.getExceptionTypes());
+        assertThat(method.getReturnType(), CoreMatchers.<Class<?>>is(Object.class));
+        assertThat(method.getExceptionTypes(), is(new Class<?>[]{Exception.class}));
         assertThat(method.getModifiers(), is(Modifier.PUBLIC | Modifier.ABSTRACT));
     }
 
     @Test
     public void testConstructorDefinition() throws Exception {
         Class<?> type = createPlain()
-                .defineConstructor(Collections.<Class<?>>singletonList(Void.class), Visibility.PUBLIC)
+                .defineConstructor(Visibility.PUBLIC).withParameters(Void.class)
                 .throwing(Exception.class)
                 .intercept(MethodCall.invoke(Object.class.getDeclaredConstructor()))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         Constructor<?> constructor = type.getDeclaredConstructor(Void.class);
-        assertArrayEquals(new Class<?>[]{Exception.class}, constructor.getExceptionTypes());
+        assertThat(constructor.getExceptionTypes(), is(new Class<?>[]{Exception.class}));
         assertThat(constructor.getModifiers(), is(Modifier.PUBLIC));
         assertThat(constructor.newInstance((Object) null), notNullValue(Object.class));
     }
@@ -150,7 +169,7 @@ public abstract class AbstractDynamicTypeBuilderTest {
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         Field field = type.getDeclaredField(FOO);
-        assertEquals(Void.class, field.getType());
+        assertThat(field.getType(), CoreMatchers.<Class<?>>is(Void.class));
         assertThat(field.getModifiers(), is(Modifier.PUBLIC));
     }
 
@@ -188,24 +207,20 @@ public abstract class AbstractDynamicTypeBuilderTest {
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded()
+                .getDeclaredConstructor()
                 .newInstance()
                 .toString(), is(BAR));
     }
 
     @Test
     public void testTypeInitializer() throws Exception {
-        ClassLoader classLoader = new ByteArrayClassLoader(null,
-                ClassFileExtraction.of(Bar.class),
-                DEFAULT_PROTECTION_DOMAIN,
-                AccessController.getContext(),
-                ByteArrayClassLoader.PersistenceHandler.LATENT,
-                PackageDefinitionStrategy.NoOp.INSTANCE);
+        ClassLoader classLoader = new ByteArrayClassLoader(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassFileLocator.ForClassLoader.readToNames(Bar.class));
         Class<?> type = createPlain()
                 .invokable(isTypeInitializer()).intercept(MethodCall.invoke(Bar.class.getDeclaredMethod("invoke")))
                 .make()
                 .load(classLoader, ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(type.newInstance(), notNullValue(Object.class));
+        assertThat(type.getDeclaredConstructor().newInstance(), notNullValue(Object.class));
         Class<?> foo = classLoader.loadClass(Bar.class.getName());
         assertThat(foo.getDeclaredField(FOO).get(null), is((Object) FOO));
     }
@@ -213,68 +228,76 @@ public abstract class AbstractDynamicTypeBuilderTest {
     @Test
     public void testConstructorInvokingMethod() throws Exception {
         Class<?> type = createPlain()
-                .defineMethod(FOO, Object.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .defineMethod(FOO, Object.class, Visibility.PUBLIC)
                 .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         Method method = type.getDeclaredMethod(FOO);
-        assertThat(method.invoke(type.newInstance()), is((Object) FOO));
+        assertThat(method.invoke(type.getDeclaredConstructor().newInstance()), is((Object) FOO));
     }
 
     @Test
     public void testMethodTransformation() throws Exception {
         Class<?> type = createPlain()
                 .method(named(TO_STRING))
-                .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE),
-                        MethodTransformer.Simple.withModifiers(MethodManifestation.FINAL))
+                .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
+                .transform(Transformer.ForMethod.withModifiers(MethodManifestation.FINAL))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(type.newInstance().toString(), is(FOO));
+        assertThat(type.getDeclaredConstructor().newInstance().toString(), is(FOO));
         assertThat(type.getDeclaredMethod(TO_STRING).getModifiers(), is(Opcodes.ACC_FINAL | Opcodes.ACC_PUBLIC));
+    }
+
+    @Test
+    public void testFieldTransformation() throws Exception {
+        Class<?> type = createPlain()
+                .defineField(FOO, Void.class)
+                .field(named(FOO))
+                .transform(Transformer.ForField.withModifiers(Visibility.PUBLIC))
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredField(FOO).getModifiers(), is(Opcodes.ACC_PUBLIC));
     }
 
     @Test
     public void testIgnoredMethod() throws Exception {
         Class<?> type = createPlain()
-                .ignoreMethods(named(TO_STRING))
-                .method(named(TO_STRING)).intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
+                .ignoreAlso(named(TO_STRING))
+                .method(named(TO_STRING))
+                .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(type.newInstance().toString(), CoreMatchers.not(FOO));
+        assertThat(type.getDeclaredConstructor().newInstance().toString(), CoreMatchers.not(FOO));
     }
 
     @Test
     public void testIgnoredMethodDoesNotApplyForDefined() throws Exception {
         Class<?> type = createPlain()
-                .ignoreMethods(named(FOO))
-                .defineMethod(FOO, String.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .ignoreAlso(named(FOO))
+                .defineMethod(FOO, String.class, Visibility.PUBLIC)
                 .intercept(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE))
                 .make()
                 .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) FOO));
+        assertThat(type.getDeclaredMethod(FOO).invoke(type.getDeclaredConstructor().newInstance()), is((Object) FOO));
     }
 
     @Test
     public void testPreparedField() throws Exception {
-        ClassLoader classLoader = new ByteArrayClassLoader(null,
-                ClassFileExtraction.of(SampleAnnotation.class),
-                DEFAULT_PROTECTION_DOMAIN,
-                AccessController.getContext(),
-                ByteArrayClassLoader.PersistenceHandler.LATENT,
-                PackageDefinitionStrategy.NoOp.INSTANCE);
+        ClassLoader classLoader = new ByteArrayClassLoader(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassFileLocator.ForClassLoader.readToNames(SampleAnnotation.class));
         Class<?> type = createPlain()
-                .defineMethod(BAR, String.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .defineMethod(BAR, String.class, Visibility.PUBLIC)
                 .intercept(new PreparedField())
                 .make()
                 .load(classLoader, ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         assertThat(type.getDeclaredFields().length, is(1));
         assertThat(type.getDeclaredField(FOO).getName(), is(FOO));
-        assertEquals(Object.class, type.getDeclaredField(FOO).getType());
+        assertThat(type.getDeclaredField(FOO).getType(), CoreMatchers.<Class<?>>is(Object.class));
         assertThat(type.getDeclaredField(FOO).getModifiers(), is(MODIFIERS));
         assertThat(type.getDeclaredField(FOO).getAnnotations().length, is(1));
         Annotation annotation = type.getDeclaredField(FOO).getAnnotations()[0];
@@ -285,23 +308,18 @@ public abstract class AbstractDynamicTypeBuilderTest {
 
     @Test
     public void testPreparedMethod() throws Exception {
-        ClassLoader classLoader = new ByteArrayClassLoader(null,
-                ClassFileExtraction.of(SampleAnnotation.class),
-                DEFAULT_PROTECTION_DOMAIN,
-                AccessController.getContext(),
-                ByteArrayClassLoader.PersistenceHandler.LATENT,
-                PackageDefinitionStrategy.NoOp.INSTANCE);
+        ClassLoader classLoader = new ByteArrayClassLoader(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassFileLocator.ForClassLoader.readToNames(SampleAnnotation.class));
         Class<?> type = createPlain()
-                .defineMethod(BAR, String.class, Collections.<Class<?>>emptyList(), Visibility.PUBLIC)
+                .defineMethod(BAR, String.class, Visibility.PUBLIC)
                 .intercept(new PreparedMethod())
                 .make()
                 .load(classLoader, ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
         assertThat(type.getDeclaredMethods().length, is(2));
         assertThat(type.getDeclaredMethod(FOO, Object.class).getName(), is(FOO));
-        assertEquals(Object.class, type.getDeclaredMethod(FOO, Object.class).getReturnType());
+        assertThat(type.getDeclaredMethod(FOO, Object.class).getReturnType(), CoreMatchers.<Class<?>>is(Object.class));
         assertThat(type.getDeclaredMethod(FOO, Object.class).getParameterTypes().length, is(1));
-        assertEquals(Object.class, type.getDeclaredMethod(FOO, Object.class).getParameterTypes()[0]);
+        assertThat(type.getDeclaredMethod(FOO, Object.class).getParameterTypes()[0], CoreMatchers.<Class<?>>is(Object.class));
         assertThat(type.getDeclaredMethod(FOO, Object.class).getModifiers(), is(MODIFIERS));
         assertThat(type.getDeclaredMethod(FOO, Object.class).getAnnotations().length, is(1));
         Annotation methodAnnotation = type.getDeclaredMethod(FOO, Object.class).getAnnotations()[0];
@@ -316,12 +334,19 @@ public abstract class AbstractDynamicTypeBuilderTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void testWriterHint() throws Exception {
-        ClassVisitorWrapper classVisitorWrapper = mock(ClassVisitorWrapper.class);
-        when(classVisitorWrapper.wrap(any(ClassVisitor.class))).then(new Answer<ClassVisitor>() {
-            @Override
+        AsmVisitorWrapper asmVisitorWrapper = mock(AsmVisitorWrapper.class);
+        when(asmVisitorWrapper.wrap(any(TypeDescription.class),
+                any(ClassVisitor.class),
+                any(Implementation.Context.class),
+                any(TypePool.class),
+                any(FieldList.class),
+                any(MethodList.class),
+                anyInt(),
+                anyInt())).then(new Answer<ClassVisitor>() {
             public ClassVisitor answer(InvocationOnMock invocationOnMock) throws Throwable {
-                return new ClassVisitor(Opcodes.ASM5, (ClassVisitor) invocationOnMock.getArguments()[0]) {
+                return new ClassVisitor(OpenedClassReader.ASM_API, (ClassVisitor) invocationOnMock.getArguments()[1]) {
                     @Override
                     public void visitEnd() {
                         MethodVisitor mv = visitMethod(Opcodes.ACC_PUBLIC, FOO, "()Ljava/lang/String;", null, null);
@@ -334,17 +359,1151 @@ public abstract class AbstractDynamicTypeBuilderTest {
                 };
             }
         });
-        when(classVisitorWrapper.mergeWriter(0)).thenReturn(ClassWriter.COMPUTE_MAXS);
+        when(asmVisitorWrapper.mergeWriter(0)).thenReturn(ClassWriter.COMPUTE_MAXS);
         Class<?> type = createPlain()
-                .classVisitor(classVisitorWrapper)
+                .visit(asmVisitorWrapper)
                 .make()
-                .load(null, ClassLoadingStrategy.Default.WRAPPER)
+                .load(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassLoadingStrategy.Default.WRAPPER)
                 .getLoaded();
-        assertThat(type.getDeclaredMethod(FOO).invoke(type.newInstance()), is((Object) FOO));
-        verify(classVisitorWrapper).mergeWriter(0);
-        verify(classVisitorWrapper, atMost(1)).mergeReader(0);
-        verify(classVisitorWrapper).wrap(any(ClassVisitor.class));
-        verifyNoMoreInteractions(classVisitorWrapper);
+        assertThat(type.getDeclaredMethod(FOO).invoke(type.getDeclaredConstructor().newInstance()), is((Object) FOO));
+        verify(asmVisitorWrapper).mergeWriter(0);
+        verify(asmVisitorWrapper, atMost(1)).mergeReader(0);
+        verify(asmVisitorWrapper).wrap(any(TypeDescription.class),
+                any(ClassVisitor.class),
+                any(Implementation.Context.class),
+                any(TypePool.class),
+                any(FieldList.class),
+                any(MethodList.class),
+                anyInt(),
+                anyInt());
+        verifyNoMoreInteractions(asmVisitorWrapper);
+    }
+
+    @Test
+    public void testExplicitTypeInitializer() throws Exception {
+        assertThat(createPlain()
+                .defineField(FOO, String.class, Ownership.STATIC, Visibility.PUBLIC)
+                .initializer(new ByteCodeAppender() {
+                    public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext, MethodDescription instrumentedMethod) {
+                        return new Size(new StackManipulation.Compound(
+                                new TextConstant(FOO),
+                                FieldAccess.forField(instrumentedMethod.getDeclaringType().getDeclaredFields().filter(named(FOO)).getOnly()).write()
+                        ).apply(methodVisitor, implementationContext).getMaximalSize(), instrumentedMethod.getStackSize());
+                    }
+                }).make()
+                .load(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded()
+                .getDeclaredField(FOO)
+                .get(null), is((Object) FOO));
+    }
+
+    @Test
+    public void testSerialVersionUid() throws Exception {
+        Class<?> type = createPlain()
+                .serialVersionUid(42L)
+                .make()
+                .load(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        Field field = type.getDeclaredField("serialVersionUID");
+        field.setAccessible(true);
+        assertThat((Long) field.get(null), is(42L));
+        assertThat(field.getType(), is((Object) long.class));
+        assertThat(field.getModifiers(), is(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL));
+    }
+
+    @Test
+    public void testTypeVariable() throws Exception {
+        Class<?> type = createPlain()
+                .typeVariable(FOO)
+                .typeVariable(BAR, String.class)
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getTypeParameters().length, is(2));
+        assertThat(type.getTypeParameters()[0].getName(), is(FOO));
+        assertThat(type.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(type.getTypeParameters()[1].getName(), is(BAR));
+        assertThat(type.getTypeParameters()[1].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[1].getBounds()[0], is((Object) String.class));
+    }
+
+    @Test
+    public void testTypeVariableTransformation() throws Exception {
+        Class<?> type = createPlain()
+                .typeVariable(FOO)
+                .typeVariable(BAR, String.class)
+                .transform(named(BAR), new Transformer<TypeVariableToken>() {
+                    public TypeVariableToken transform(TypeDescription instrumentedType, TypeVariableToken target) {
+                        return new TypeVariableToken(target.getSymbol(), Collections.singletonList(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(Integer.class)));
+                    }
+                })
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getTypeParameters().length, is(2));
+        assertThat(type.getTypeParameters()[0].getName(), is(FOO));
+        assertThat(type.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(type.getTypeParameters()[1].getName(), is(BAR));
+        assertThat(type.getTypeParameters()[1].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[1].getBounds()[0], is((Object) Integer.class));
+    }
+
+    @Test
+    public void testGenericFieldDefinition() throws Exception {
+        Class<?> type = createPlain()
+                .defineField(QUX, list)
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredField(QUX).getGenericType(), is(list));
+    }
+
+    @Test
+    public void testGenericMethodDefinition() throws Exception {
+        Class<?> type = createPlain()
+                .defineMethod(QUX, list)
+                .withParameter(list, BAR, ProvisioningState.MANDATED)
+                .throwing(fooVariable)
+                .typeVariable(FOO, Exception.class)
+                .intercept(StubMethod.INSTANCE)
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(type.getDeclaredMethod(QUX, List.class).getTypeParameters().length, is(1));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getTypeParameters()[0].getName(), is(FOO));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getTypeParameters()[0].getBounds()[0], is((Object) Exception.class));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getGenericReturnType(), is(list));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getGenericExceptionTypes()[0], is((Type) type.getDeclaredMethod(QUX, List.class).getTypeParameters()[0]));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getGenericParameterTypes().length, is(1));
+        assertThat(type.getDeclaredMethod(QUX, List.class).getGenericParameterTypes()[0], is(list));
+    }
+
+    @Test
+    public void testHashCodeMethod() throws Exception {
+        Class<?> type = createPlain()
+                .defineField(FOO, String.class, Visibility.PUBLIC)
+                .withHashCodeEquals()
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        Object left = type.getDeclaredConstructor().newInstance(), right = type.getDeclaredConstructor().newInstance();
+        left.getClass().getDeclaredField(FOO).set(left, FOO);
+        right.getClass().getDeclaredField(FOO).set(right, FOO);
+        assertThat(left.hashCode(), is(right.hashCode()));
+        assertThat(left, is(right));
+    }
+
+    @Test
+    public void testToString() throws Exception {
+        Class<?> type = createPlain()
+                .defineField(FOO, String.class, Visibility.PUBLIC)
+                .withToString()
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        Object instance = type.getDeclaredConstructor().newInstance();
+        instance.getClass().getDeclaredField(FOO).set(instance, BAR);
+        assertThat(instance.toString(), CoreMatchers.endsWith("{foo=bar}"));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testGenericMethodDefinitionMetaDataParameter() throws Exception {
+        Class<?> type = createPlain()
+                .defineMethod(QUX, list)
+                .withParameter(list, BAR, ProvisioningState.MANDATED)
+                .throwing(fooVariable)
+                .typeVariable(FOO, Exception.class)
+                .intercept(StubMethod.INSTANCE)
+                .make()
+                .load(new URLClassLoader(new URL[0], null), ClassLoadingStrategy.Default.WRAPPER)
+                .getLoaded();
+        assertThat(TypeDefinition.Sort.describe(type).getDeclaredMethods().filter(named(QUX)).getOnly().getParameters().getOnly().getName(), is(BAR));
+        assertThat(TypeDefinition.Sort.describe(type).getDeclaredMethods().filter(named(QUX)).getOnly().getParameters().getOnly().getModifiers(),
+                is(ProvisioningState.MANDATED.getMask()));
+    }
+
+    @Test(expected = ClassFormatError.class)
+    public void testUnvalidated() throws Exception {
+        createPlainWithoutValidation()
+                .defineField(FOO, void.class)
+                .make()
+                .load(ClassLoadingStrategy.BOOTSTRAP_LOADER, ClassLoadingStrategy.Default.WRAPPER);
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnTypeAnnotationClassBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Class<?> type = createPlain()
+                .typeVariable(FOO, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(type.getTypeParameters().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnTypeAnnotationInterfaceBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Class<?> type = createPlain()
+                .typeVariable(FOO, TypeDescription.Generic.Builder.rawType(Runnable.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(type.getTypeParameters().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds()[0], is((Object) Runnable.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnTypeAnnotationTypeVariableBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Class<?> type = createPlain()
+                .typeVariable(FOO)
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .typeVariable(BAR, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 3).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(type.getTypeParameters().length, is(2));
+        assertThat(type.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(type.getTypeParameters()[1].getBounds().length, is(1));
+        assertThat(type.getTypeParameters()[1].getBounds()[0], is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[1]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[1]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[1]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(type.getTypeParameters()[1]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 3));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeAnnotationOnInterfaceType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Class<?> type = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .implement(TypeDescription.Generic.Builder.rawType(Runnable.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build()))
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(type.getInterfaces().length, is(1));
+        assertThat(type.getInterfaces()[0], is((Object) Runnable.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveInterfaceType(type, 0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveInterfaceType(type, 0).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnFieldType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build()))
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(field.getType(), is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnMethodAnnotationClassBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, void.class)
+                .typeVariable(FOO, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO);
+        assertThat(method.getTypeParameters().length, is(1));
+        assertThat(method.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(method.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnMethodAnnotationInterfaceBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, void.class)
+                .typeVariable(FOO, TypeDescription.Generic.Builder.rawType(Runnable.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO);
+        assertThat(method.getTypeParameters().length, is(1));
+        assertThat(method.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(method.getTypeParameters()[0].getBounds()[0], is((Object) Runnable.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testTypeVariableOnMethodAnnotationTypeVariableBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, void.class)
+                .typeVariable(FOO).annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                .typeVariable(BAR, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 3).build()))
+                .annotateTypeVariable(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE * 2).build())
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO);
+        assertThat(method.getTypeParameters().length, is(2));
+        assertThat(method.getTypeParameters()[0].getBounds().length, is(1));
+        assertThat(method.getTypeParameters()[0].getBounds()[0], is((Object) Object.class));
+        assertThat(method.getTypeParameters()[1].getBounds().length, is(1));
+        assertThat(method.getTypeParameters()[1].getBounds()[0], is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[0]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[1]).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[1]).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 2));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[1]).ofTypeVariableBoundType(0)
+                .asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveTypeVariable(method.getTypeParameters()[1]).ofTypeVariableBoundType(0)
+                .asList().ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE * 3));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnMethodReturnType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build()))
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO);
+        assertThat(method.getReturnType(), is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveReturnType(method).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveReturnType(method).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnMethodParameterType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, void.class).withParameters(TypeDescription.Generic.Builder.rawType(Object.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build()))
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO, Object.class);
+        assertThat(method.getParameterTypes().length, is(1));
+        assertThat(method.getParameterTypes()[0], is((Object) Object.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveParameterType(method, 0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveParameterType(method, 0).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnMethodExceptionType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Method method = createPlain()
+                .merge(TypeManifestation.ABSTRACT)
+                .defineMethod(FOO, void.class).throwing(TypeDescription.Generic.Builder.rawType(Exception.class)
+                        .build(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build()))
+                .withoutCode()
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredMethod(FOO);
+        assertThat(method.getExceptionTypes().length, is(1));
+        assertThat(method.getExceptionTypes()[0], is((Object) Exception.class));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveExceptionType(method, 0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveExceptionType(method, 0).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnWildcardWithoutBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(Collection.class),
+                        TypeDescription.Generic.Builder.unboundWildcard(AnnotationDescription.Builder.ofType(typeAnnotationType)
+                                .define(VALUE, INTEGER_VALUE).build())).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).asList().ofType(typeAnnotationType)
+                .getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnWildcardUpperBoundBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(Collection.class),
+                        TypeDescription.Generic.Builder.rawType(Object.class)
+                                .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                                .asWildcardUpperBound()).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).ofWildcardUpperBoundType(0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).ofWildcardUpperBoundType(0).asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnWildcardLowerBoundBound() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(Collection.class),
+                        TypeDescription.Generic.Builder.rawType(Object.class)
+                                .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                                .asWildcardLowerBound()).build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).ofWildcardLowerBoundType(0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).ofWildcardLowerBoundType(0).asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnGenericComponentType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(Collection.class),
+                        TypeDescription.Generic.Builder.unboundWildcard())
+                        .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                        .asArray()
+                        .build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofComponentType().asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofComponentType().asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnNonGenericComponentType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.rawType(Object.class)
+                        .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                        .asArray()
+                        .build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofComponentType().asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofComponentType().asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnParameterizedType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(Collection.class),
+                        TypeDescription.Generic.Builder.unboundWildcard(AnnotationDescription.Builder.ofType(typeAnnotationType)
+                                .define(VALUE, INTEGER_VALUE).build()))
+                        .build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).ofTypeArgument(0).asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    public void testAnnotationTypeOnNestedType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.rawType(TypeDescription.ForLoadedType.of(Nested.Inner.class),
+                        TypeDescription.Generic.Builder.rawType(Nested.class).build())
+                        .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                        .build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(8)
+    @SuppressWarnings("unchecked")
+    @Ignore("The Java reflection API does not currently support nested generic types")
+    public void testAnnotationTypeOnNestedParameterizedType() throws Exception {
+        Class<? extends Annotation> typeAnnotationType = (Class<? extends Annotation>) Class.forName(TYPE_VARIABLE_NAME);
+        MethodDescription.InDefinedShape value = TypeDescription.ForLoadedType.of(typeAnnotationType).getDeclaredMethods().filter(named(VALUE)).getOnly();
+        Field field = createPlain()
+                .defineField(FOO, TypeDescription.Generic.Builder.parameterizedType(TypeDescription.ForLoadedType.of(GenericNested.Inner.class),
+                        TypeDescription.Generic.Builder.parameterizedType(GenericNested.class, Void.class).build(),
+                        Collections.<TypeDefinition>emptyList())
+                        .annotate(AnnotationDescription.Builder.ofType(typeAnnotationType).define(VALUE, INTEGER_VALUE).build())
+                        .build())
+                .make()
+                .load(typeAnnotationType.getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredField(FOO);
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList().size(), is(1));
+        assertThat(TypeDescription.Generic.AnnotationReader.DISPATCHER.resolveFieldType(field).asList()
+                .ofType(typeAnnotationType).getValue(value).resolve(Integer.class), is(INTEGER_VALUE));
+    }
+
+    @Test
+    public void testBridgeResolutionAmbiguous() throws Exception {
+        Class<?> type = createPlain()
+                .defineMethod(QUX, String.class, Visibility.PUBLIC)
+                .intercept(FixedValue.value(FOO))
+                .defineMethod(QUX, Object.class, Visibility.PUBLIC)
+                .intercept(FixedValue.value(BAR))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        for (Method method : type.getDeclaredMethods()) {
+            if (method.getReturnType() == String.class) {
+                assertThat(method.getName(), is(QUX));
+                assertThat(method.getParameterTypes().length, is(0));
+                assertThat(method.invoke(type.getDeclaredConstructor().newInstance()), is((Object) BAR));
+            } else if (method.getReturnType() == Object.class) {
+                assertThat(method.getName(), is(QUX));
+                assertThat(method.getParameterTypes().length, is(0));
+                assertThat(method.invoke(type.getDeclaredConstructor().newInstance()), is((Object) BAR));
+            } else {
+                throw new AssertionError();
+            }
+        }
+    }
+
+    @Test
+    public void testCanOverloadMethodByReturnType() throws Exception {
+        Class<?> type = createPlain()
+                .defineMethod(QUX, String.class, Visibility.PUBLIC)
+                .intercept(FixedValue.value(FOO))
+                .defineMethod(QUX, Object.class, Ownership.STATIC, Visibility.PUBLIC) // Is static to avoid method graph compiler.
+                .intercept(FixedValue.value(BAR))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        for (Method method : type.getDeclaredMethods()) {
+            if (method.getReturnType() == String.class) {
+                assertThat(method.getName(), is(QUX));
+                assertThat(method.getParameterTypes().length, is(0));
+                assertThat(method.invoke(type.getDeclaredConstructor().newInstance()), is((Object) FOO));
+            } else if (method.getReturnType() == Object.class) {
+                assertThat(method.getName(), is(QUX));
+                assertThat(method.getParameterTypes().length, is(0));
+                assertThat(method.invoke(null), is((Object) BAR));
+            } else {
+                throw new AssertionError();
+            }
+        }
+    }
+
+    @Test
+    public void testCanOverloadFieldByType() throws Exception {
+        Class<?> type = createPlain()
+                .defineField(QUX, String.class, Ownership.STATIC, Visibility.PUBLIC)
+                .value(FOO)
+                .defineField(QUX, long.class, Ownership.STATIC, Visibility.PUBLIC)
+                .value(42L)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        for (Field field : type.getDeclaredFields()) {
+            if (field.getType() == String.class) {
+                assertThat(field.getName(), is(QUX));
+                assertThat(field.get(null), is((Object) FOO));
+            } else if (field.getType() == long.class) {
+                assertThat(field.getName(), is(QUX));
+                assertThat(field.get(null), is((Object) 42L));
+            } else {
+                throw new AssertionError();
+            }
+        }
+    }
+
+    @Test
+    public void testInterfaceInterception() throws Exception {
+        assertThat(((SampleInterface) createPlain()
+                .implement(SampleInterface.class)
+                .intercept(FixedValue.value(FOO))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredConstructor()
+                .newInstance()).foo(), is(FOO));
+    }
+
+    @Test
+    public void testInterfaceInterceptionPreviousSuperseeded() throws Exception {
+        assertThat(((SampleInterface) createPlain()
+                .method(named(FOO))
+                .intercept(ExceptionMethod.throwing(AssertionError.class))
+                .implement(SampleInterface.class)
+                .intercept(FixedValue.value(FOO))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredConstructor()
+                .newInstance()).foo(), is(FOO));
+    }
+
+    @Test
+    public void testInterfaceInterceptionLaterSuperseeding() throws Exception {
+        assertThat(((SampleInterface) createPlain()
+                .implement(SampleInterface.class)
+                .intercept(ExceptionMethod.throwing(AssertionError.class))
+                .method(named(FOO))
+                .intercept(FixedValue.value(FOO))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredConstructor()
+                .newInstance()).foo(), is(FOO));
+    }
+
+    @Test
+    public void testInterfaceInterceptionSubClass() throws Exception {
+        assertThat(((SampleInterface) createPlain()
+                .implement(SampleInterface.SubInterface.class)
+                .intercept(FixedValue.value(FOO))
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded()
+                .getDeclaredConstructor()
+                .newInstance()).foo(), is(FOO));
+    }
+
+    @Test
+    public void testInterfaceMakesClassMethodPublic() throws Exception {
+        Class<?> type = createPlain()
+                .implement(Cloneable.class)
+                .method(named("clone"))
+                .intercept(FixedValue.self())
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        Cloneable cloneable = (Cloneable) type.getDeclaredConstructor().newInstance();
+        assertThat(cloneable.clone(), sameInstance((Object) cloneable));
+    }
+
+    @Test
+    public void testTopLevelType() throws Exception {
+        Class<?> type = createPlainWithoutValidation()
+                .topLevelType()
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(false));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsMemberType() throws Exception {
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$Qux", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "Qux";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return false;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return true;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer).asMemberType()
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), is((Object) outer));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(false));
+        assertThat(type.isMemberClass(), is(true));
+    }
+
+    @Test
+    public void testDeclaredAsAnonymousType() throws Exception {
+        // Older JVMs derive the anonymous class property from a naming convention.
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$1", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return true;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer).asAnonymousType()
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(true));
+        assertThat(type.isLocalClass(), is(false));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsLocalType() throws Exception {
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$Qux", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "Qux";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return false;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer)
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(true));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsAnonymousTypeInMethod() throws Exception {
+        // Older JVMs derive the anonymous class property from a naming convention.
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$1", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return true;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer.getConstructor()).asAnonymousType()
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), is((Object) outer.getConstructor()));
+        assertThat(type.isAnonymousClass(), is(true));
+        assertThat(type.isLocalClass(), is(false));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsLocalTypeInInitializer() throws Exception {
+        // Older JVMs derive the anonymous class property from a naming convention.
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$Qux", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "Qux";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return false;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(new MethodDescription.Latent.TypeInitializer(TypeDescription.ForLoadedType.of(outer)))
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(true));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsAnonymousTypeInInitializer() throws Exception {
+        // Older JVMs derive the anonymous class property from a naming convention.
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$1", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return true;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(new MethodDescription.Latent.TypeInitializer(TypeDescription.ForLoadedType.of(outer))).asAnonymousType()
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(true));
+        assertThat(type.isLocalClass(), is(false));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsLocalTypeInMethod() throws Exception {
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$Qux", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "Qux";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return false;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .defineMethod("foo", void.class, Visibility.PUBLIC)
+                .intercept(StubMethod.INSTANCE)
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer.getMethod(FOO))
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), is(outer.getMethod(FOO)));
+        assertThat(type.getEnclosingConstructor(), nullValue(Constructor.class));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(true));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    public void testDeclaredAsLocalTypeInConstructor() throws Exception {
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar$Qux", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT) {
+            @Override
+            public String getSimpleName() {
+                return "Qux";
+            }
+
+            @Override
+            public boolean isAnonymousType() {
+                return false;
+            }
+
+            @Override
+            public boolean isMemberType() {
+                return false;
+            }
+        };
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Bar")
+                .declaredTypes(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .name(sample.getName())
+                .innerTypeOf(outer.getConstructor())
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(type.getDeclaringClass(), nullValue(Class.class));
+        assertThat(type.getEnclosingClass(), is((Object) outer));
+        assertThat(type.getEnclosingMethod(), nullValue(Method.class));
+        assertThat(type.getEnclosingConstructor(), is((Object) outer.getConstructor()));
+        assertThat(type.isAnonymousClass(), is(false));
+        assertThat(type.isLocalClass(), is(true));
+        assertThat(type.isMemberClass(), is(false));
+    }
+
+    @Test
+    @JavaVersionRule.Enforce(11)
+    public void testNestMates() throws Exception {
+        TypeDescription sample = new TypeDescription.Latent("foo.Bar", Opcodes.ACC_PUBLIC, TypeDescription.Generic.OBJECT);
+        Class<?> outer = new ByteBuddy()
+                .subclass(Object.class)
+                .name("foo.Qux")
+                .nestMembers(sample)
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.CHILD_FIRST.opened())
+                .getLoaded();
+        Class<?> type = createPlainWithoutValidation()
+                .visit(new AsmVisitorWrapper.AbstractBase() {
+
+                    public ClassVisitor wrap(TypeDescription instrumentedType,
+                                             ClassVisitor classVisitor,
+                                             Implementation.Context implementationContext,
+                                             TypePool typePool,
+                                             FieldList<FieldDescription.InDefinedShape> fields,
+                                             MethodList<?> methods,
+                                             int writerFlags,
+                                             int readerFlags) {
+                        return new ClassVisitor(OpenedClassReader.ASM_API, classVisitor) {
+                            @Override
+                            public void visit(int version, int access, String name, String signature, String superName, String[] interfaces) {
+                                super.visit(ClassFileVersion.JAVA_V11.getMinorMajorVersion(), access, name, signature, superName, interfaces);
+                            }
+                        };
+                    }
+                })
+                .name(sample.getName())
+                .nestHost(outer)
+                .make()
+                .load((InjectionClassLoader) outer.getClassLoader(), InjectionClassLoader.Strategy.INSTANCE)
+                .getLoaded();
+        assertThat(Class.class.getMethod("getNestHost").invoke(outer), is((Object) outer));
+        assertThat(Class.class.getMethod("getNestMembers").invoke(outer), is((Object) new Class<?>[]{outer, type}));
+        assertThat(Class.class.getMethod("getNestHost").invoke(type), is((Object) outer));
+        assertThat(Class.class.getMethod("getNestMembers").invoke(type), is((Object) new Class<?>[]{outer, type}));
+    }
+
+    @Test
+    public void testAuxiliaryTypes() throws Exception {
+        Map<TypeDescription, byte[]> auxiliaryTypes = createPlain()
+                .require(TypeDescription.VOID, new byte[]{1, 2, 3})
+                .make()
+                .getAuxiliaryTypes();
+        assertThat(auxiliaryTypes.size(), is(1));
+        assertThat(auxiliaryTypes.get(TypeDescription.VOID).length, is(3));
     }
 
     @Retention(RetentionPolicy.RUNTIME)
@@ -392,15 +1551,13 @@ public abstract class AbstractDynamicTypeBuilderTest {
 
     private static class PreparedField implements Implementation {
 
-        @Override
         public InstrumentedType prepare(InstrumentedType instrumentedType) {
             return instrumentedType.withField(new FieldDescription.Token(FOO,
                     MODIFIERS,
-                    TypeDescription.OBJECT,
-                    Collections.singletonList(AnnotationDescription.Builder.forType(SampleAnnotation.class).define(FOO, BAR).make())));
+                    TypeDescription.Generic.OBJECT,
+                    Collections.singletonList(AnnotationDescription.Builder.ofType(SampleAnnotation.class).define(FOO, BAR).build())));
         }
 
-        @Override
         public ByteCodeAppender appender(Target implementationTarget) {
             return new ByteCodeAppender.Simple(NullConstant.INSTANCE, MethodReturn.REFERENCE);
         }
@@ -408,20 +1565,19 @@ public abstract class AbstractDynamicTypeBuilderTest {
 
     private static class PreparedMethod implements Implementation {
 
-        @Override
         public InstrumentedType prepare(InstrumentedType instrumentedType) {
             return instrumentedType.withMethod(new MethodDescription.Token(FOO,
                     MODIFIERS,
-                    Collections.<GenericTypeDescription>emptyList(),
-                    TypeDescription.OBJECT,
-                    Collections.singletonList(new ParameterDescription.Token(TypeDescription.OBJECT,
-                            Collections.singletonList(AnnotationDescription.Builder.forType(SampleAnnotation.class).define(FOO, QUX).make()))),
-                    Collections.singletonList(new TypeDescription.ForLoadedType(Exception.class)),
-                    Collections.singletonList(AnnotationDescription.Builder.forType(SampleAnnotation.class).define(FOO, BAR).make()),
-                    MethodDescription.NO_DEFAULT_VALUE));
+                    Collections.<TypeVariableToken>emptyList(),
+                    TypeDescription.Generic.OBJECT,
+                    Collections.singletonList(new ParameterDescription.Token(TypeDescription.Generic.OBJECT,
+                            Collections.singletonList(AnnotationDescription.Builder.ofType(SampleAnnotation.class).define(FOO, QUX).build()))),
+                    Collections.singletonList(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(Exception.class)),
+                    Collections.singletonList(AnnotationDescription.Builder.ofType(SampleAnnotation.class).define(FOO, BAR).build()),
+                    AnnotationValue.UNDEFINED,
+                    TypeDescription.Generic.UNDEFINED));
         }
 
-        @Override
         public ByteCodeAppender appender(Target implementationTarget) {
             return new ByteCodeAppender.Simple(NullConstant.INSTANCE, MethodReturn.REFERENCE);
         }
@@ -431,6 +1587,44 @@ public abstract class AbstractDynamicTypeBuilderTest {
 
         public static String intercept(@SuperCall Callable<String> zuper) throws Exception {
             return zuper.call() + BAR;
+        }
+    }
+
+    @SuppressWarnings("unused")
+    private static class Holder<foo> {
+
+        List<?> list;
+
+        List<foo> fooList;
+    }
+
+    @SuppressWarnings("unused")
+    public static class Nested {
+
+        public class Inner {
+            /* empty */
+        }
+    }
+
+    @SuppressWarnings("unused")
+    public static class GenericNested<T> {
+
+        public class Inner {
+            /* empty */
+        }
+    }
+
+    public interface Cloneable {
+
+        Object clone();
+    }
+
+    public interface SampleInterface {
+
+        String foo();
+
+        interface SubInterface extends SampleInterface {
+
         }
     }
 }

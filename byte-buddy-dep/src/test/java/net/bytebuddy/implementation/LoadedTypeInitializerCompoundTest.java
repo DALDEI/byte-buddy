@@ -3,18 +3,14 @@ package net.bytebuddy.implementation;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
 
-import java.util.Collections;
-import java.util.List;
-
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 public class LoadedTypeInitializerCompoundTest {
@@ -64,15 +60,5 @@ public class LoadedTypeInitializerCompoundTest {
         verify(second).onLoad(TYPE);
         verifyNoMoreInteractions(first);
         verifyNoMoreInteractions(second);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(LoadedTypeInitializer.Compound.class).create(new ObjectPropertyAssertion.Creator<List<?>>() {
-            @Override
-            public List<?> create() {
-                return Collections.singletonList(mock(LoadedTypeInitializer.class));
-            }
-        }).apply();
     }
 }

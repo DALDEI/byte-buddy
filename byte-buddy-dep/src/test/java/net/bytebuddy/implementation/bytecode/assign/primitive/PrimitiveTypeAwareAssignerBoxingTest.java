@@ -15,8 +15,8 @@ import org.mockito.Mock;
 import java.util.Arrays;
 import java.util.Collection;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -32,7 +32,7 @@ public class PrimitiveTypeAwareAssignerBoxingTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription sourceTypeDescription, targetTypeDescription;
+    private TypeDescription.Generic sourceTypeDescription, targetTypeDescription;
 
     @Mock
     private Assigner chainedAssigner;
@@ -71,7 +71,7 @@ public class PrimitiveTypeAwareAssignerBoxingTest {
         when(targetTypeDescription.represents(targetType)).thenReturn(true);
         when(targetTypeDescription.isPrimitive()).thenReturn(false);
         when(chainedStackManipulation.isValid()).thenReturn(true);
-        when(chainedAssigner.assign(any(TypeDescription.class), any(TypeDescription.class), any(Assigner.Typing.class)))
+        when(chainedAssigner.assign(any(TypeDescription.Generic.class), any(TypeDescription.Generic.class), any(Assigner.Typing.class)))
                 .thenReturn(chainedStackManipulation);
         primitiveAssigner = new PrimitiveTypeAwareAssigner(chainedAssigner);
     }
@@ -88,7 +88,7 @@ public class PrimitiveTypeAwareAssignerBoxingTest {
         verifyNoMoreInteractions(sourceTypeDescription);
         verify(targetTypeDescription, atLeast(1)).isPrimitive();
         verifyNoMoreInteractions(targetTypeDescription);
-        verify(chainedAssigner).assign(new TypeDescription.ForLoadedType(targetType), targetTypeDescription, Assigner.Typing.STATIC);
+        verify(chainedAssigner).assign(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(targetType), targetTypeDescription, Assigner.Typing.STATIC);
         verifyNoMoreInteractions(chainedAssigner);
     }
 }

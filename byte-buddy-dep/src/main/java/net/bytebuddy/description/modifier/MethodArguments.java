@@ -32,26 +32,22 @@ public enum MethodArguments implements ModifierContributor.ForMethod {
     }
 
     /**
-     * Creates a method argument state from a {@code boolean} value indicating if a method should support varargs.
-     *
-     * @param varargs {@code true} if the method is supposed to support varargs.
-     * @return The corresponding method argument state.
+     * {@inheritDoc}
      */
-    public static MethodArguments isVarArgs(boolean varargs) {
-        return varargs ? VARARGS : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_VARARGS;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -63,10 +59,5 @@ public enum MethodArguments implements ModifierContributor.ForMethod {
      */
     public boolean isVarArgs() {
         return this == VARARGS;
-    }
-
-    @Override
-    public String toString() {
-        return "MethodArguments." + name();
     }
 }

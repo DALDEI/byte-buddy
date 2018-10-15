@@ -33,7 +33,7 @@ public class FieldManifestationTest extends AbstractModifierContributorTest {
         return Arrays.asList(new Object[][]{
                 {FieldManifestation.PLAIN, 0, true, false, false, true},
                 {FieldManifestation.FINAL, Opcodes.ACC_FINAL, false, true, false, false},
-                {FieldManifestation.VOLATILE, Opcodes.ACC_VOLATILE, false, false, true, false},
+                {FieldManifestation.VOLATILE, Opcodes.ACC_VOLATILE, false, false, true, false}
         });
     }
 

@@ -4,6 +4,7 @@ import javassist.util.proxy.MethodFilter;
 import javassist.util.proxy.ProxyFactory;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.sf.cglib.proxy.Enhancer;
 import net.sf.cglib.proxy.NoOp;
 import org.openjdk.jmh.annotations.*;
@@ -58,6 +59,16 @@ public class TrivialClassCreationBenchmark {
     }
 
     /**
+     * Returns a non-instrumented class as a baseline.
+     *
+     * @return A reference to {@link Object}.
+     */
+    @Benchmark
+    public Class<?> baseline() {
+        return Object.class;
+    }
+
+    /**
      * Performs a benchmark for a trivial class creation using Byte Buddy.
      *
      * @return The created instance, in order to avoid JIT removal.
@@ -65,7 +76,8 @@ public class TrivialClassCreationBenchmark {
     @Benchmark
     public Class<?> benchmarkByteBuddy() {
         return new ByteBuddy()
-                .withIgnoredMethods(any())
+                .with(TypeValidation.DISABLED)
+                .ignore(any())
                 .subclass(baseClass)
                 .make()
                 .load(newClassLoader(), ClassLoadingStrategy.Default.INJECTION)
@@ -94,14 +106,13 @@ public class TrivialClassCreationBenchmark {
      */
     @Benchmark
     public Class<?> benchmarkJavassist() {
-        ProxyFactory proxyFactory = new ProxyFactory();
-        proxyFactory.setUseCache(false);
-        ProxyFactory.classLoaderProvider = new ProxyFactory.ClassLoaderProvider() {
-            @Override
-            public ClassLoader get(ProxyFactory proxyFactory) {
+        ProxyFactory proxyFactory = new ProxyFactory() {
+            protected ClassLoader getClassLoader() {
                 return newClassLoader();
             }
         };
+        proxyFactory.setUseCache(false);
+        proxyFactory.setUseWriteReplace(false);
         proxyFactory.setSuperclass(baseClass);
         proxyFactory.setFilter(new MethodFilter() {
             public boolean isHandled(Method method) {
@@ -117,6 +128,7 @@ public class TrivialClassCreationBenchmark {
      * @return The created instance, in order to avoid JIT removal.
      */
     @Benchmark
+    @SuppressWarnings("deprecation")
     public Class<?> benchmarkJdkProxy() {
         return Proxy.getProxyClass(newClassLoader(), new Class<?>[urlLength]);
     }

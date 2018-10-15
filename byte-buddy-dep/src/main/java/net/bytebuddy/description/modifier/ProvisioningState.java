@@ -32,26 +32,22 @@ public enum ProvisioningState implements ModifierContributor.ForParameter {
     }
 
     /**
-     * Creates a new provisioning state from a boolean value which indicates if the returned state should represent a final modifier.
-     *
-     * @param mandated {@code true} if the returned state should indicate a mandated parameter.
-     * @return A corresponding provisioning state.
+     * {@inheritDoc}
      */
-    public static ProvisioningState is(boolean mandated) {
-        return mandated ? MANDATED : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_MANDATED;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -63,10 +59,5 @@ public enum ProvisioningState implements ModifierContributor.ForParameter {
      */
     public boolean isMandated() {
         return this == MANDATED;
-    }
-
-    @Override
-    public String toString() {
-        return "ProvisioningState." + name();
     }
 }

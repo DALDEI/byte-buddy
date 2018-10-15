@@ -1,10 +1,15 @@
 package net.bytebuddy.description.method;
 
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.description.TypeVariableSource;
+import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.description.annotation.AnnotationList;
+import net.bytebuddy.description.annotation.AnnotationValue;
+import net.bytebuddy.description.enumeration.EnumerationDescription;
+import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.description.type.TypeList;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeList;
 import net.bytebuddy.test.packaging.VisibilityMethodTestHelper;
 import net.bytebuddy.test.utility.JavaVersionRule;
 import org.junit.Before;
@@ -19,7 +24,12 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
+import static net.bytebuddy.matcher.ElementMatchers.named;
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.mock;
@@ -30,22 +40,22 @@ public abstract class AbstractMethodDescriptionTest {
     @Rule
     public MethodRule javaVersionRule = new JavaVersionRule();
 
-    private Method firstMethod, secondMethod, thirdMethod, genericMethod, genericMethodWithRawException;
+    protected Method firstMethod, secondMethod, thirdMethod, genericMethod, genericMethodWithRawException, genericMethodWithTypeVariable;
 
-    private Constructor<?> firstConstructor, secondConstructor;
+    protected Constructor<?> firstConstructor, secondConstructor;
 
     private static int hashCode(Method method) {
-        int hashCode = new TypeDescription.ForLoadedType(method.getDeclaringClass()).hashCode();
+        int hashCode = 17 + TypeDescription.ForLoadedType.of(method.getDeclaringClass()).hashCode();
         hashCode = 31 * hashCode + method.getName().hashCode();
-        hashCode = 31 * hashCode + new TypeDescription.ForLoadedType(method.getReturnType()).hashCode();
-        return 31 * hashCode + new TypeList.ForLoadedType(method.getParameterTypes()).hashCode();
+        hashCode = 31 * hashCode + TypeDescription.ForLoadedType.of(method.getReturnType()).hashCode();
+        return 31 * hashCode + new TypeList.ForLoadedTypes(method.getParameterTypes()).hashCode();
     }
 
     private static int hashCode(Constructor<?> constructor) {
-        int hashCode = new TypeDescription.ForLoadedType(constructor.getDeclaringClass()).hashCode();
+        int hashCode = 17 + TypeDescription.ForLoadedType.of(constructor.getDeclaringClass()).hashCode();
         hashCode = 31 * hashCode + MethodDescription.CONSTRUCTOR_INTERNAL_NAME.hashCode();
-        hashCode = 31 * hashCode + new TypeDescription.ForLoadedType(void.class).hashCode();
-        return 31 * hashCode + new TypeList.ForLoadedType(constructor.getParameterTypes()).hashCode();
+        hashCode = 31 * hashCode + TypeDescription.VOID.hashCode();
+        return 31 * hashCode + new TypeList.ForLoadedTypes(constructor.getParameterTypes()).hashCode();
     }
 
     protected abstract MethodDescription.InDefinedShape describe(Method method);
@@ -61,41 +71,42 @@ public abstract class AbstractMethodDescriptionTest {
         secondConstructor = Sample.class.getDeclaredConstructor(int[].class, long.class);
         genericMethod = GenericMethod.class.getDeclaredMethod("foo", Exception.class);
         genericMethodWithRawException = GenericMethod.class.getDeclaredMethod("bar", Exception.class);
+        genericMethodWithTypeVariable = GenericMethod.class.getDeclaredMethod("qux");
     }
 
     @Test
     public void testPrecondition() throws Exception {
-        assertThat(describe(firstMethod), not(equalTo(describe(secondMethod))));
-        assertThat(describe(firstMethod), not(equalTo(describe(thirdMethod))));
-        assertThat(describe(firstMethod), equalTo(describe(firstMethod)));
-        assertThat(describe(secondMethod), equalTo(describe(secondMethod)));
-        assertThat(describe(thirdMethod), equalTo(describe(thirdMethod)));
+        assertThat(describe(firstMethod), not(describe(secondMethod)));
+        assertThat(describe(firstMethod), not(describe(thirdMethod)));
+        assertThat(describe(firstMethod), is(describe(firstMethod)));
+        assertThat(describe(secondMethod), is(describe(secondMethod)));
+        assertThat(describe(thirdMethod), is(describe(thirdMethod)));
         assertThat(describe(firstMethod), is((MethodDescription) new MethodDescription.ForLoadedMethod(firstMethod)));
         assertThat(describe(secondMethod), is((MethodDescription) new MethodDescription.ForLoadedMethod(secondMethod)));
         assertThat(describe(thirdMethod), is((MethodDescription) new MethodDescription.ForLoadedMethod(thirdMethod)));
-        assertThat(describe(firstConstructor), not(equalTo(describe(secondConstructor))));
-        assertThat(describe(firstConstructor), equalTo(describe(firstConstructor)));
-        assertThat(describe(secondConstructor), equalTo(describe(secondConstructor)));
+        assertThat(describe(firstConstructor), not(describe(secondConstructor)));
+        assertThat(describe(firstConstructor), is(describe(firstConstructor)));
+        assertThat(describe(secondConstructor), is(describe(secondConstructor)));
         assertThat(describe(firstConstructor), is((MethodDescription) new MethodDescription.ForLoadedConstructor(firstConstructor)));
         assertThat(describe(secondConstructor), is((MethodDescription) new MethodDescription.ForLoadedConstructor(secondConstructor)));
     }
 
     @Test
     public void testReturnType() throws Exception {
-        assertThat(describe(firstMethod).getReturnType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(firstMethod.getReturnType())));
-        assertThat(describe(secondMethod).getReturnType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(secondMethod.getReturnType())));
-        assertThat(describe(thirdMethod).getReturnType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(thirdMethod.getReturnType())));
-        assertThat(describe(firstConstructor).getReturnType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(void.class)));
-        assertThat(describe(secondConstructor).getReturnType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(void.class)));
+        assertThat(describe(firstMethod).getReturnType(), is((TypeDefinition) TypeDescription.ForLoadedType.of(firstMethod.getReturnType())));
+        assertThat(describe(secondMethod).getReturnType(), is((TypeDefinition) TypeDescription.ForLoadedType.of(secondMethod.getReturnType())));
+        assertThat(describe(thirdMethod).getReturnType(), is((TypeDefinition) TypeDescription.ForLoadedType.of(thirdMethod.getReturnType())));
+        assertThat(describe(firstConstructor).getReturnType(), is(TypeDescription.Generic.VOID));
+        assertThat(describe(secondConstructor).getReturnType(), is(TypeDescription.Generic.VOID));
     }
 
     @Test
     public void testParameterTypes() throws Exception {
-        assertThat(describe(firstMethod).getParameters().asTypeList(), is((GenericTypeList) new GenericTypeList.ForLoadedType(firstMethod.getParameterTypes())));
-        assertThat(describe(secondMethod).getParameters().asTypeList(), is((GenericTypeList) new GenericTypeList.ForLoadedType(secondMethod.getParameterTypes())));
-        assertThat(describe(thirdMethod).getParameters().asTypeList(), is((GenericTypeList) new GenericTypeList.ForLoadedType(thirdMethod.getParameterTypes())));
-        assertThat(describe(firstConstructor).getParameters().asTypeList(), is((GenericTypeList) new GenericTypeList.ForLoadedType(firstConstructor.getParameterTypes())));
-        assertThat(describe(secondConstructor).getParameters().asTypeList(), is((GenericTypeList) new GenericTypeList.ForLoadedType(secondConstructor.getParameterTypes())));
+        assertThat(describe(firstMethod).getParameters().asTypeList(), is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(firstMethod.getParameterTypes())));
+        assertThat(describe(secondMethod).getParameters().asTypeList(), is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(secondMethod.getParameterTypes())));
+        assertThat(describe(thirdMethod).getParameters().asTypeList(), is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(thirdMethod.getParameterTypes())));
+        assertThat(describe(firstConstructor).getParameters().asTypeList(), is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(firstConstructor.getParameterTypes())));
+        assertThat(describe(secondConstructor).getParameters().asTypeList(), is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(secondConstructor.getParameterTypes())));
     }
 
     @Test
@@ -132,11 +143,11 @@ public abstract class AbstractMethodDescriptionTest {
 
     @Test
     public void testMethodDeclaringType() throws Exception {
-        assertThat(describe(firstMethod).getDeclaringType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(firstMethod.getDeclaringClass())));
-        assertThat(describe(secondMethod).getDeclaringType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(secondMethod.getDeclaringClass())));
-        assertThat(describe(thirdMethod).getDeclaringType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(thirdMethod.getDeclaringClass())));
-        assertThat(describe(firstConstructor).getDeclaringType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(firstConstructor.getDeclaringClass())));
-        assertThat(describe(secondConstructor).getDeclaringType(), is((GenericTypeDescription) new TypeDescription.ForLoadedType(secondConstructor.getDeclaringClass())));
+        assertThat(describe(firstMethod).getDeclaringType(), is((TypeDescription) TypeDescription.ForLoadedType.of(firstMethod.getDeclaringClass())));
+        assertThat(describe(secondMethod).getDeclaringType(), is((TypeDescription) TypeDescription.ForLoadedType.of(secondMethod.getDeclaringClass())));
+        assertThat(describe(thirdMethod).getDeclaringType(), is((TypeDescription) TypeDescription.ForLoadedType.of(thirdMethod.getDeclaringClass())));
+        assertThat(describe(firstConstructor).getDeclaringType(), is((TypeDescription) TypeDescription.ForLoadedType.of(firstConstructor.getDeclaringClass())));
+        assertThat(describe(secondConstructor).getDeclaringType(), is((TypeDescription) TypeDescription.ForLoadedType.of(secondConstructor.getDeclaringClass())));
     }
 
     @Test
@@ -144,121 +155,121 @@ public abstract class AbstractMethodDescriptionTest {
         assertThat(describe(firstMethod).hashCode(), is(hashCode(firstMethod)));
         assertThat(describe(secondMethod).hashCode(), is(hashCode(secondMethod)));
         assertThat(describe(thirdMethod).hashCode(), is(hashCode(thirdMethod)));
-        assertThat(describe(firstMethod).hashCode(), not(is(hashCode(secondMethod))));
-        assertThat(describe(firstMethod).hashCode(), not(is(hashCode(thirdMethod))));
-        assertThat(describe(firstMethod).hashCode(), not(is(hashCode(firstConstructor))));
-        assertThat(describe(firstMethod).hashCode(), not(is(hashCode(secondConstructor))));
+        assertThat(describe(firstMethod).hashCode(), not(hashCode(secondMethod)));
+        assertThat(describe(firstMethod).hashCode(), not(hashCode(thirdMethod)));
+        assertThat(describe(firstMethod).hashCode(), not(hashCode(firstConstructor)));
+        assertThat(describe(firstMethod).hashCode(), not(hashCode(secondConstructor)));
         assertThat(describe(firstConstructor).hashCode(), is(hashCode(firstConstructor)));
         assertThat(describe(secondConstructor).hashCode(), is(hashCode(secondConstructor)));
-        assertThat(describe(firstConstructor).hashCode(), not(is(hashCode(firstMethod))));
-        assertThat(describe(firstConstructor).hashCode(), not(is(hashCode(secondMethod))));
-        assertThat(describe(firstConstructor).hashCode(), not(is(hashCode(thirdMethod))));
-        assertThat(describe(firstConstructor).hashCode(), not(is(hashCode(secondConstructor))));
+        assertThat(describe(firstConstructor).hashCode(), not(hashCode(firstMethod)));
+        assertThat(describe(firstConstructor).hashCode(), not(hashCode(secondMethod)));
+        assertThat(describe(firstConstructor).hashCode(), not(hashCode(thirdMethod)));
+        assertThat(describe(firstConstructor).hashCode(), not(hashCode(secondConstructor)));
     }
 
     @Test
     public void testEqualsMethod() throws Exception {
         MethodDescription identical = describe(firstMethod);
-        assertThat(identical, equalTo(identical));
-        assertThat(describe(firstMethod), equalTo(describe(firstMethod)));
-        assertThat(describe(firstMethod), not(equalTo(describe(secondMethod))));
-        assertThat(describe(firstMethod), not(equalTo(describe(thirdMethod))));
-        assertThat(describe(firstMethod), not(equalTo(describe(firstConstructor))));
-        assertThat(describe(firstMethod), not(equalTo(describe(secondConstructor))));
-        assertThat(describe(firstMethod), equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(firstMethod)));
-        assertThat(describe(firstMethod), not(equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(secondMethod))));
-        assertThat(describe(firstMethod), not(equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(thirdMethod))));
-        assertThat(describe(firstMethod), not(equalTo((MethodDescription) new MethodDescription.ForLoadedConstructor(firstConstructor))));
-        assertThat(describe(firstMethod), not(equalTo((MethodDescription) new MethodDescription.ForLoadedConstructor(secondConstructor))));
+        assertThat(identical, is(identical));
+        assertThat(describe(firstMethod), is(describe(firstMethod)));
+        assertThat(describe(firstMethod), not(describe(secondMethod)));
+        assertThat(describe(firstMethod), not(describe(thirdMethod)));
+        assertThat(describe(firstMethod), not(describe(firstConstructor)));
+        assertThat(describe(firstMethod), not(describe(secondConstructor)));
+        assertThat(describe(firstMethod), is((MethodDescription) new MethodDescription.ForLoadedMethod(firstMethod)));
+        assertThat(describe(firstMethod), not((MethodDescription) new MethodDescription.ForLoadedMethod(secondMethod)));
+        assertThat(describe(firstMethod), not((MethodDescription) new MethodDescription.ForLoadedMethod(thirdMethod)));
+        assertThat(describe(firstMethod), not((MethodDescription) new MethodDescription.ForLoadedConstructor(firstConstructor)));
+        assertThat(describe(firstMethod), not((MethodDescription) new MethodDescription.ForLoadedConstructor(secondConstructor)));
         MethodDescription.InDefinedShape equalMethod = mock(MethodDescription.InDefinedShape.class);
         when(equalMethod.getInternalName()).thenReturn(firstMethod.getName());
-        when(equalMethod.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getDeclaringClass()));
-        when(equalMethod.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getReturnType()));
+        when(equalMethod.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstMethod.getDeclaringClass()));
+        when(equalMethod.getReturnType()).thenReturn(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(firstMethod.getReturnType()));
         when(equalMethod.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethod,
-                new GenericTypeList.ForLoadedType(firstMethod.getParameterTypes())));
-        assertThat(describe(firstMethod), equalTo(equalMethod));
+                new TypeList.Generic.ForLoadedTypes(firstMethod.getParameterTypes())));
+        assertThat(describe(firstMethod), is(equalMethod));
         MethodDescription.InDefinedShape equalMethodButName = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButName.getInternalName()).thenReturn(secondMethod.getName());
-        when(equalMethodButName.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getDeclaringClass()));
-        when(equalMethodButName.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getReturnType()));
+        when(equalMethodButName.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstMethod.getDeclaringClass()));
+        when(equalMethodButName.getReturnType()).thenReturn(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(firstMethod.getReturnType()));
         when(equalMethodButName.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButName,
-                new GenericTypeList.ForLoadedType(firstMethod.getParameterTypes())));
-        assertThat(describe(firstMethod), not(equalTo(equalMethodButName)));
+                new TypeList.Generic.ForLoadedTypes(firstMethod.getParameterTypes())));
+        assertThat(describe(firstMethod), not(equalMethodButName));
         MethodDescription.InDefinedShape equalMethodButReturnType = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButReturnType.getInternalName()).thenReturn(firstMethod.getName());
-        when(equalMethodButReturnType.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(Object.class));
-        when(equalMethodButReturnType.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getReturnType()));
+        when(equalMethodButReturnType.getDeclaringType()).thenReturn(TypeDescription.OBJECT);
+        when(equalMethodButReturnType.getReturnType()).thenReturn(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(firstMethod.getReturnType()));
         when(equalMethodButReturnType.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButReturnType,
-                new GenericTypeList.ForLoadedType(firstMethod.getParameterTypes())));
-        assertThat(describe(firstMethod), not(equalTo(equalMethodButReturnType)));
+                new TypeList.Generic.ForLoadedTypes(firstMethod.getParameterTypes())));
+        assertThat(describe(firstMethod), not(equalMethodButReturnType));
         MethodDescription.InDefinedShape equalMethodButDeclaringType = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButDeclaringType.getInternalName()).thenReturn(firstMethod.getName());
-        when(equalMethodButDeclaringType.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getDeclaringClass()));
-        when(equalMethodButDeclaringType.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(secondMethod.getReturnType()));
+        when(equalMethodButDeclaringType.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstMethod.getDeclaringClass()));
+        when(equalMethodButDeclaringType.getReturnType()).thenReturn(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(secondMethod.getReturnType()));
         when(equalMethodButDeclaringType.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButDeclaringType,
-                new GenericTypeList.ForLoadedType(firstMethod.getParameterTypes())));
-        assertThat(describe(firstMethod), not(equalTo(equalMethodButDeclaringType)));
+                new TypeList.Generic.ForLoadedTypes(firstMethod.getParameterTypes())));
+        assertThat(describe(firstMethod), not(equalMethodButDeclaringType));
         MethodDescription.InDefinedShape equalMethodButParameterTypes = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButParameterTypes.getInternalName()).thenReturn(firstMethod.getName());
-        when(equalMethodButParameterTypes.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getDeclaringClass()));
-        when(equalMethodButParameterTypes.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(firstMethod.getReturnType()));
+        when(equalMethodButParameterTypes.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstMethod.getDeclaringClass()));
+        when(equalMethodButParameterTypes.getReturnType()).thenReturn(TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(firstMethod.getReturnType()));
         when(equalMethodButParameterTypes.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButParameterTypes,
-                new GenericTypeList.ForLoadedType(secondMethod.getParameterTypes())));
-        assertThat(describe(firstMethod), not(equalTo(equalMethodButParameterTypes)));
-        assertThat(describe(firstMethod), not(equalTo(new Object())));
+                new TypeList.Generic.ForLoadedTypes(secondMethod.getParameterTypes())));
+        assertThat(describe(firstMethod), not(equalMethodButParameterTypes));
+        assertThat(describe(firstMethod), not(new Object()));
         assertThat(describe(firstMethod), not(equalTo(null)));
     }
 
     @Test
     public void testEqualsConstructor() throws Exception {
         MethodDescription identical = describe(firstConstructor);
-        assertThat(identical, equalTo(identical));
-        assertThat(describe(firstConstructor), equalTo(describe(firstConstructor)));
-        assertThat(describe(firstConstructor), not(equalTo(describe(secondConstructor))));
-        assertThat(describe(firstConstructor), not(equalTo(describe(firstMethod))));
-        assertThat(describe(firstConstructor), not(equalTo(describe(secondMethod))));
-        assertThat(describe(firstConstructor), not(equalTo(describe(thirdMethod))));
-        assertThat(describe(firstConstructor), equalTo((MethodDescription) new MethodDescription.ForLoadedConstructor(firstConstructor)));
-        assertThat(describe(firstConstructor), not(equalTo((MethodDescription) new MethodDescription.ForLoadedConstructor(secondConstructor))));
-        assertThat(describe(firstConstructor), not(equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(firstMethod))));
-        assertThat(describe(firstConstructor), not(equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(secondMethod))));
-        assertThat(describe(firstConstructor), not(equalTo((MethodDescription) new MethodDescription.ForLoadedMethod(thirdMethod))));
+        assertThat(identical, is(identical));
+        assertThat(describe(firstConstructor), is(describe(firstConstructor)));
+        assertThat(describe(firstConstructor), not(describe(secondConstructor)));
+        assertThat(describe(firstConstructor), not(describe(firstMethod)));
+        assertThat(describe(firstConstructor), not(describe(secondMethod)));
+        assertThat(describe(firstConstructor), not(describe(thirdMethod)));
+        assertThat(describe(firstConstructor), is((MethodDescription) new MethodDescription.ForLoadedConstructor(firstConstructor)));
+        assertThat(describe(firstConstructor), not((MethodDescription) new MethodDescription.ForLoadedConstructor(secondConstructor)));
+        assertThat(describe(firstConstructor), not((MethodDescription) new MethodDescription.ForLoadedMethod(firstMethod)));
+        assertThat(describe(firstConstructor), not((MethodDescription) new MethodDescription.ForLoadedMethod(secondMethod)));
+        assertThat(describe(firstConstructor), not((MethodDescription) new MethodDescription.ForLoadedMethod(thirdMethod)));
         MethodDescription.InDefinedShape equalMethod = mock(MethodDescription.InDefinedShape.class);
         when(equalMethod.getInternalName()).thenReturn(MethodDescription.CONSTRUCTOR_INTERNAL_NAME);
-        when(equalMethod.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstConstructor.getDeclaringClass()));
-        when(equalMethod.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(void.class));
+        when(equalMethod.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstConstructor.getDeclaringClass()));
+        when(equalMethod.getReturnType()).thenReturn(TypeDescription.Generic.VOID);
         when(equalMethod.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethod,
-                new TypeList.ForLoadedType(firstConstructor.getParameterTypes())));
-        assertThat(describe(firstConstructor), equalTo(equalMethod));
+                new TypeList.ForLoadedTypes(firstConstructor.getParameterTypes())));
+        assertThat(describe(firstConstructor), is(equalMethod));
         MethodDescription.InDefinedShape equalMethodButName = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButName.getInternalName()).thenReturn(firstMethod.getName());
-        when(equalMethodButName.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstConstructor.getDeclaringClass()));
-        when(equalMethodButName.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(void.class));
+        when(equalMethodButName.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstConstructor.getDeclaringClass()));
+        when(equalMethodButName.getReturnType()).thenReturn(TypeDescription.Generic.VOID);
         when(equalMethodButName.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButName,
-                new TypeList.ForLoadedType(firstConstructor.getParameterTypes())));
-        assertThat(describe(firstConstructor), not(equalTo(equalMethodButName)));
+                new TypeList.ForLoadedTypes(firstConstructor.getParameterTypes())));
+        assertThat(describe(firstConstructor), not(equalMethodButName));
         MethodDescription.InDefinedShape equalMethodButReturnType = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButReturnType.getInternalName()).thenReturn(MethodDescription.CONSTRUCTOR_INTERNAL_NAME);
-        when(equalMethodButReturnType.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(Object.class));
-        when(equalMethodButReturnType.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(void.class));
+        when(equalMethodButReturnType.getDeclaringType()).thenReturn(TypeDescription.OBJECT);
+        when(equalMethodButReturnType.getReturnType()).thenReturn(TypeDescription.Generic.OBJECT);
         when(equalMethodButReturnType.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButReturnType,
-                new TypeList.ForLoadedType(firstConstructor.getParameterTypes())));
-        assertThat(describe(firstConstructor), not(equalTo(equalMethodButReturnType)));
+                new TypeList.ForLoadedTypes(firstConstructor.getParameterTypes())));
+        assertThat(describe(firstConstructor), not(equalMethodButReturnType));
         MethodDescription.InDefinedShape equalMethodButDeclaringType = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButDeclaringType.getInternalName()).thenReturn(MethodDescription.CONSTRUCTOR_INTERNAL_NAME);
-        when(equalMethodButDeclaringType.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstConstructor.getDeclaringClass()));
-        when(equalMethodButDeclaringType.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(Object.class));
+        when(equalMethodButDeclaringType.getDeclaringType()).thenReturn(TypeDescription.OBJECT);
+        when(equalMethodButDeclaringType.getReturnType()).thenReturn(TypeDescription.Generic.VOID);
         when(equalMethodButDeclaringType.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButDeclaringType,
-                new TypeList.ForLoadedType(firstConstructor.getParameterTypes())));
-        assertThat(describe(firstConstructor), not(equalTo(equalMethodButDeclaringType)));
+                new TypeList.ForLoadedTypes(firstConstructor.getParameterTypes())));
+        assertThat(describe(firstConstructor), not(equalMethodButDeclaringType));
         MethodDescription.InDefinedShape equalMethodButParameterTypes = mock(MethodDescription.InDefinedShape.class);
         when(equalMethodButParameterTypes.getInternalName()).thenReturn(MethodDescription.CONSTRUCTOR_INTERNAL_NAME);
-        when(equalMethodButParameterTypes.getDeclaringType()).thenReturn(new TypeDescription.ForLoadedType(firstConstructor.getDeclaringClass()));
-        when(equalMethodButParameterTypes.getReturnType()).thenReturn(new TypeDescription.ForLoadedType(void.class));
+        when(equalMethodButParameterTypes.getDeclaringType()).thenReturn(TypeDescription.ForLoadedType.of(firstConstructor.getDeclaringClass()));
+        when(equalMethodButParameterTypes.getReturnType()).thenReturn(TypeDescription.Generic.VOID);
         when(equalMethodButParameterTypes.getParameters()).thenReturn(new ParameterList.Explicit.ForTypes(equalMethodButParameterTypes,
-                new TypeList.ForLoadedType(secondConstructor.getParameterTypes())));
-        assertThat(describe(firstConstructor), not(equalTo(equalMethodButParameterTypes)));
-        assertThat(describe(firstConstructor), not(equalTo(new Object())));
+                new TypeList.ForLoadedTypes(secondConstructor.getParameterTypes())));
+        assertThat(describe(firstConstructor), not(equalMethodButParameterTypes));
+        assertThat(describe(firstConstructor), not(new Object()));
         assertThat(describe(firstConstructor), not(equalTo(null)));
     }
 
@@ -275,22 +286,22 @@ public abstract class AbstractMethodDescriptionTest {
     @JavaVersionRule.Enforce(8)
     public void testEqualsParameter() throws Exception {
         ParameterDescription identical = describe(secondMethod).getParameters().get(0);
-        assertThat(identical, equalTo(identical));
-        assertThat(identical, not(equalTo(new Object())));
+        assertThat(identical, is(identical));
+        assertThat(identical, not(new Object()));
         assertThat(identical, not(equalTo(null)));
         assertThat(describe(secondMethod).getParameters().get(0), is(describe(secondMethod).getParameters().get(0)));
         ParameterDescription equal = mock(ParameterDescription.class);
         when(equal.getDeclaringMethod()).thenReturn(describe(secondMethod));
         when(equal.getIndex()).thenReturn(0);
-        assertThat(describe(secondMethod).getParameters().get(0), equalTo(equal));
+        assertThat(describe(secondMethod).getParameters().get(0), is(equal));
         ParameterDescription notEqualMethod = mock(ParameterDescription.class);
         when(equal.getDeclaringMethod()).thenReturn(mock(MethodDescription.class));
         when(equal.getIndex()).thenReturn(0);
-        assertThat(describe(secondMethod).getParameters().get(0), not(equalTo(notEqualMethod)));
+        assertThat(describe(secondMethod).getParameters().get(0), not(notEqualMethod));
         ParameterDescription notEqualMethodIndex = mock(ParameterDescription.class);
         when(equal.getDeclaringMethod()).thenReturn(describe(secondMethod));
         when(equal.getIndex()).thenReturn(1);
-        assertThat(describe(secondMethod).getParameters().get(0), not(equalTo(notEqualMethodIndex)));
+        assertThat(describe(secondMethod).getParameters().get(0), not(notEqualMethodIndex));
     }
 
     @Test
@@ -385,223 +396,224 @@ public abstract class AbstractMethodDescriptionTest {
     @Test
     public void testMethodIsVisibleTo() throws Exception {
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isVisibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("publicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isVisibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("protectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("privateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPublicMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticProtectedMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPackagePrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPrivateMethod"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
     }
 
     @Test
     public void testConstructorIsVisibleTo() throws Exception {
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isVisibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor())
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(Void.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(Object.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(String.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isVisibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateArgument", PackagePrivateType.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(MethodVisibilityType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(MethodVisibilityType.class)), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateReturnType"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(MethodVisibilityType.class)), is(true));
+                .isVisibleTo(TypeDescription.ForLoadedType.of(MethodVisibilityType.class)), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateArgument", PackagePrivateType.class))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isVisibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateReturnType"))
-                .isVisibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isVisibleTo(TypeDescription.OBJECT), is(true));
     }
 
     @Test
     public void testMethodIsAccessibleTo() throws Exception {
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(false));
+                        .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)),
+                is(ClassFileVersion.of(PublicType.class).isAtLeast(ClassFileVersion.JAVA_V11))); // introduction of nest mates
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isAccessibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("publicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredMethod("protectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredMethod("privateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("publicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("protectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("packagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("privateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPublicMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticProtectedMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPackagePrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredMethod("staticPrivateMethod"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
     }
 
     @Test
     public void testConstructorIsAccessibleTo() throws Exception {
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(PublicType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(PublicType.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Sample.class)), is(false));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(AbstractMethodDescriptionTestNoNestMate.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isAccessibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor())
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(true));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Void.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(Object.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PublicType.class.getDeclaredConstructor(String.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(VisibilityMethodTestHelper.class)), is(false));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(VisibilityMethodTestHelper.class)), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor())
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(Void.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(Object.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(PackagePrivateType.class.getDeclaredConstructor(String.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(false));
+                .isAccessibleTo(TypeDescription.OBJECT), is(false));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateArgument", PackagePrivateType.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(MethodVisibilityType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(MethodVisibilityType.class)), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateReturnType"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(MethodVisibilityType.class)), is(true));
+                .isAccessibleTo(TypeDescription.ForLoadedType.of(MethodVisibilityType.class)), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateArgument", PackagePrivateType.class))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isAccessibleTo(TypeDescription.OBJECT), is(true));
         assertThat(describe(MethodVisibilityType.class.getDeclaredMethod("packagePrivateReturnType"))
-                .isAccessibleTo(new TypeDescription.ForLoadedType(Object.class)), is(true));
+                .isAccessibleTo(TypeDescription.OBJECT), is(true));
     }
 
     @Test
     public void testExceptions() throws Exception {
         assertThat(describe(firstMethod).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(firstMethod.getExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(firstMethod.getExceptionTypes())));
         assertThat(describe(secondMethod).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(secondMethod.getExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(secondMethod.getExceptionTypes())));
         assertThat(describe(thirdMethod).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(thirdMethod.getExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(thirdMethod.getExceptionTypes())));
         assertThat(describe(firstConstructor).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(firstConstructor.getExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(firstConstructor.getExceptionTypes())));
         assertThat(describe(secondConstructor).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(secondConstructor.getExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(secondConstructor.getExceptionTypes())));
     }
 
     @Test
@@ -611,10 +623,10 @@ public abstract class AbstractMethodDescriptionTest {
         assertThat(describe(secondMethod).getDeclaredAnnotations(),
                 is((AnnotationList) new AnnotationList.Empty()));
         assertThat(describe(thirdMethod).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(thirdMethod.getDeclaredAnnotations())));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(thirdMethod.getDeclaredAnnotations())));
         assertThat(describe(firstConstructor).getDeclaredAnnotations(), is((AnnotationList) new AnnotationList.Empty()));
         assertThat(describe(secondConstructor).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(secondConstructor.getDeclaredAnnotations())));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(secondConstructor.getDeclaredAnnotations())));
     }
 
     @Test
@@ -624,15 +636,15 @@ public abstract class AbstractMethodDescriptionTest {
         assertThat(describe(secondMethod).getParameters().get(1).getDeclaredAnnotations(),
                 is((AnnotationList) new AnnotationList.Empty()));
         assertThat(describe(thirdMethod).getParameters().get(0).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(thirdMethod.getParameterAnnotations()[0])));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(thirdMethod.getParameterAnnotations()[0])));
         assertThat(describe(thirdMethod).getParameters().get(1).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(thirdMethod.getParameterAnnotations()[1])));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(thirdMethod.getParameterAnnotations()[1])));
         assertThat(describe(firstConstructor).getParameters().get(0).getDeclaredAnnotations(),
                 is((AnnotationList) new AnnotationList.Empty()));
         assertThat(describe(secondConstructor).getParameters().get(0).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(secondConstructor.getParameterAnnotations()[0])));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(secondConstructor.getParameterAnnotations()[0])));
         assertThat(describe(secondConstructor).getParameters().get(1).getDeclaredAnnotations(),
-                is((AnnotationList) new AnnotationList.ForLoadedAnnotation(secondConstructor.getParameterAnnotations()[1])));
+                is((AnnotationList) new AnnotationList.ForLoadedAnnotations(secondConstructor.getParameterAnnotations()[1])));
     }
 
     @Test
@@ -651,40 +663,40 @@ public abstract class AbstractMethodDescriptionTest {
 
     @Test
     public void testSpecializable() throws Exception {
-        assertThat(describe(firstMethod).isSpecializableFor(new TypeDescription.ForLoadedType(Sample.class)), is(false));
-        assertThat(describe(secondMethod).isSpecializableFor(new TypeDescription.ForLoadedType(Sample.class)), is(false));
-        assertThat(describe(thirdMethod).isSpecializableFor(new TypeDescription.ForLoadedType(Sample.class)), is(true));
-        assertThat(describe(thirdMethod).isSpecializableFor(new TypeDescription.ForLoadedType(SampleSub.class)), is(true));
-        assertThat(describe(thirdMethod).isSpecializableFor(new TypeDescription.ForLoadedType(Object.class)), is(false));
-        assertThat(describe(firstConstructor).isSpecializableFor(new TypeDescription.ForLoadedType(Sample.class)), is(true));
-        assertThat(describe(firstConstructor).isSpecializableFor(new TypeDescription.ForLoadedType(SampleSub.class)), is(false));
+        assertThat(describe(firstMethod).isSpecializableFor(TypeDescription.ForLoadedType.of(Sample.class)), is(false));
+        assertThat(describe(secondMethod).isSpecializableFor(TypeDescription.ForLoadedType.of(Sample.class)), is(false));
+        assertThat(describe(thirdMethod).isSpecializableFor(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
+        assertThat(describe(thirdMethod).isSpecializableFor(TypeDescription.ForLoadedType.of(SampleSub.class)), is(true));
+        assertThat(describe(thirdMethod).isSpecializableFor(TypeDescription.OBJECT), is(false));
+        assertThat(describe(firstConstructor).isSpecializableFor(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
+        assertThat(describe(firstConstructor).isSpecializableFor(TypeDescription.ForLoadedType.of(SampleSub.class)), is(false));
     }
 
     @Test
     public void testInvokable() throws Exception {
-        assertThat(describe(firstMethod).isInvokableOn(new TypeDescription.ForLoadedType(Sample.class)), is(false));
-        assertThat(describe(secondMethod).isInvokableOn(new TypeDescription.ForLoadedType(Sample.class)), is(true));
-        assertThat(describe(secondMethod).isInvokableOn(new TypeDescription.ForLoadedType(SampleSub.class)), is(true));
-        assertThat(describe(secondMethod).isInvokableOn(new TypeDescription.ForLoadedType(Object.class)), is(false));
+        assertThat(describe(firstMethod).isInvokableOn(TypeDescription.ForLoadedType.of(Sample.class)), is(false));
+        assertThat(describe(secondMethod).isInvokableOn(TypeDescription.ForLoadedType.of(Sample.class)), is(true));
+        assertThat(describe(secondMethod).isInvokableOn(TypeDescription.ForLoadedType.of(SampleSub.class)), is(true));
+        assertThat(describe(secondMethod).isInvokableOn(TypeDescription.OBJECT), is(false));
     }
 
     @Test
     public void testGenericTypes() throws Exception {
-        assertThat(describe(genericMethod).getReturnType(), is(GenericTypeDescription.Sort.describe(genericMethod.getGenericReturnType())));
+        assertThat(describe(genericMethod).getReturnType(), is(TypeDefinition.Sort.describe(genericMethod.getGenericReturnType())));
         assertThat(describe(genericMethod).getParameters().asTypeList(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(genericMethod.getGenericParameterTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(genericMethod.getGenericParameterTypes())));
         assertThat(describe(genericMethod).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(genericMethod.getGenericExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(genericMethod.getGenericExceptionTypes())));
     }
 
     @Test
     public void testGenericTypesOfMethodWithoutException() throws Exception {
         assertThat(describe(genericMethodWithRawException).getReturnType(),
-                is(GenericTypeDescription.Sort.describe(genericMethodWithRawException.getGenericReturnType())));
+                is(TypeDefinition.Sort.describe(genericMethodWithRawException.getGenericReturnType())));
         assertThat(describe(genericMethodWithRawException).getParameters().asTypeList(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(genericMethodWithRawException.getGenericParameterTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(genericMethodWithRawException.getGenericParameterTypes())));
         assertThat(describe(genericMethodWithRawException).getExceptionTypes(),
-                is((GenericTypeList) new GenericTypeList.ForLoadedType(genericMethodWithRawException.getGenericExceptionTypes())));
+                is((TypeList.Generic) new TypeList.Generic.ForLoadedTypes(genericMethodWithRawException.getGenericExceptionTypes())));
     }
 
     @Test
@@ -692,13 +704,121 @@ public abstract class AbstractMethodDescriptionTest {
         assertThat(describe(genericMethod).toGenericString(), is(genericMethod.toGenericString()));
     }
 
+    @Test
+    public void testEnclosingSource() throws Exception {
+        assertThat(describe(firstMethod).getEnclosingSource(), nullValue(TypeVariableSource.class));
+        assertThat(describe(secondMethod).getEnclosingSource(), is((TypeVariableSource) TypeDescription.ForLoadedType.of(Sample.class)));
+    }
+
+    @Test
+    public void testIsGenerified() throws Exception {
+        assertThat(describe(genericMethodWithTypeVariable).isGenerified(), is(true));
+        assertThat(describe(firstMethod).isGenerified(), is(false));
+    }
+
+    @Test
+    public void testImplicitReceiverTypes() throws Exception {
+        assertThat(describe(firstMethod).getReceiverType(), nullValue(TypeDescription.Generic.class));
+        assertThat(describe(secondMethod).getReceiverType(), is(TypeDefinition.Sort.describe(Sample.class)));
+        assertThat(describe(firstConstructor).getReceiverType(), is(TypeDefinition.Sort.describe(AbstractMethodDescriptionTest.class)));
+        assertThat(describe(AbstractMethodDescriptionTest.class.getDeclaredConstructor()).getReceiverType(),
+                is(TypeDefinition.Sort.describe(AbstractMethodDescriptionTest.class)));
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    public void testGetActualModifiers() throws Exception {
+        assertThat(describe(firstMethod).getActualModifiers(), is(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC));
+        assertThat(describe(firstMethod).getActualModifiers(true), is(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC));
+        assertThat(describe(firstMethod).getActualModifiers(false), is(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT));
+        assertThat(describe(DeprecationSample.class.getDeclaredMethod("foo")).getActualModifiers(), is(Opcodes.ACC_PRIVATE | Opcodes.ACC_DEPRECATED));
+        assertThat(describe(firstMethod).getActualModifiers(true, Visibility.PUBLIC), is(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC));
+        assertThat(describe(secondMethod).getActualModifiers(false, Visibility.PRIVATE), is(Opcodes.ACC_PROTECTED | Opcodes.ACC_ABSTRACT));
+    }
+
+    @Test
+    public void testBridgeCompatible() throws Exception {
+        assertThat(describe(firstMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.VOID, Collections.<TypeDescription>emptyList())), is(true));
+        assertThat(describe(firstMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.VOID, Collections.singletonList(TypeDescription.OBJECT))), is(false));
+        assertThat(describe(firstMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT, Collections.<TypeDescription>emptyList())), is(false));
+        assertThat(describe(firstMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.ForLoadedType.of(int.class), Collections.<TypeDescription>emptyList())), is(false));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT,
+                Arrays.asList(TypeDescription.ForLoadedType.of(String.class), TypeDescription.ForLoadedType.of(long.class)))), is(true));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT,
+                Arrays.asList(TypeDescription.ForLoadedType.of(Object.class), TypeDescription.ForLoadedType.of(long.class)))), is(true));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.ForLoadedType.of(String.class),
+                Arrays.asList(TypeDescription.ForLoadedType.of(Object.class), TypeDescription.ForLoadedType.of(long.class)))), is(true));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.VOID,
+                Arrays.asList(TypeDescription.ForLoadedType.of(String.class), TypeDescription.ForLoadedType.of(long.class)))), is(false));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT,
+                Arrays.asList(TypeDescription.ForLoadedType.of(int.class), TypeDescription.ForLoadedType.of(long.class)))), is(false));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT,
+                Arrays.asList(TypeDescription.ForLoadedType.of(String.class), TypeDescription.ForLoadedType.of(Object.class)))), is(false));
+        assertThat(describe(secondMethod).isBridgeCompatible(new MethodDescription.TypeToken(TypeDescription.OBJECT,
+                Arrays.asList(TypeDescription.ForLoadedType.of(String.class), TypeDescription.ForLoadedType.of(int.class)))), is(false));
+    }
+
+    @Test
+    public void testSyntethicParameter() throws Exception {
+        assertThat(describe(SyntheticParameter.class.getDeclaredConstructor(AbstractMethodDescriptionTest.class, Void.class))
+                .getParameters()
+                .get(1)
+                .getDeclaredAnnotations()
+                .isAnnotationPresent(SyntheticMarker.class), is(true));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testIsDefault() throws Exception {
+        Map<String, AnnotationValue<?, ?>> properties = new LinkedHashMap<String, AnnotationValue<?, ?>>();
+        properties.put("boolean_property", AnnotationValue.ForConstant.of(true));
+        properties.put("boolean_property_array", AnnotationValue.ForConstant.of(new boolean[]{true}));
+        properties.put("byte_property", AnnotationValue.ForConstant.of((byte) 0));
+        properties.put("byte_property_array", AnnotationValue.ForConstant.of(new byte[]{0}));
+        properties.put("short_property", AnnotationValue.ForConstant.of((short) 0));
+        properties.put("short_property_array", AnnotationValue.ForConstant.of(new short[]{0}));
+        properties.put("int_property", AnnotationValue.ForConstant.of(0));
+        properties.put("int_property_array", AnnotationValue.ForConstant.of(new int[]{0}));
+        properties.put("long_property", AnnotationValue.ForConstant.of(0L));
+        properties.put("long_property_array", AnnotationValue.ForConstant.of(new long[]{0}));
+        properties.put("float_property", AnnotationValue.ForConstant.of(0f));
+        properties.put("float_property_array", AnnotationValue.ForConstant.of(new float[]{0}));
+        properties.put("double_property", AnnotationValue.ForConstant.of(0d));
+        properties.put("double_property_array", AnnotationValue.ForConstant.of(new double[]{0d}));
+        properties.put("string_property", AnnotationValue.ForConstant.of("foo"));
+        properties.put("string_property_array", AnnotationValue.ForConstant.of(new String[]{"foo"}));
+        AnnotationDescription annotationDescription = mock(AnnotationDescription.class);
+        when(annotationDescription.getAnnotationType()).thenReturn(TypeDescription.ForLoadedType.of(SampleAnnotation.class));
+        properties.put("annotation_property", new AnnotationValue.ForAnnotationDescription(annotationDescription));
+        properties.put("annotation_property_array", AnnotationValue.ForDescriptionArray.of(TypeDescription.ForLoadedType.of(SampleAnnotation.class), new AnnotationDescription[]{annotationDescription}));
+        EnumerationDescription enumerationDescription = mock(EnumerationDescription.class);
+        when(enumerationDescription.getEnumerationType()).thenReturn(TypeDescription.ForLoadedType.of(SampleEnumeration.class));
+        properties.put("enum_property", AnnotationValue.ForEnumerationDescription.<Enum>of(enumerationDescription));
+        properties.put("enum_property_array", AnnotationValue.ForDescriptionArray.<Enum>of(TypeDescription.ForLoadedType.of(SampleEnumeration.class), new EnumerationDescription[]{enumerationDescription}));
+        MethodList<?> methods = TypeDescription.ForLoadedType.of(AnnotationValues.class).getDeclaredMethods();
+        for (Map.Entry<String, AnnotationValue<?, ?>> entry : properties.entrySet()) {
+            assertThat(methods.filter(named(entry.getKey())).getOnly().isDefaultValue(entry.getValue()), is(true));
+            assertThat(methods.filter(named(entry.getKey())).getOnly().isDefaultValue(mock(AnnotationValue.class)), is(false));
+        }
+        when(annotationDescription.getAnnotationType()).thenReturn(TypeDescription.OBJECT);
+        assertThat(methods.filter(named("annotation_property")).getOnly().isDefaultValue(new AnnotationValue.ForAnnotationDescription(annotationDescription)), is(false));
+        assertThat(methods.filter(named("annotation_property_array")).getOnly().isDefaultValue(AnnotationValue.ForDescriptionArray.of(TypeDescription.ForLoadedType.of(Object.class), new AnnotationDescription[]{annotationDescription})), is(false));
+        when(enumerationDescription.getEnumerationType()).thenReturn(TypeDescription.OBJECT);
+        assertThat(methods.filter(named("enum_property")).getOnly().isDefaultValue(AnnotationValue.ForEnumerationDescription.<Enum>of(enumerationDescription)), is(false));
+        assertThat(methods.filter(named("enum_property_array")).getOnly().isDefaultValue(AnnotationValue.ForDescriptionArray.<Enum>of(TypeDescription.ForLoadedType.of(Object.class), new EnumerationDescription[]{enumerationDescription})), is(false));
+    }
+
     @Retention(RetentionPolicy.RUNTIME)
     private @interface SampleAnnotation {
+        /* empty */
+    }
 
+    private enum SampleEnumeration {
+        INSTANCE
     }
 
     @SuppressWarnings("unused")
-    private static abstract class Sample {
+    private abstract static class Sample {
 
         Sample(final Void argument) {
 
@@ -721,7 +841,7 @@ public abstract class AbstractMethodDescriptionTest {
         }
     }
 
-    private static abstract class SampleSub extends Sample {
+    private abstract static class SampleSub extends Sample {
 
         protected SampleSub(Void argument) {
             super(argument);
@@ -729,7 +849,7 @@ public abstract class AbstractMethodDescriptionTest {
     }
 
     @SuppressWarnings("unused")
-    public static abstract class PublicType {
+    public abstract static class PublicType {
 
         public PublicType() {
             /* do nothing*/
@@ -759,7 +879,7 @@ public abstract class AbstractMethodDescriptionTest {
     }
 
     @SuppressWarnings("unused")
-    static abstract class PackagePrivateType {
+    abstract static class PackagePrivateType {
 
         public PackagePrivateType() {
             /* do nothing*/
@@ -826,5 +946,73 @@ public abstract class AbstractMethodDescriptionTest {
         T bar(T t) throws Exception {
             return null;
         }
+
+        <Q> void qux() {
+            /* empty */
+        }
+    }
+
+    private static class DeprecationSample {
+
+        @Deprecated
+        private void foo() {
+            /* empty */
+        }
+    }
+
+    @SuppressWarnings("unused")
+    private @interface AnnotationValues {
+
+        boolean boolean_property();
+
+        boolean[] boolean_property_array();
+
+        byte byte_property();
+
+        byte[] byte_property_array();
+
+        short short_property();
+
+        short[] short_property_array();
+
+        int int_property();
+
+        int[] int_property_array();
+
+        long long_property();
+
+        long[] long_property_array();
+
+        float float_property();
+
+        float[] float_property_array();
+
+        double double_property();
+
+        double[] double_property_array();
+
+        String string_property();
+
+        String[] string_property_array();
+
+        SampleAnnotation annotation_property();
+
+        SampleAnnotation[] annotation_property_array();
+
+        SampleEnumeration enum_property();
+
+        SampleEnumeration[] enum_property_array();
+    }
+
+    public class SyntheticParameter {
+
+        public SyntheticParameter(@SyntheticMarker Void unused) {
+            /* empty */
+        }
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface SyntheticMarker {
+        /* empty */
     }
 }

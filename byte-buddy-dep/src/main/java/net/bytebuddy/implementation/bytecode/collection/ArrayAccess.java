@@ -1,11 +1,17 @@
 package net.bytebuddy.implementation.bytecode.collection;
 
-import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.bytecode.Duplication;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.StackSize;
+import net.bytebuddy.implementation.bytecode.constant.IntegerConstant;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Allows accessing array values.
@@ -86,8 +92,10 @@ public enum ArrayAccess {
      * @param componentType The array's component type.
      * @return An array accessor for the given type.
      */
-    public static ArrayAccess of(TypeDescription componentType) {
-        if (componentType.represents(boolean.class) || componentType.represents(byte.class)) {
+    public static ArrayAccess of(TypeDefinition componentType) {
+        if (!componentType.isPrimitive()) {
+            return REFERENCE;
+        } else if (componentType.represents(boolean.class) || componentType.represents(byte.class)) {
             return BYTE;
         } else if (componentType.represents(short.class)) {
             return SHORT;
@@ -101,10 +109,8 @@ public enum ArrayAccess {
             return FLOAT;
         } else if (componentType.represents(double.class)) {
             return DOUBLE;
-        } else if (componentType.represents(void.class)) {
-            throw new IllegalArgumentException("void is no legal array type");
         } else {
-            return REFERENCE;
+            throw new IllegalArgumentException("Not a legal array type: " + componentType);
         }
     }
 
@@ -126,92 +132,67 @@ public enum ArrayAccess {
         return new Putter();
     }
 
-    @Override
-    public String toString() {
-        return "ArrayAccess." + name();
+    /**
+     * Applies a stack manipulation to the values of an array. The array must have at least as many values as the list has elements.
+     *
+     * @param processInstructions The elements to apply.
+     * @return A stack manipulation that applies the supplied instructions.
+     */
+    public StackManipulation forEach(List<? extends StackManipulation> processInstructions) {
+        List<StackManipulation> stackManipulations = new ArrayList<StackManipulation>(processInstructions.size());
+        int index = 0;
+        for (StackManipulation processInstruction : processInstructions) {
+            stackManipulations.add(new StackManipulation.Compound(
+                    Duplication.SINGLE,
+                    IntegerConstant.forValue(index++),
+                    new Loader(),
+                    processInstruction
+            ));
+        }
+        return new StackManipulation.Compound(stackManipulations);
     }
 
     /**
      * A stack manipulation for loading an array's value.
      */
+    @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
     protected class Loader implements StackManipulation {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             methodVisitor.visitInsn(loadOpcode);
             return stackSize.toIncreasingSize().aggregate(new Size(-2, 0));
-        }
-
-        /**
-         * Returns the outer instance.
-         *
-         * @return The outer instance.
-         */
-        private ArrayAccess getArrayAccess() {
-            return ArrayAccess.this;
-        }
-
-        @Override
-        public int hashCode() {
-            return ArrayAccess.this.hashCode();
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || (other != null && other.getClass() == getClass()
-                    && getArrayAccess() == ((Loader) other).getArrayAccess());
-        }
-
-        @Override
-        public String toString() {
-            return "ArrayAccess.Loader{arrayAccess=" + ArrayAccess.this + '}';
         }
     }
 
     /**
      * A stack manipulation for storing an array's value.
      */
+    @HashCodeAndEqualsPlugin.Enhance(includeSyntheticFields = true)
     protected class Putter implements StackManipulation {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             methodVisitor.visitInsn(storeOpcode);
             return stackSize.toDecreasingSize().aggregate(new Size(-2, 0));
-        }
-
-        /**
-         * Returns the outer instance.
-         *
-         * @return The outer instance.
-         */
-        private ArrayAccess getArrayAccess() {
-            return ArrayAccess.this;
-        }
-
-        @Override
-        public int hashCode() {
-            return ArrayAccess.this.hashCode();
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || (other != null && other.getClass() == getClass()
-                    && getArrayAccess() == ((Putter) other).getArrayAccess());
-        }
-
-        @Override
-        public String toString() {
-            return "ArrayAccess.Putter{arrayAccess=" + ArrayAccess.this + '}';
         }
     }
 }

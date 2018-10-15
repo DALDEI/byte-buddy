@@ -1,5 +1,6 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationList;
 import net.bytebuddy.description.type.TypeDescription;
 
@@ -8,40 +9,34 @@ import net.bytebuddy.description.type.TypeDescription;
  *
  * @param <T> The actual matched type of this matcher.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class InheritedAnnotationMatcher<T extends TypeDescription> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The matcher to be applied to the provided annotation list.
      */
-    private final ElementMatcher<? super AnnotationList> annotationMatcher;
+    private final ElementMatcher<? super AnnotationList> matcher;
 
     /**
      * Creates a new matcher for the inherited annotations of a type description.
      *
-     * @param annotationMatcher The matcher to be applied to the provided annotation list.
+     * @param matcher The matcher to be applied to the provided annotation list.
      */
-    public InheritedAnnotationMatcher(ElementMatcher<? super AnnotationList> annotationMatcher) {
-        this.annotationMatcher = annotationMatcher;
+    public InheritedAnnotationMatcher(ElementMatcher<? super AnnotationList> matcher) {
+        this.matcher = matcher;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
-        return annotationMatcher.matches(target.getInheritedAnnotations());
+        return matcher.matches(target.getInheritedAnnotations());
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && annotationMatcher.equals(((InheritedAnnotationMatcher<?>) other).annotationMatcher);
-    }
-
-    @Override
-    public int hashCode() {
-        return annotationMatcher.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
-        return "inheritsAnnotations(" + annotationMatcher + ")";
+        return "inheritsAnnotations(" + matcher + ")";
     }
 }

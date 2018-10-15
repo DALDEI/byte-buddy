@@ -3,7 +3,6 @@ package net.bytebuddy.dynamic.scaffold;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -12,11 +11,10 @@ import org.mockito.Mock;
 
 import java.util.Collections;
 
+import static net.bytebuddy.test.utility.FieldByFieldComparison.hasPrototype;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class MethodGraphCompilerDefaultHarmonizerForJavaMethodTest {
 
@@ -75,23 +73,8 @@ public class MethodGraphCompilerDefaultHarmonizerForJavaMethodTest {
 
     @Test
     public void testFactory() throws Exception {
-        assertThat(MethodGraph.Compiler.Default.forJavaHierarchy(), is((MethodGraph.Compiler) new MethodGraph.Compiler
+        assertThat(MethodGraph.Compiler.Default.forJavaHierarchy(), hasPrototype((MethodGraph.Compiler) new MethodGraph.Compiler
                 .Default<MethodGraph.Compiler.Default.Harmonizer.ForJavaMethod.Token>(MethodGraph.Compiler.Default.Harmonizer.ForJavaMethod.INSTANCE,
-                MethodGraph.Compiler.Default.Merger.Directional.LEFT)));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(MethodGraph.Compiler.Default.Harmonizer.ForJavaMethod.Token.class)
-                .create(new ObjectPropertyAssertion.Creator<MethodDescription.TypeToken>() {
-                    @Override
-                    public MethodDescription.TypeToken create() {
-                        MethodDescription.TypeToken typeToken = mock(MethodDescription.TypeToken.class);
-                        when(typeToken.getReturnType()).thenReturn(mock(TypeDescription.class));
-                        when(typeToken.getParameterTypes()).thenReturn(Collections.singletonList(mock(TypeDescription.class)));
-                        return typeToken;
-                    }
-                }).applyBasic();
-        ObjectPropertyAssertion.of(MethodGraph.Compiler.Default.Harmonizer.ForJavaMethod.class).apply();
+                MethodGraph.Compiler.Default.Merger.Directional.LEFT, TypeDescription.Generic.Visitor.Reifying.INITIATING)));
     }
 }

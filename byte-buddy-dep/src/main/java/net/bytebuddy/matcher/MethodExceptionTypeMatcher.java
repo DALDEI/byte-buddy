@@ -1,47 +1,42 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.type.generic.GenericTypeList;
+import net.bytebuddy.description.type.TypeList;
 
 /**
  * An element matcher that matches the exceptions that are declared by a method.
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class MethodExceptionTypeMatcher<T extends MethodDescription> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The matcher to apply to the matched method's exceptions.
      */
-    private final ElementMatcher<? super GenericTypeList> exceptionMatcher;
+    private final ElementMatcher<? super TypeList.Generic> matcher;
 
     /**
      * Creates a new matcher for a method's exceptions.
      *
-     * @param exceptionMatcher The matcher to apply to the matched method's exceptions.
+     * @param matcher The matcher to apply to the matched method's exceptions.
      */
-    public MethodExceptionTypeMatcher(ElementMatcher<? super GenericTypeList> exceptionMatcher) {
-        this.exceptionMatcher = exceptionMatcher;
+    public MethodExceptionTypeMatcher(ElementMatcher<? super TypeList.Generic> matcher) {
+        this.matcher = matcher;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
-        return exceptionMatcher.matches(target.getExceptionTypes());
+        return matcher.matches(target.getExceptionTypes());
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && exceptionMatcher.equals(((MethodExceptionTypeMatcher<?>) other).exceptionMatcher);
-    }
-
-    @Override
-    public int hashCode() {
-        return exceptionMatcher.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
-        return "exceptions(" + exceptionMatcher + ")";
+        return "exceptions(" + matcher + ")";
     }
 }

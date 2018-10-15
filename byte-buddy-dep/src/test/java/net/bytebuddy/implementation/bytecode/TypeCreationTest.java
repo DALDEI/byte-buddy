@@ -3,7 +3,6 @@ package net.bytebuddy.implementation.bytecode;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -39,7 +38,7 @@ public class TypeCreationTest {
 
     @Test
     public void testTypeCreation() throws Exception {
-        StackManipulation stackManipulation = TypeCreation.forType(typeDescription);
+        StackManipulation stackManipulation = TypeCreation.of(typeDescription);
         assertThat(stackManipulation.isValid(), is(true));
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         assertThat(size.getSizeImpact(), is(1));
@@ -52,23 +51,18 @@ public class TypeCreationTest {
     @Test(expected = IllegalArgumentException.class)
     public void testTypeCreationArray() throws Exception {
         when(typeDescription.isArray()).thenReturn(true);
-        TypeCreation.forType(typeDescription);
+        TypeCreation.of(typeDescription);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testTypeCreationPrimitive() throws Exception {
         when(typeDescription.isPrimitive()).thenReturn(true);
-        TypeCreation.forType(typeDescription);
+        TypeCreation.of(typeDescription);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testTypeCreationAbstract() throws Exception {
         when(typeDescription.isAbstract()).thenReturn(true);
-        TypeCreation.forType(typeDescription);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(TypeCreation.class).apply();
+        TypeCreation.of(typeDescription);
     }
 }

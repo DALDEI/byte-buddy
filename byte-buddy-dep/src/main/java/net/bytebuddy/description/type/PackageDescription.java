@@ -1,14 +1,14 @@
 package net.bytebuddy.description.type;
 
 import net.bytebuddy.description.NamedElement;
-import net.bytebuddy.description.annotation.AnnotatedCodeElement;
 import net.bytebuddy.description.annotation.AnnotationList;
+import net.bytebuddy.description.annotation.AnnotationSource;
 import org.objectweb.asm.Opcodes;
 
 /**
  * A package description represents a Java package.
  */
-public interface PackageDescription extends NamedElement.WithRuntimeName, AnnotatedCodeElement {
+public interface PackageDescription extends NamedElement.WithRuntimeName, AnnotationSource {
 
     /**
      * The name of a Java class representing a package description.
@@ -21,8 +21,7 @@ public interface PackageDescription extends NamedElement.WithRuntimeName, Annota
     int PACKAGE_MODIFIERS = Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT | Opcodes.ACC_SYNTHETIC;
 
     /**
-     * Represents any undefined property of a type description that is instead represented as {@code null} in order
-     * to resemble the Java reflection API which returns {@code null} and is intuitive to many Java developers.
+     * A named constant for an undefined package what applies for primitive and array types.
      */
     PackageDescription UNDEFINED = null;
 
@@ -39,17 +38,23 @@ public interface PackageDescription extends NamedElement.WithRuntimeName, Annota
      */
     abstract class AbstractBase implements PackageDescription {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getInternalName() {
             return getName().replace('.', '/');
         }
 
-        @Override
-        public String getSourceCodeName() {
+        /**
+         * {@inheritDoc}
+         */
+        public String getActualName() {
             return getName();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean contains(TypeDescription typeDescription) {
             return this.equals(typeDescription.getPackage());
         }
@@ -61,8 +66,7 @@ public interface PackageDescription extends NamedElement.WithRuntimeName, Annota
 
         @Override
         public boolean equals(Object other) {
-            return other instanceof PackageDescription
-                    && getName().equals(((PackageDescription) other).getName());
+            return this == other || other instanceof PackageDescription && getName().equals(((PackageDescription) other).getName());
         }
 
         @Override
@@ -90,12 +94,16 @@ public interface PackageDescription extends NamedElement.WithRuntimeName, Annota
             this.name = name;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public AnnotationList getDeclaredAnnotations() {
             return new AnnotationList.Empty();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getName() {
             return name;
         }
@@ -121,12 +129,16 @@ public interface PackageDescription extends NamedElement.WithRuntimeName, Annota
             this.aPackage = aPackage;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public AnnotationList getDeclaredAnnotations() {
-            return new AnnotationList.ForLoadedAnnotation(aPackage.getDeclaredAnnotations());
+            return new AnnotationList.ForLoadedAnnotations(aPackage.getDeclaredAnnotations());
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getName() {
             return aPackage.getName();
         }

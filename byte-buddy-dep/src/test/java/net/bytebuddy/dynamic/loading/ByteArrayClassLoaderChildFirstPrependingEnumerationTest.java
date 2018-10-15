@@ -1,17 +1,18 @@
 package net.bytebuddy.dynamic.loading;
 
 import net.bytebuddy.test.utility.IntegrationRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.MethodRule;
 
 import java.net.URL;
-import java.util.*;
+import java.util.Enumeration;
+import java.util.NoSuchElementException;
+import java.util.Vector;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 public class ByteArrayClassLoaderChildFirstPrependingEnumerationTest {
 
@@ -55,16 +56,5 @@ public class ByteArrayClassLoaderChildFirstPrependingEnumerationTest {
         enumeration.nextElement();
         enumeration.nextElement();
         enumeration.nextElement();
-    }
-
-    @Test
-    public void testObjectPropertyAssertion() throws Exception {
-        final Iterator<URL> urls = Arrays.asList(new URL("file://foo"), new URL("file://bar")).iterator();
-        ObjectPropertyAssertion.of(ByteArrayClassLoader.ChildFirst.PrependingEnumeration.class).create(new ObjectPropertyAssertion.Creator<URL>() {
-            @Override
-            public URL create() {
-                return urls.next();
-            }
-        }).applyBasic();
     }
 }

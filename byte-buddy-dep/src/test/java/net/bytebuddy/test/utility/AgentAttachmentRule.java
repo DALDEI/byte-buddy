@@ -9,6 +9,7 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.lang.instrument.Instrumentation;
 import java.util.logging.Logger;
 
 /**
@@ -23,24 +24,45 @@ public class AgentAttachmentRule implements MethodRule {
         available = ByteBuddyAgent.AttachmentProvider.DEFAULT.attempt().isAvailable();
     }
 
-    @Override
     public Statement apply(Statement base, FrameworkMethod method, Object target) {
-        return available || method.getAnnotation(Enforce.class) == null
-                ? base
-                : new NoOpStatement();
+        Enforce enforce = method.getAnnotation(Enforce.class);
+        if (enforce != null) {
+            if (!available) {
+                return new NoOpStatement("The executing JVM does not support runtime attachment");
+            }
+            Instrumentation instrumentation = ByteBuddyAgent.install(ByteBuddyAgent.AttachmentProvider.DEFAULT);
+            if (enforce.redefinesClasses() && !instrumentation.isRedefineClassesSupported()) {
+                return new NoOpStatement("The executing JVM does not support class redefinition");
+            } else if (enforce.retransformsClasses() && !instrumentation.isRetransformClassesSupported()) {
+                return new NoOpStatement("The executing JVM does not support class retransformation");
+            } else if (enforce.nativeMethodPrefix() && !instrumentation.isNativeMethodPrefixSupported()) {
+                return new NoOpStatement("The executing JVM does not support class native method prefixes");
+            }
+        }
+        return base;
     }
 
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.METHOD)
     public @interface Enforce {
-        /* empty */
+
+        boolean redefinesClasses() default false;
+
+        boolean retransformsClasses() default false;
+
+        boolean nativeMethodPrefix() default false;
     }
 
     private static class NoOpStatement extends Statement {
 
-        @Override
-        public void evaluate() throws Throwable {
-            Logger.getAnonymousLogger().warning("Ignored test case that requires an OpenJDK installation with tools.jar");
+        private final String reason;
+
+        private NoOpStatement(String reason) {
+            this.reason = reason;
+        }
+
+        public void evaluate() {
+            Logger.getLogger("net.bytebuddy").warning("Ignoring test case: " + reason);
         }
     }
 }

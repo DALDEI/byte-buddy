@@ -1,7 +1,6 @@
 package net.bytebuddy.dynamic;
 
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -20,7 +19,10 @@ public class ClassFileLocatorCompoundTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private ClassFileLocator classFileLocator, otherClassFileLocator;
+    private ClassFileLocator classFileLocator;
+
+    @Mock
+    private ClassFileLocator otherClassFileLocator;
 
     @Mock
     private ClassFileLocator.Resolution legal, illegal;
@@ -51,7 +53,12 @@ public class ClassFileLocatorCompoundTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(ClassFileLocator.Compound.class).apply();
+    public void testClosable() throws Exception {
+        when(classFileLocator.locate(FOO)).thenReturn(legal);
+        new ClassFileLocator.Compound(classFileLocator, otherClassFileLocator).close();
+        verify(classFileLocator).close();
+        verifyNoMoreInteractions(classFileLocator);
+        verify(otherClassFileLocator).close();
+        verifyNoMoreInteractions(otherClassFileLocator);
     }
 }

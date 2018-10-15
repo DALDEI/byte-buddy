@@ -35,26 +35,22 @@ public enum SyntheticState implements ModifierContributor.ForType,
     }
 
     /**
-     * Creates a synthetic state from a boolean value indicating if a type or member is supposed to be synthetic.
-     *
-     * @param synthetic {@code true} if the state is supposed to be synthetic.
-     * @return The corresponding synthetic state.
+     * {@inheritDoc}
      */
-    public static SyntheticState is(boolean synthetic) {
-        return synthetic ? SYNTHETIC : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_SYNTHETIC;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -66,10 +62,5 @@ public enum SyntheticState implements ModifierContributor.ForType,
      */
     public boolean isSynthetic() {
         return this == SYNTHETIC;
-    }
-
-    @Override
-    public String toString() {
-        return "SyntheticState." + name();
     }
 }

@@ -1,6 +1,8 @@
 package net.bytebuddy.implementation.bytecode.assign;
 
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
@@ -11,6 +13,7 @@ import org.objectweb.asm.Opcodes;
 /**
  * A stack manipulation for a type down casting. Such castings are not implicit but must be performed explicitly.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class TypeCasting implements StackManipulation {
 
     /**
@@ -30,40 +33,28 @@ public class TypeCasting implements StackManipulation {
     /**
      * Creates a casting to the given, non-primitive type.
      *
-     * @param typeDescription The type to which a value should be casted.
+     * @param typeDefinition The type to which a value should be casted.
      * @return A stack manipulation that represents the casting.
      */
-    public static StackManipulation to(TypeDescription typeDescription) {
-        if (typeDescription.isPrimitive()) {
-            throw new IllegalArgumentException("Cannot cast to primitive type " + typeDescription);
+    public static StackManipulation to(TypeDefinition typeDefinition) {
+        if (typeDefinition.isPrimitive()) {
+            throw new IllegalArgumentException("Cannot cast to primitive type: " + typeDefinition);
         }
-        return new TypeCasting(typeDescription);
+        return new TypeCasting(typeDefinition.asErasure());
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isValid() {
         return true;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
         methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, typeDescription.getInternalName());
         return StackSize.ZERO.toIncreasingSize();
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && typeDescription.equals(((TypeCasting) other).typeDescription);
-    }
-
-    @Override
-    public int hashCode() {
-        return typeDescription.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "TypeCasting{typeDescription='" + typeDescription + '\'' + '}';
     }
 }

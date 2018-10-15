@@ -46,17 +46,23 @@ public enum TypeManifestation implements ModifierContributor.ForType {
         this.mask = mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_FINAL | Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -95,10 +101,5 @@ public enum TypeManifestation implements ModifierContributor.ForType {
      */
     public boolean isAnnotation() {
         return (mask & Opcodes.ACC_ANNOTATION) != 0;
-    }
-
-    @Override
-    public String toString() {
-        return "TypeManifestation." + name();
     }
 }

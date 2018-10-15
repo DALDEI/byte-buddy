@@ -2,14 +2,13 @@ package net.bytebuddy.dynamic.scaffold.inline;
 
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 import org.mockito.Mock;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 public class MethodRebaseResolverDisabledTest {
 
@@ -32,7 +31,7 @@ public class MethodRebaseResolverDisabledTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(MethodRebaseResolver.Disabled.class).apply();
+    public void testNoRebaseableMethods() throws Exception {
+        assertThat(MethodRebaseResolver.Disabled.INSTANCE.asTokenMap().size(), is(0));
     }
 }

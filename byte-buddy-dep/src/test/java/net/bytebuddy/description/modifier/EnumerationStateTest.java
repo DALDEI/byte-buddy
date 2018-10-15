@@ -3,7 +3,7 @@ package net.bytebuddy.description.modifier;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
-import org.mockito.asm.Opcodes;
+import org.objectweb.asm.Opcodes;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -22,9 +22,7 @@ public class EnumerationStateTest extends AbstractModifierContributorTest {
     public static Collection<Object[]> data() {
         return Arrays.asList(new Object[][]{
                 {EnumerationState.PLAIN, 0, true},
-                {EnumerationState.is(false), 0, true},
-                {EnumerationState.ENUMERATION, Opcodes.ACC_ENUM, false},
-                {EnumerationState.is(true), Opcodes.ACC_ENUM, false}
+                {EnumerationState.ENUMERATION, Opcodes.ACC_ENUM, false}
         });
     }
 

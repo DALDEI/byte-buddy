@@ -30,7 +30,9 @@ public interface FilterableList<T, S extends FilterableList<T, S>> extends List<
      */
     T getOnly();
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     S subList(int fromIndex, int toIndex);
 
     /**
@@ -41,28 +43,38 @@ public interface FilterableList<T, S extends FilterableList<T, S>> extends List<
      */
     class Empty<T, S extends FilterableList<T, S>> extends AbstractList<T> implements FilterableList<T, S> {
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public T get(int index) {
             throw new IndexOutOfBoundsException("index = " + index);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public int size() {
             return 0;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public T getOnly() {
             throw new IllegalStateException("size = 0");
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         @SuppressWarnings("unchecked")
         public S filter(ElementMatcher<? super T> elementMatcher) {
             return (S) this;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         @SuppressWarnings("unchecked")
         public S subList(int fromIndex, int toIndex) {
             if (fromIndex == toIndex && toIndex == 0) {
@@ -83,7 +95,14 @@ public interface FilterableList<T, S extends FilterableList<T, S>> extends List<
      */
     abstract class AbstractBase<T, S extends FilterableList<T, S>> extends AbstractList<T> implements FilterableList<T, S> {
 
-        @Override
+        /**
+         * A convenience variable indicating the index of a list's only variable.
+         */
+        private static final int ONLY = 0;
+
+        /**
+         * {@inheritDoc}
+         */
         @SuppressWarnings("unchecked")
         public S filter(ElementMatcher<? super T> elementMatcher) {
             List<T> filteredElements = new ArrayList<T>(size());
@@ -97,16 +116,19 @@ public interface FilterableList<T, S extends FilterableList<T, S>> extends List<
                     : wrap(filteredElements);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public T getOnly() {
             if (size() != 1) {
                 throw new IllegalStateException("size = " + size());
-            } else {
-                return get(0);
             }
+            return get(ONLY);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public S subList(int fromIndex, int toIndex) {
             return wrap(super.subList(fromIndex, toIndex));
         }

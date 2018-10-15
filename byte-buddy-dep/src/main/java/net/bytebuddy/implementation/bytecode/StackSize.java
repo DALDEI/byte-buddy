@@ -1,5 +1,10 @@
 package net.bytebuddy.implementation.bytecode;
 
+import net.bytebuddy.description.type.TypeDefinition;
+
+import java.util.Arrays;
+import java.util.Collection;
+
 /**
  * Represents the size of a Java type on the operand stack.
  */
@@ -51,15 +56,44 @@ public enum StackSize {
     }
 
     /**
-     * Returns the sum of all operand stack sizes.
+     * Represents a numeric size as a {@link StackSize}.
      *
-     * @param types The types of interest.
-     * @return The sum of their sizes.
+     * @param size The size to represent. Must be {@code 0}, {@code 1} or {@code 2}.
+     * @return A stack size representation for the given value.
      */
-    public static int sizeOf(Iterable<? extends Class<?>> types) {
+    public static StackSize of(int size) {
+        switch (size) {
+            case 0:
+                return ZERO;
+            case 1:
+                return SINGLE;
+            case 2:
+                return DOUBLE;
+            default:
+                throw new IllegalArgumentException("Unexpected stack size value: " + size);
+        }
+    }
+
+    /**
+     * Computes the stack size of all supplied types.
+     *
+     * @param typeDefinition The types for which to compute the size.
+     * @return The total size of all types.
+     */
+    public static int of(TypeDefinition... typeDefinition) {
+        return of(Arrays.asList(typeDefinition));
+    }
+
+    /**
+     * Computes the stack size of all supplied types.
+     *
+     * @param typeDefinitions The types for which to compute the size.
+     * @return The total size of all types.
+     */
+    public static int of(Collection<? extends TypeDefinition> typeDefinitions) {
         int size = 0;
-        for (Class<?> type : types) {
-            size += of(type).getSize();
+        for (TypeDefinition typeDefinition : typeDefinitions) {
+            size += typeDefinition.getStackSize().getSize();
         }
         return size;
     }
@@ -120,10 +154,5 @@ public enum StackSize {
             default:
                 throw new AssertionError();
         }
-    }
-
-    @Override
-    public String toString() {
-        return "StackSize." + name();
     }
 }

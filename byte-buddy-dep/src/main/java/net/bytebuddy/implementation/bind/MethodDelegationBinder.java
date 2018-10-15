@@ -1,18 +1,21 @@
 package net.bytebuddy.implementation.bind;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bind.annotation.BindingPriority;
+import net.bytebuddy.implementation.bytecode.Removal;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
+import net.bytebuddy.implementation.bytecode.member.MethodReturn;
+import net.bytebuddy.utility.CompoundList;
 import org.objectweb.asm.MethodVisitor;
 
+import java.io.PrintStream;
 import java.util.*;
-
-import static net.bytebuddy.matcher.ElementMatchers.isVisibleTo;
 
 /**
  * A method delegation binder is responsible for creating a method binding for a <i>source method</i> to a
@@ -26,17 +29,56 @@ import static net.bytebuddy.matcher.ElementMatchers.isVisibleTo;
 public interface MethodDelegationBinder {
 
     /**
-     * Attempts a binding of a source method to a given target method.
+     * Compiles this method delegation binder for a target method.
      *
-     * @param implementationTarget The target of the current implementation onto which this binding
-     *                             is to be applied.
-     * @param source               The method that is to be bound to the {@code target} method.
-     * @param target               The method that is to be invoked as a delegate.
-     * @return A binding representing this attempt to bind the {@code source} method to the {@code target} method.
+     * @param candidate The target method to bind.
+     * @return A compiled target for binding.
      */
-    MethodBinding bind(Implementation.Target implementationTarget,
-                       MethodDescription source,
-                       MethodDescription target);
+    Record compile(MethodDescription candidate);
+
+    /**
+     * A method delegation that was compiled to a target method.
+     */
+    interface Record {
+
+        /**
+         * Attempts a binding of a source method to this compiled target.
+         *
+         * @param implementationTarget The target of the current implementation onto which this binding is to be applied.
+         * @param source               The method that is to be bound to the {@code target} method.
+         * @param terminationHandler   The termination handler to apply.
+         * @param methodInvoker        The method invoker to use.
+         * @param assigner             The assigner to use.
+         * @return A binding representing this attempt to bind the {@code source} method to the {@code target} method.
+         */
+        MethodBinding bind(Implementation.Target implementationTarget,
+                           MethodDescription source,
+                           TerminationHandler terminationHandler,
+                           MethodInvoker methodInvoker,
+                           Assigner assigner);
+
+        /**
+         * A compiled method delegation binder that only yields illegal bindings.
+         */
+        enum Illegal implements Record {
+
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * {@inheritDoc}
+             */
+            public MethodBinding bind(Implementation.Target implementationTarget,
+                                      MethodDescription source,
+                                      TerminationHandler terminationHandler,
+                                      MethodInvoker methodInvoker,
+                                      Assigner assigner) {
+                return MethodBinding.Illegal.INSTANCE;
+            }
+        }
+    }
 
     /**
      * Implementations are used as delegates for invoking a method that was bound
@@ -63,20 +105,18 @@ public interface MethodDelegationBinder {
              */
             INSTANCE;
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public StackManipulation invoke(MethodDescription methodDescription) {
                 return MethodInvocation.invoke(methodDescription);
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.MethodInvoker.Simple." + name();
             }
         }
 
         /**
          * A method invocation that enforces a virtual invocation that is dispatched on a given type.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Virtual implements MethodInvoker {
 
             /**
@@ -93,25 +133,11 @@ public interface MethodDelegationBinder {
                 this.typeDescription = typeDescription;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public StackManipulation invoke(MethodDescription methodDescription) {
                 return MethodInvocation.invoke(methodDescription).virtual(typeDescription);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && typeDescription.equals(((Virtual) other).typeDescription);
-            }
-
-            @Override
-            public int hashCode() {
-                return typeDescription.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.MethodInvoker.Virtual{typeDescription=" + typeDescription + '}';
             }
         }
     }
@@ -145,35 +171,38 @@ public interface MethodDelegationBinder {
              */
             INSTANCE;
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Void getIdentificationToken() {
-                throw new IllegalStateException();
+                throw new IllegalStateException("An illegal binding does not define an identification token");
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isValid() {
                 return false;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
                 throw new IllegalStateException("An illegal parameter binding must not be applied");
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.ParameterBinding.Illegal." + name();
             }
         }
 
         /**
          * An anonymous binding of a target method parameter.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Anonymous implements ParameterBinding<Object> {
 
             /**
              * A pseudo-token that is not exposed and therefore anonymous.
              */
+            @HashCodeAndEqualsPlugin.ValueHandling(HashCodeAndEqualsPlugin.ValueHandling.Sort.IGNORE)
             private final Object anonymousToken;
 
             /**
@@ -192,38 +221,25 @@ public interface MethodDelegationBinder {
                 anonymousToken = new Object();
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Object getIdentificationToken() {
                 return anonymousToken;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isValid() {
                 return delegate.isValid();
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
                 return delegate.apply(methodVisitor, implementationContext);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && delegate.equals(((Anonymous) other).delegate);
-            }
-
-            @Override
-            public int hashCode() {
-                return 31 * delegate.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.ParameterBinding.Anonymous{" +
-                        "anonymousToken=" + anonymousToken +
-                        ", delegate=" + delegate +
-                        '}';
             }
         }
 
@@ -235,6 +251,7 @@ public interface MethodDelegationBinder {
          * @param <T> The type of the identification token.
          * @see net.bytebuddy.implementation.bind.MethodDelegationBinder.AmbiguityResolver
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Unique<T> implements ParameterBinding<T> {
 
             /**
@@ -270,42 +287,25 @@ public interface MethodDelegationBinder {
                 return new Unique<S>(delegate, identificationToken);
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public T getIdentificationToken() {
                 return identificationToken;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isValid() {
                 return delegate.isValid();
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
                 return delegate.apply(methodVisitor, implementationContext);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                if (this == other) return true;
-                if (other == null || getClass() != other.getClass()) return false;
-                Unique<?> unique = (Unique<?>) other;
-                return identificationToken.equals(unique.identificationToken) && delegate.equals(unique.delegate);
-            }
-
-            @Override
-            public int hashCode() {
-                int result = identificationToken.hashCode();
-                result = 31 * result + delegate.hashCode();
-                return result;
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.ParameterBinding.Unique{" +
-                        "identificationToken=" + identificationToken +
-                        ", delegate=" + delegate +
-                        '}';
             }
         }
     }
@@ -352,29 +352,32 @@ public interface MethodDelegationBinder {
              */
             INSTANCE;
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Integer getTargetParameterIndex(Object parameterBindingToken) {
                 throw new IllegalStateException("Method is not bound");
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public MethodDescription getTarget() {
                 throw new IllegalStateException("Method is not bound");
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public boolean isValid() {
                 return false;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
                 throw new IllegalStateException("Cannot delegate to an unbound method");
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.MethodBinding.Illegal." + name();
             }
         }
 
@@ -393,7 +396,7 @@ public interface MethodDelegationBinder {
             /**
              * The target method that for which a binding is to be constructed by this builder..
              */
-            private final MethodDescription target;
+            private final MethodDescription candidate;
 
             /**
              * The current list of stack manipulations for loading values for each parameter onto the operand stack.
@@ -413,15 +416,14 @@ public interface MethodDelegationBinder {
             /**
              * Creates a new builder for the binding of a given method.
              *
-             * @param methodInvoker The method invoker that is used to create the method invocation of the {@code target}
-             *                      method.
-             * @param target        The target method that is target of the binding.
+             * @param methodInvoker The method invoker that is used to create the method invocation of the {@code target} method.
+             * @param candidate     The target method that is target of the binding.
              */
-            public Builder(MethodInvoker methodInvoker, MethodDescription target) {
+            public Builder(MethodInvoker methodInvoker, MethodDescription candidate) {
                 this.methodInvoker = methodInvoker;
-                this.target = target;
-                parameterStackManipulations = new ArrayList<StackManipulation>(target.getParameters().size());
-                registeredTargetIndices = new LinkedHashMap<Object, Integer>(target.getParameters().size());
+                this.candidate = candidate;
+                parameterStackManipulations = new ArrayList<StackManipulation>(candidate.getParameters().size());
+                registeredTargetIndices = new LinkedHashMap<Object, Integer>();
                 nextParameterIndex = 0;
             }
 
@@ -444,41 +446,21 @@ public interface MethodDelegationBinder {
              * @return A binding representing the parameter bindings collected by this builder.
              */
             public MethodBinding build(StackManipulation terminatingManipulation) {
-                if (target.getParameters().size() != nextParameterIndex) {
+                if (candidate.getParameters().size() != nextParameterIndex) {
                     throw new IllegalStateException("The number of parameters bound does not equal the target's number of parameters");
                 }
-                return new Build(target,
+                return new Build(candidate,
                         registeredTargetIndices,
-                        methodInvoker.invoke(target),
+                        methodInvoker.invoke(candidate),
                         parameterStackManipulations,
                         terminatingManipulation);
-            }
-
-            /**
-             * Returns the current parameter index that will be bound on the next call of
-             * {@link Builder#append(net.bytebuddy.implementation.bind.MethodDelegationBinder.ParameterBinding)}.
-             *
-             * @return The next index to be bound.
-             */
-            public int getNextParameterIndex() {
-                return nextParameterIndex;
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.MethodBinding.Builder{" +
-                        "methodInvoker=" + methodInvoker +
-                        ", target=" + target +
-                        ", parameterStackManipulations=" + parameterStackManipulations +
-                        ", registeredTargetIndices=" + registeredTargetIndices +
-                        ", nextParameterIndex=" + nextParameterIndex +
-                        '}';
             }
 
             /**
              * A method binding that was created by a
              * {@link net.bytebuddy.implementation.bind.MethodDelegationBinder.MethodBinding.Builder}.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             protected static class Build implements MethodBinding {
 
                 /**
@@ -529,7 +511,9 @@ public interface MethodDelegationBinder {
                     this.terminatingStackManipulation = terminatingStackManipulation;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public boolean isValid() {
                     boolean result = methodInvocation.isValid() && terminatingStackManipulation.isValid();
                     Iterator<StackManipulation> assignment = parameterStackManipulations.iterator();
@@ -539,58 +523,238 @@ public interface MethodDelegationBinder {
                     return result;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public Integer getTargetParameterIndex(Object parameterBindingToken) {
                     return registeredTargetIndices.get(parameterBindingToken);
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public MethodDescription getTarget() {
                     return target;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
-                    Size size = new Size(0, 0);
-                    for (StackManipulation stackManipulation : parameterStackManipulations) {
-                        size = size.aggregate(stackManipulation.apply(methodVisitor, implementationContext));
+                    return new Compound(
+                            CompoundList.of(parameterStackManipulations, Arrays.asList(methodInvocation, terminatingStackManipulation))
+                    ).apply(methodVisitor, implementationContext);
+                }
+            }
+        }
+    }
+
+    /**
+     * A binding resolver is responsible to choose a method binding between several possible candidates.
+     */
+    interface BindingResolver {
+
+        /**
+         * Resolves a method binding for the {@code source} method.
+         *
+         * @param ambiguityResolver The ambiguity resolver to use.
+         * @param source            The source method being bound.
+         * @param targets           The possible target candidates. The list contains at least one element.
+         * @return The method binding that was chosen.
+         */
+        MethodBinding resolve(AmbiguityResolver ambiguityResolver, MethodDescription source, List<MethodBinding> targets);
+
+        /**
+         * A default implementation of a binding resolver that fully relies on an {@link AmbiguityResolver}.
+         */
+        enum Default implements BindingResolver {
+
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * Represents the index of the only value of two elements in a list.
+             */
+            private static final int ONLY = 0;
+
+            /**
+             * Represents the index of the left value of two elements in a list.
+             */
+            private static final int LEFT = 0;
+
+            /**
+             * Represents the index of the right value of two elements in a list.
+             */
+            private static final int RIGHT = 1;
+
+            /**
+             * {@inheritDoc}
+             */
+            public MethodBinding resolve(AmbiguityResolver ambiguityResolver, MethodDescription source, List<MethodBinding> targets) {
+                return doResolve(ambiguityResolver, source, new ArrayList<MethodBinding>(targets));
+            }
+
+            /**
+             * Resolves a method binding for the {@code source} method.
+             *
+             * @param ambiguityResolver The ambiguity resolver to use.
+             * @param source            The source method being bound.
+             * @param targets           The possible target candidates. The list contains at least one element and is mutable.
+             * @return The method binding that was chosen.
+             */
+            private MethodBinding doResolve(AmbiguityResolver ambiguityResolver, MethodDescription source, List<MethodBinding> targets) {
+                switch (targets.size()) {
+                    case 1:
+                        return targets.get(ONLY);
+                    case 2: {
+                        MethodBinding left = targets.get(LEFT);
+                        MethodBinding right = targets.get(RIGHT);
+                        switch (ambiguityResolver.resolve(source, left, right)) {
+                            case LEFT:
+                                return left;
+                            case RIGHT:
+                                return right;
+                            case AMBIGUOUS:
+                            case UNKNOWN:
+                                throw new IllegalArgumentException("Cannot resolve ambiguous delegation of " + source + " to " + left + " or " + right);
+                            default:
+                                throw new AssertionError();
+                        }
                     }
-                    size = size.aggregate(methodInvocation.apply(methodVisitor, implementationContext));
-                    return size.aggregate(terminatingStackManipulation.apply(methodVisitor, implementationContext));
+                    default: /* case 3+: */ {
+                        MethodBinding left = targets.get(LEFT);
+                        MethodBinding right = targets.get(RIGHT);
+                        switch (ambiguityResolver.resolve(source, left, right)) {
+                            case LEFT:
+                                targets.remove(RIGHT);
+                                return doResolve(ambiguityResolver, source, targets);
+                            case RIGHT:
+                                targets.remove(LEFT);
+                                return doResolve(ambiguityResolver, source, targets);
+                            case AMBIGUOUS:
+                            case UNKNOWN:
+                                targets.remove(RIGHT); // Remove right element first due to index alteration!
+                                targets.remove(LEFT);
+                                MethodBinding subResult = doResolve(ambiguityResolver, source, targets);
+                                switch (ambiguityResolver.resolve(source, left, subResult).merge(ambiguityResolver.resolve(source, right, subResult))) {
+                                    case RIGHT:
+                                        return subResult;
+                                    case LEFT:
+                                    case AMBIGUOUS:
+                                    case UNKNOWN:
+                                        throw new IllegalArgumentException("Cannot resolve ambiguous delegation of " + source + " to " + left + " or " + right);
+                                    default:
+                                        throw new AssertionError();
+                                }
+                            default:
+                                throw new IllegalStateException("Unexpected amount of targets: " + targets);
+                        }
+                    }
                 }
+            }
+        }
 
-                @Override
-                public boolean equals(Object other) {
-                    if (this == other) return true;
-                    if (other == null || getClass() != other.getClass()) return false;
-                    Build build = (Build) other;
-                    return methodInvocation.equals(build.methodInvocation)
-                            && parameterStackManipulations.equals(build.parameterStackManipulations)
-                            && registeredTargetIndices.equals(build.registeredTargetIndices)
-                            && terminatingStackManipulation.equals(build.terminatingStackManipulation)
-                            && target.equals(build.target);
-                }
+        /**
+         * A binding resolver that only binds a method if it has a unique binding.
+         */
+        enum Unique implements BindingResolver {
 
-                @Override
-                public int hashCode() {
-                    int result = target.hashCode();
-                    result = 31 * result + registeredTargetIndices.hashCode();
-                    result = 31 * result + methodInvocation.hashCode();
-                    result = 31 * result + parameterStackManipulations.hashCode();
-                    result = 31 * result + terminatingStackManipulation.hashCode();
-                    return result;
-                }
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
 
-                @Override
-                public String toString() {
-                    return "MethodDelegationBinder.MethodBinding.Builder.Build{" +
-                            "target=" + target +
-                            ", registeredTargetIndices=" + registeredTargetIndices +
-                            ", methodInvocation=" + methodInvocation +
-                            ", parameterStackManipulations=" + parameterStackManipulations +
-                            ", terminatingStackManipulation=" + terminatingStackManipulation +
-                            '}';
+            /**
+             * Indicates the first index of a list only containing one element.
+             */
+            private static final int ONLY = 0;
+
+            /**
+             * {@inheritDoc}
+             */
+            public MethodBinding resolve(AmbiguityResolver ambiguityResolver, MethodDescription source, List<MethodBinding> targets) {
+                if (targets.size() == 1) {
+                    return targets.get(ONLY);
+                } else {
+                    throw new IllegalStateException(source + " allowed for more than one binding: " + targets);
                 }
+            }
+        }
+
+        /**
+         * Binds a method using another resolver and prints the selected binding to a {@link PrintStream}.
+         */
+        @HashCodeAndEqualsPlugin.Enhance
+        class StreamWriting implements BindingResolver {
+
+            /**
+             * The delegate binding resolver.
+             */
+            private final BindingResolver delegate;
+
+            /**
+             * The print stream to bind write the chosen binding to.
+             */
+            private final PrintStream printStream;
+
+            /**
+             * Creates a new stream writing binding resolver.
+             *
+             * @param delegate    The delegate binding resolver.
+             * @param printStream The print stream to bind write the chosen binding to.
+             */
+            public StreamWriting(BindingResolver delegate, PrintStream printStream) {
+                this.delegate = delegate;
+                this.printStream = printStream;
+            }
+
+            /**
+             * Creates a binding resolver that writes results to {@link System#out} and delegates to the {@link Default} resolver.
+             *
+             * @return An appropriate binding resolver.
+             */
+            public static BindingResolver toSystemOut() {
+                return toSystemOut(Default.INSTANCE);
+            }
+
+            /**
+             * Creates a binding resolver that writes results to {@link System#out} and delegates to the {@link Default} resolver.
+             *
+             * @param bindingResolver The delegate binding resolver.
+             * @return An appropriate binding resolver.
+             */
+            public static BindingResolver toSystemOut(BindingResolver bindingResolver) {
+                return new StreamWriting(bindingResolver, System.out);
+            }
+
+            /**
+             * Creates a binding resolver that writes results to {@link System#err} and delegates to the {@link Default} resolver.
+             *
+             * @return An appropriate binding resolver.
+             */
+            public static BindingResolver toSystemError() {
+                return toSystemError(Default.INSTANCE);
+            }
+
+            /**
+             * Creates a binding resolver that writes results to {@link System#err}.
+             *
+             * @param bindingResolver The delegate binding resolver.
+             * @return An appropriate binding resolver.
+             */
+            public static BindingResolver toSystemError(BindingResolver bindingResolver) {
+                return new StreamWriting(bindingResolver, System.err);
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public MethodBinding resolve(AmbiguityResolver ambiguityResolver, MethodDescription source, List<MethodBinding> targets) {
+                MethodBinding methodBinding = delegate.resolve(ambiguityResolver, source, targets);
+                printStream.println("Binding " + source + " as delegation to " + methodBinding.getTarget());
+                return methodBinding;
             }
         }
     }
@@ -599,13 +763,13 @@ public interface MethodDelegationBinder {
      * Implementations of this interface are able to attempt the resolution of two successful bindings of a method
      * to two different target methods in order to identify a dominating binding.
      */
-    @SuppressFBWarnings(value = "IC_SUPERCLASS_USES_SUBCLASS_DURING_INITIALIZATION", justification = "No circularity, initialization is safe")
+    @SuppressFBWarnings(value = "IC_SUPERCLASS_USES_SUBCLASS_DURING_INITIALIZATION", justification = "Safe initialization is implied")
     interface AmbiguityResolver {
 
         /**
          * The default ambiguity resolver to use.
          */
-        AmbiguityResolver DEFAULT = new MethodDelegationBinder.AmbiguityResolver.Chain(BindingPriority.Resolver.INSTANCE,
+        AmbiguityResolver DEFAULT = new MethodDelegationBinder.AmbiguityResolver.Compound(BindingPriority.Resolver.INSTANCE,
                 DeclaringTypeResolver.INSTANCE,
                 ArgumentTypeResolver.INSTANCE,
                 MethodNameEqualityResolver.INSTANCE,
@@ -687,15 +851,12 @@ public interface MethodDelegationBinder {
                         return AMBIGUOUS;
                     case LEFT:
                     case RIGHT:
-                        return other == this ? this : AMBIGUOUS;
+                        return other == UNKNOWN || other == this
+                                ? this
+                                : AMBIGUOUS;
                     default:
                         throw new AssertionError();
                 }
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.AmbiguityResolver.Resolution." + name();
             }
         }
 
@@ -709,14 +870,11 @@ public interface MethodDelegationBinder {
              */
             INSTANCE;
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Resolution resolve(MethodDescription source, MethodBinding left, MethodBinding right) {
                 return Resolution.UNKNOWN;
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.AmbiguityResolver.NoOp." + name();
             }
         }
 
@@ -744,22 +902,20 @@ public interface MethodDelegationBinder {
 
             /**
              * Creates a new directional resolver.
+             *
              * @param left {@code true} if this instance should resolve to the left side.
              */
             Directional(boolean left) {
                 this.left = left;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Resolution resolve(MethodDescription source, MethodBinding left, MethodBinding right) {
                 return this.left
                         ? Resolution.LEFT
                         : Resolution.RIGHT;
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.AmbiguityResolver.Directional." + name();
             }
         }
 
@@ -767,19 +923,20 @@ public interface MethodDelegationBinder {
          * A chain of {@link net.bytebuddy.implementation.bind.MethodDelegationBinder.AmbiguityResolver}s
          * that are applied in the given order until two bindings can be resolved.
          */
-        class Chain implements AmbiguityResolver {
+        @HashCodeAndEqualsPlugin.Enhance
+        class Compound implements AmbiguityResolver {
 
             /**
              * A list of ambiguity resolvers that are applied by this chain in their order of application.
              */
-            private final List<? extends AmbiguityResolver> ambiguityResolvers;
+            private final List<AmbiguityResolver> ambiguityResolvers;
 
             /**
              * Creates an immutable chain of ambiguity resolvers.
              *
              * @param ambiguityResolver The ambiguity resolvers to chain in the order of their application.
              */
-            public Chain(AmbiguityResolver... ambiguityResolver) {
+            public Compound(AmbiguityResolver... ambiguityResolver) {
                 this(Arrays.asList(ambiguityResolver));
             }
 
@@ -788,11 +945,20 @@ public interface MethodDelegationBinder {
              *
              * @param ambiguityResolvers The ambiguity resolvers to chain in the order of their application.
              */
-            public Chain(List<? extends AmbiguityResolver> ambiguityResolvers) {
-                this.ambiguityResolvers = ambiguityResolvers;
+            public Compound(List<? extends AmbiguityResolver> ambiguityResolvers) {
+                this.ambiguityResolvers = new ArrayList<AmbiguityResolver>();
+                for (AmbiguityResolver ambiguityResolver : ambiguityResolvers) {
+                    if (ambiguityResolver instanceof Compound) {
+                        this.ambiguityResolvers.addAll(((Compound) ambiguityResolver).ambiguityResolvers);
+                    } else if (!(ambiguityResolver instanceof NoOp)) {
+                        this.ambiguityResolvers.add(ambiguityResolver);
+                    }
+                }
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public Resolution resolve(MethodDescription source, MethodBinding left, MethodBinding right) {
                 Resolution resolution = Resolution.UNKNOWN;
                 Iterator<? extends AmbiguityResolver> iterator = ambiguityResolvers.iterator();
@@ -801,27 +967,61 @@ public interface MethodDelegationBinder {
                 }
                 return resolution;
             }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && ambiguityResolvers.equals(((Chain) other).ambiguityResolvers);
-            }
-
-            @Override
-            public int hashCode() {
-                return ambiguityResolvers.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "MethodDelegationBinder.AmbiguityResolver.Chain{ambiguityResolvers=" + ambiguityResolvers + '}';
-            }
         }
     }
 
     /**
-     * A helper class that allows to identify a best binding for a given type and source method chosing from a list of given
+     * A termination handler is responsible for terminating a method delegation.
+     */
+    interface TerminationHandler {
+
+        /**
+         * Creates a stack manipulation that is to be applied after the method return.
+         *
+         * @param assigner The supplied assigner.
+         * @param typing   The typing to apply.
+         * @param source   The source method that is bound to the {@code target} method.
+         * @param target   The target method that is subject to be bound by the {@code source} method.
+         * @return A stack manipulation that is applied after the method return.
+         */
+        StackManipulation resolve(Assigner assigner, Assigner.Typing typing, MethodDescription source, MethodDescription target);
+
+        /**
+         * Responsible for creating a {@link StackManipulation}
+         * that is applied after the interception method is applied.
+         */
+        enum Default implements TerminationHandler {
+
+            /**
+             * A termination handler that returns the delegate method's return value.
+             */
+            RETURNING {
+                /** {@inheritDoc} */
+                public StackManipulation resolve(Assigner assigner, Assigner.Typing typing, MethodDescription source, MethodDescription target) {
+                    return new StackManipulation.Compound(assigner.assign(target.isConstructor()
+                                    ? target.getDeclaringType().asGenericType()
+                                    : target.getReturnType(),
+                            source.getReturnType(),
+                            typing), MethodReturn.of(source.getReturnType()));
+                }
+            },
+
+            /**
+             * A termination handler that drops the delegate method's return value.
+             */
+            DROPPING {
+                /** {@inheritDoc} */
+                public StackManipulation resolve(Assigner assigner, Assigner.Typing typing, MethodDescription source, MethodDescription target) {
+                    return Removal.of(target.isConstructor()
+                            ? target.getDeclaringType()
+                            : target.getReturnType());
+                }
+            };
+        }
+    }
+
+    /**
+     * A helper class that allows to identify a best binding for a given type and source method choosing from a list of given
      * target methods by using a given {@link net.bytebuddy.implementation.bind.MethodDelegationBinder}
      * and an {@link net.bytebuddy.implementation.bind.MethodDelegationBinder.AmbiguityResolver}.
      * <p>&nbsp;</p>
@@ -831,27 +1031,13 @@ public interface MethodDelegationBinder {
      * <li>Find a best method among the successful bindings using the {@code AmbiguityResolver}.</li>
      * </ol>
      */
-    class Processor {
+    @HashCodeAndEqualsPlugin.Enhance
+    class Processor implements MethodDelegationBinder.Record {
 
         /**
-         * Represents the index of the only value of two elements in a list.
+         * The delegation records to consider.
          */
-        private static final int ONLY = 0;
-
-        /**
-         * Represents the index of the left value of two elements in a list.
-         */
-        private static final int LEFT = 0;
-
-        /**
-         * Represents the index of the right value of two elements in a list.
-         */
-        private static final int RIGHT = 1;
-
-        /**
-         * This processor's method delegation binder.
-         */
-        private final MethodDelegationBinder methodDelegationBinder;
+        private final List<? extends Record> records;
 
         /**
          * The processor's ambiguity resolver.
@@ -859,124 +1045,42 @@ public interface MethodDelegationBinder {
         private final AmbiguityResolver ambiguityResolver;
 
         /**
-         * Creates a new processor for a method delegation binder.
-         *
-         * @param methodDelegationBinder This processor's method delegation binder.
-         * @param ambiguityResolver      The processor's ambiguity resolver.
+         * The binding resolver being used to select the relevant method binding.
          */
-        public Processor(MethodDelegationBinder methodDelegationBinder, AmbiguityResolver ambiguityResolver) {
-            this.methodDelegationBinder = methodDelegationBinder;
+        private final BindingResolver bindingResolver;
+
+        /**
+         * Creates a new processor.
+         *
+         * @param records           The delegation records to consider.
+         * @param ambiguityResolver The ambiguity resolver to apply.
+         * @param bindingResolver   The binding resolver being used to select the relevant method binding.
+         */
+        public Processor(List<? extends Record> records, AmbiguityResolver ambiguityResolver, BindingResolver bindingResolver) {
+            this.records = records;
             this.ambiguityResolver = ambiguityResolver;
+            this.bindingResolver = bindingResolver;
         }
 
         /**
-         * @param implementationTarget The implementation target for binding the {@code source} method to.
-         * @param source               The source method that is to be bound.
-         * @param targetCandidates     All possible targets for the delegation binding that are to be considered.
-         * @return The best binding that was identified. If no such binding can be identified, an exception is thrown.
+         * {@inheritDoc}
          */
-        public MethodBinding process(Implementation.Target implementationTarget, MethodDescription source, MethodList<?> targetCandidates) {
-            List<MethodBinding> possibleDelegations = bind(implementationTarget, source, targetCandidates);
-            if (possibleDelegations.isEmpty()) {
-                throw new IllegalArgumentException("None of " + targetCandidates + " allows for delegation from " + source);
-            }
-            return resolve(source, possibleDelegations);
-        }
-
-        /**
-         * Creates a list of method bindings for any legal target method.
-         *
-         * @param implementationTarget The implementation target for binding the {@code source} method to.
-         * @param source               The method that is to be bound to any {@code targets} method.
-         * @param targetCandidates     All possible targets for the delegation binding that are to be considered.
-         * @return A list of valid method bindings representing a subset of the given target methods.
-         */
-        private List<MethodBinding> bind(Implementation.Target implementationTarget, MethodDescription source, MethodList<?> targetCandidates) {
-            List<MethodBinding> possibleDelegations = new LinkedList<MethodBinding>();
-            for (MethodDescription targetCandidate : targetCandidates.filter(isVisibleTo(implementationTarget.getTypeDescription()))) {
-                MethodBinding methodBinding = methodDelegationBinder.bind(implementationTarget, source, targetCandidate);
+        public MethodBinding bind(Implementation.Target implementationTarget,
+                                  MethodDescription source,
+                                  TerminationHandler terminationHandler,
+                                  MethodInvoker methodInvoker,
+                                  Assigner assigner) {
+            List<MethodBinding> targets = new ArrayList<MethodBinding>();
+            for (Record record : records) {
+                MethodBinding methodBinding = record.bind(implementationTarget, source, terminationHandler, methodInvoker, assigner);
                 if (methodBinding.isValid()) {
-                    possibleDelegations.add(methodBinding);
+                    targets.add(methodBinding);
                 }
             }
-            return possibleDelegations;
-        }
-
-        /**
-         * Resolves the most specific target method of a list of legal method bindings.
-         *
-         * @param source  The source method that is to be bound.
-         * @param targets A list of possible binding targets.
-         * @return The most specific method binding that was located from the given list of candidate targets.
-         */
-        private MethodBinding resolve(MethodDescription source, List<MethodBinding> targets) {
-            switch (targets.size()) {
-                case 1:
-                    return targets.get(ONLY);
-                case 2: {
-                    MethodBinding left = targets.get(LEFT);
-                    MethodBinding right = targets.get(RIGHT);
-                    switch (ambiguityResolver.resolve(source, left, right)) {
-                        case LEFT:
-                            return left;
-                        case RIGHT:
-                            return right;
-                        case AMBIGUOUS:
-                        case UNKNOWN:
-                            throw new IllegalArgumentException("Cannot resolve ambiguous delegation of " + source + " to " + left + " or " + right);
-                        default:
-                            throw new AssertionError();
-                    }
-                }
-                default: /* case 3+: */ {
-                    MethodBinding left = targets.get(LEFT);
-                    MethodBinding right = targets.get(RIGHT);
-                    switch (ambiguityResolver.resolve(source, left, right)) {
-                        case LEFT:
-                            targets.remove(RIGHT);
-                            return resolve(source, targets);
-                        case RIGHT:
-                            targets.remove(LEFT);
-                            return resolve(source, targets);
-                        case AMBIGUOUS:
-                        case UNKNOWN:
-                            targets.remove(RIGHT); // Remove right element first due to index alteration!
-                            targets.remove(LEFT);
-                            MethodBinding subResult = resolve(source, targets);
-                            switch (ambiguityResolver.resolve(source, left, subResult).merge(ambiguityResolver.resolve(source, right, subResult))) {
-                                case RIGHT:
-                                    return subResult;
-                                case LEFT:
-                                case AMBIGUOUS:
-                                case UNKNOWN:
-                                    throw new IllegalArgumentException("Cannot resolve ambiguous delegation of " + source + " to " + left + " or " + right);
-                                default:
-                                    throw new AssertionError();
-                            }
-                        default:
-                            throw new AssertionError();
-                    }
-                }
+            if (targets.isEmpty()) {
+                throw new IllegalArgumentException("None of " + records + " allows for delegation from " + source);
             }
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && ambiguityResolver.equals(((Processor) other).ambiguityResolver)
-                    && methodDelegationBinder.equals(((Processor) other).methodDelegationBinder);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * methodDelegationBinder.hashCode() + ambiguityResolver.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodDelegationBinder.Processor{"
-                    + "methodDelegationBinder=" + methodDelegationBinder
-                    + ", ambiguityResolver=" + ambiguityResolver + '}';
+            return bindingResolver.resolve(ambiguityResolver, source, targets);
         }
     }
 }

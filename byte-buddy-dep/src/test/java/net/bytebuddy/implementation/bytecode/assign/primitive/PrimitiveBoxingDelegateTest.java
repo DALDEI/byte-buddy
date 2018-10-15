@@ -20,8 +20,8 @@ import org.objectweb.asm.Opcodes;
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -43,7 +43,7 @@ public class PrimitiveBoxingDelegateTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription targetType;
+    private TypeDescription.Generic targetType;
 
     @Mock
     private Assigner chainedAssigner;
@@ -64,7 +64,7 @@ public class PrimitiveBoxingDelegateTest {
         this.primitiveType = primitiveType;
         primitiveTypeDescription = mock(TypeDescription.class);
         when(primitiveTypeDescription.represents(primitiveType)).thenReturn(true);
-        referenceTypeDescription = new TypeDescription.ForLoadedType(referenceType);
+        referenceTypeDescription = TypeDescription.ForLoadedType.of(referenceType);
         this.boxingMethodDescriptor = boxingMethodDescriptor;
         this.sizeChange = sizeChange;
     }
@@ -85,7 +85,7 @@ public class PrimitiveBoxingDelegateTest {
 
     @Before
     public void setUp() throws Exception {
-        when(chainedAssigner.assign(any(TypeDescription.class), any(TypeDescription.class), any(Assigner.Typing.class)))
+        when(chainedAssigner.assign(any(TypeDescription.Generic.class), any(TypeDescription.Generic.class), any(Assigner.Typing.class)))
                 .thenReturn(stackManipulation);
         when(stackManipulation.isValid())
                 .thenReturn(true);
@@ -110,7 +110,7 @@ public class PrimitiveBoxingDelegateTest {
         verify(primitiveTypeDescription).represents(primitiveType);
         verify(primitiveTypeDescription, atLeast(1)).represents(any(Class.class));
         verifyNoMoreInteractions(primitiveTypeDescription);
-        verify(chainedAssigner).assign(referenceTypeDescription, targetType, Assigner.Typing.STATIC);
+        verify(chainedAssigner).assign(referenceTypeDescription.asGenericType(), targetType, Assigner.Typing.STATIC);
         verifyNoMoreInteractions(chainedAssigner);
         verify(methodVisitor).visitMethodInsn(Opcodes.INVOKESTATIC,
                 referenceTypeDescription.getInternalName(),

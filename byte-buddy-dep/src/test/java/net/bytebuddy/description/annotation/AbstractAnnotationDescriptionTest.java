@@ -1,25 +1,40 @@
 package net.bytebuddy.description.annotation;
 
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.enumeration.EnumerationDescription;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
 import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
-import net.bytebuddy.utility.PropertyDispatcher;
+import net.bytebuddy.description.type.TypeVariableToken;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.pool.TypePool;
+import net.bytebuddy.utility.OpenedClassReader;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.objectweb.asm.AnnotationVisitor;
+import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 
 import java.lang.annotation.*;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -123,7 +138,9 @@ public abstract class AbstractAnnotationDescriptionTest {
 
     private static final String[] OTHER_STRING_ARRAY = new String[]{BAR};
 
-    private Annotation first, second, defaultFirst, defaultSecond;
+    private Annotation first, second, defaultFirst, defaultSecond, explicitTarget, broken;
+
+    private Class<?> brokenCarrier;
 
     protected abstract AnnotationDescription describe(Annotation annotation, Class<?> declaringType);
 
@@ -137,6 +154,10 @@ public abstract class AbstractAnnotationDescriptionTest {
             carrier = DefaultSample.class;
         } else if (annotation == defaultSecond) {
             carrier = NonDefaultSample.class;
+        } else if (annotation == explicitTarget) {
+            carrier = ExplicitTarget.Carrier.class;
+        } else if (annotation == broken) {
+            carrier = brokenCarrier;
         } else {
             throw new AssertionError();
         }
@@ -149,16 +170,24 @@ public abstract class AbstractAnnotationDescriptionTest {
         second = BarSample.class.getAnnotation(Sample.class);
         defaultFirst = DefaultSample.class.getAnnotation(SampleDefault.class);
         defaultSecond = NonDefaultSample.class.getAnnotation(SampleDefault.class);
+        explicitTarget = ExplicitTarget.Carrier.class.getAnnotation(ExplicitTarget.class);
+        brokenCarrier = new ByteBuddy()
+                .subclass(Object.class)
+                .visit(new AnnotationValueBreaker())
+                .make()
+                .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER_PERSISTENT)
+                .getLoaded();
+        broken = brokenCarrier.getAnnotations()[0];
     }
 
     @Test
     public void testPrecondition() throws Exception {
-        assertThat(describe(first), equalTo(describe(first)));
-        assertThat(describe(second), equalTo(describe(second)));
-        assertThat(describe(first), not(equalTo(describe(second))));
-        assertThat(describe(first).getAnnotationType(), equalTo(describe(second).getAnnotationType()));
-        assertThat(describe(first).getAnnotationType(), not(equalTo((TypeDescription) new TypeDescription.ForLoadedType(Other.class))));
-        assertThat(describe(second).getAnnotationType(), not(equalTo((TypeDescription) new TypeDescription.ForLoadedType(Other.class))));
+        assertThat(describe(first), is(describe(first)));
+        assertThat(describe(second), is(describe(second)));
+        assertThat(describe(first), not(describe(second)));
+        assertThat(describe(first).getAnnotationType(), is(describe(second).getAnnotationType()));
+        assertThat(describe(first).getAnnotationType(), not((TypeDescription) TypeDescription.ForLoadedType.of(Other.class)));
+        assertThat(describe(second).getAnnotationType(), not((TypeDescription) TypeDescription.ForLoadedType.of(Other.class)));
         assertThat(describe(first).getAnnotationType().represents(first.annotationType()), is(true));
         assertThat(describe(second).getAnnotationType().represents(second.annotationType()), is(true));
     }
@@ -171,9 +200,14 @@ public abstract class AbstractAnnotationDescriptionTest {
 
     private void assertToString(String actual, Annotation loaded) throws Exception {
         assertThat(actual, startsWith("@" + loaded.annotationType().getName()));
+        String loadedString = loaded.toString();
+        if (loadedString.length() - loadedString.replace(",", "").length() != loaded.annotationType().getDeclaredMethods().length - 1) {
+            throw new AssertionError("Unexpected amount of commas for " + loaded); // Expect tested annotations not to contain commas in values.
+        }
         for (Method method : loaded.annotationType().getDeclaredMethods()) {
-            assertThat(actual, containsString(method.getName() + "="
-                    + PropertyDispatcher.of(method.getReturnType()).toString(method.invoke(loaded))));
+            assertThat(loadedString.split(method.getName() + "=", -1).length - 1, is(1)); // Expect property delimiter not to exist as value.
+            int start = loadedString.indexOf(method.getName() + "="), end = loadedString.indexOf(',', start);
+            assertThat(actual, containsString(loadedString.substring(start, end == -1 ? loadedString.length() - 1 : end)));
         }
     }
 
@@ -181,49 +215,49 @@ public abstract class AbstractAnnotationDescriptionTest {
     public void testHashCode() throws Exception {
         assertThat(describe(first).hashCode(), is(describe(first).hashCode()));
         assertThat(describe(second).hashCode(), is(describe(second).hashCode()));
-        assertThat(describe(first).hashCode(), not(is(describe(second).hashCode())));
+        assertThat(describe(first).hashCode(), not(describe(second).hashCode()));
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void testEquals() throws Exception {
         AnnotationDescription identical = describe(first);
-        assertThat(identical, equalTo(identical));
+        assertThat(identical, is(identical));
         AnnotationDescription equalFirst = mock(AnnotationDescription.class);
-        when(equalFirst.getAnnotationType()).thenReturn(new TypeDescription.ForLoadedType(first.annotationType()));
+        when(equalFirst.getAnnotationType()).thenReturn(TypeDescription.ForLoadedType.of(first.annotationType()));
         when(equalFirst.getValue(Mockito.any(MethodDescription.InDefinedShape.class))).then(new Answer<Object>() {
-            @Override
             public Object answer(InvocationOnMock invocation) throws Throwable {
                 MethodDescription.InDefinedShape method = (MethodDescription.InDefinedShape) invocation.getArguments()[0];
                 return AnnotationDescription.ForLoadedAnnotation.of(first).getValue(method);
             }
         });
-        assertThat(describe(first), equalTo(equalFirst));
+        assertThat(describe(first), is(equalFirst));
         AnnotationDescription equalSecond = mock(AnnotationDescription.class);
-        when(equalSecond.getAnnotationType()).thenReturn(new TypeDescription.ForLoadedType(first.annotationType()));
+        when(equalSecond.getAnnotationType()).thenReturn(TypeDescription.ForLoadedType.of(first.annotationType()));
         when(equalSecond.getValue(Mockito.any(MethodDescription.InDefinedShape.class))).then(new Answer<Object>() {
-            @Override
             public Object answer(InvocationOnMock invocation) throws Throwable {
                 MethodDescription.InDefinedShape method = (MethodDescription.InDefinedShape) invocation.getArguments()[0];
                 return AnnotationDescription.ForLoadedAnnotation.of(second).getValue(method);
             }
         });
-        assertThat(describe(second), equalTo(equalSecond));
+        assertThat(describe(second), is(equalSecond));
         AnnotationDescription equalFirstTypeOnly = mock(AnnotationDescription.class);
-        when(equalFirstTypeOnly.getAnnotationType()).thenReturn(new TypeDescription.ForLoadedType(Other.class));
+        when(equalFirstTypeOnly.getAnnotationType()).thenReturn(TypeDescription.ForLoadedType.of(Other.class));
         when(equalFirstTypeOnly.getValue(Mockito.any(MethodDescription.InDefinedShape.class))).then(new Answer<Object>() {
-            @Override
             public Object answer(InvocationOnMock invocation) throws Throwable {
                 MethodDescription.InDefinedShape method = (MethodDescription.InDefinedShape) invocation.getArguments()[0];
                 return AnnotationDescription.ForLoadedAnnotation.of(first).getValue(method);
             }
         });
-        assertThat(describe(first), not(equalTo(equalFirstTypeOnly)));
+        assertThat(describe(first), not(equalFirstTypeOnly));
         AnnotationDescription equalFirstNameOnly = mock(AnnotationDescription.class);
-        when(equalFirstNameOnly.getAnnotationType()).thenReturn(new TypeDescription.ForLoadedType(first.annotationType()));
-        when(equalFirstNameOnly.getValue(Mockito.any(MethodDescription.InDefinedShape.class))).thenReturn(null);
-        assertThat(describe(first), not(equalTo(equalFirstNameOnly)));
-        assertThat(describe(first), not(equalTo(equalSecond)));
-        assertThat(describe(first), not(equalTo(new Object())));
+        when(equalFirstNameOnly.getAnnotationType()).thenReturn(TypeDescription.ForLoadedType.of(first.annotationType()));
+        AnnotationValue<?, ?> annotationValue = mock(AnnotationValue.class);
+        when(annotationValue.resolve()).thenReturn(null);
+        when(equalFirstNameOnly.getValue(Mockito.any(MethodDescription.InDefinedShape.class))).thenReturn((AnnotationValue) annotationValue);
+        assertThat(describe(first), not(equalFirstNameOnly));
+        assertThat(describe(first), not(equalSecond));
+        assertThat(describe(first), not(new Object()));
         assertThat(describe(first), not(equalTo(null)));
     }
 
@@ -234,18 +268,18 @@ public abstract class AbstractAnnotationDescriptionTest {
 
     @Test
     public void testLoadedEquals() throws Exception {
-        assertThat(describe(first).prepare(Sample.class).load(), equalTo(first));
-        assertThat(describe(first).prepare(Sample.class).load(), equalTo(describe(first).prepare(Sample.class).load()));
-        assertThat(describe(first).prepare(Sample.class).load(), not(equalTo(describe(second).prepare(Sample.class).load())));
-        assertThat(describe(second).prepare(Sample.class).load(), equalTo(second));
-        assertThat(describe(first).prepare(Sample.class).load(), not(equalTo(second)));
+        assertThat(describe(first).prepare(Sample.class).load(), is(first));
+        assertThat(describe(first).prepare(Sample.class).load(), is(describe(first).prepare(Sample.class).load()));
+        assertThat(describe(first).prepare(Sample.class).load(), not(describe(second).prepare(Sample.class).load()));
+        assertThat(describe(second).prepare(Sample.class).load(), is(second));
+        assertThat(describe(first).prepare(Sample.class).load(), not(second));
     }
 
     @Test
     public void testLoadedHashCode() throws Exception {
-        assertThat(describe(first).prepare(Sample.class).load().hashCode(), equalTo(first.hashCode()));
-        assertThat(describe(second).prepare(Sample.class).load().hashCode(), equalTo(second.hashCode()));
-        assertThat(describe(first).prepare(Sample.class).load().hashCode(), not(equalTo(second.hashCode())));
+        assertThat(describe(first).prepare(Sample.class).load().hashCode(), is(first.hashCode()));
+        assertThat(describe(second).prepare(Sample.class).load().hashCode(), is(second.hashCode()));
+        assertThat(describe(first).prepare(Sample.class).load().hashCode(), not(second.hashCode()));
     }
 
     @Test
@@ -255,9 +289,21 @@ public abstract class AbstractAnnotationDescriptionTest {
     }
 
     @Test
+    public void testToString() throws Exception {
+        assertToString(describe(first).prepare(Sample.class).toString(), first);
+        assertToString(describe(second).prepare(Sample.class).toString(), second);
+    }
+
+    @Test
+    @Ignore("Add better handling for annotations with inconsistent values")
+    public void testBrokenAnnotation() throws Exception {
+        describe(broken);
+    }
+
+    @Test
     public void testLoadedAnnotationType() throws Exception {
-        assertEquals(Sample.class, describe(first).prepare(Sample.class).load().annotationType());
-        assertEquals(Sample.class, describe(second).prepare(Sample.class).load().annotationType());
+        assertThat(describe(first).prepare(Sample.class).load().annotationType(), CoreMatchers.<Class<?>>is(Sample.class));
+        assertThat(describe(second).prepare(Sample.class).load().annotationType(), CoreMatchers.<Class<?>>is(Sample.class));
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -285,10 +331,10 @@ public abstract class AbstractAnnotationDescriptionTest {
         assertValue(second, "doubleValue", DOUBLE, DOUBLE);
         assertValue(first, "stringValue", FOO, FOO);
         assertValue(second, "stringValue", BAR, BAR);
-        assertValue(first, "classValue", new TypeDescription.ForLoadedType(CLASS), CLASS);
-        assertValue(second, "classValue", new TypeDescription.ForLoadedType(CLASS), CLASS);
-        assertValue(first, "arrayClassValue", new TypeDescription.ForLoadedType(ARRAY_CLASS), ARRAY_CLASS);
-        assertValue(second, "arrayClassValue", new TypeDescription.ForLoadedType(ARRAY_CLASS), ARRAY_CLASS);
+        assertValue(first, "classValue", TypeDescription.ForLoadedType.of(CLASS), CLASS);
+        assertValue(second, "classValue", TypeDescription.ForLoadedType.of(CLASS), CLASS);
+        assertValue(first, "arrayClassValue", TypeDescription.ForLoadedType.of(ARRAY_CLASS), ARRAY_CLASS);
+        assertValue(second, "arrayClassValue", TypeDescription.ForLoadedType.of(ARRAY_CLASS), ARRAY_CLASS);
         assertValue(first, "enumValue", new EnumerationDescription.ForLoadedEnumeration(ENUMERATION), ENUMERATION);
         assertValue(second, "enumValue", new EnumerationDescription.ForLoadedEnumeration(ENUMERATION), ENUMERATION);
         assertValue(first, "annotationValue", AnnotationDescription.ForLoadedAnnotation.of(ANNOTATION), ANNOTATION);
@@ -311,8 +357,8 @@ public abstract class AbstractAnnotationDescriptionTest {
         assertValue(second, "doubleArrayValue", DOUBLE_ARRAY, DOUBLE_ARRAY);
         assertValue(first, "stringArrayValue", STRING_ARRAY, STRING_ARRAY);
         assertValue(second, "stringArrayValue", STRING_ARRAY, STRING_ARRAY);
-        assertValue(first, "classArrayValue", new TypeDescription[]{new TypeDescription.ForLoadedType(CLASS)}, CLASS_ARRAY);
-        assertValue(second, "classArrayValue", new TypeDescription[]{new TypeDescription.ForLoadedType(CLASS)}, CLASS_ARRAY);
+        assertValue(first, "classArrayValue", new TypeDescription[]{TypeDescription.ForLoadedType.of(CLASS)}, CLASS_ARRAY);
+        assertValue(second, "classArrayValue", new TypeDescription[]{TypeDescription.ForLoadedType.of(CLASS)}, CLASS_ARRAY);
         assertValue(first, "enumArrayValue", new EnumerationDescription[]{new EnumerationDescription.ForLoadedEnumeration(ENUMERATION)}, ENUMERATION_ARRAY);
         assertValue(second, "enumArrayValue", new EnumerationDescription[]{new EnumerationDescription.ForLoadedEnumeration(ENUMERATION)}, ENUMERATION_ARRAY);
         assertValue(first, "annotationArrayValue", new AnnotationDescription[]{AnnotationDescription.ForLoadedAnnotation.of(ANNOTATION)}, ANNOTATION_ARRAY);
@@ -339,10 +385,10 @@ public abstract class AbstractAnnotationDescriptionTest {
         assertValue(defaultSecond, "doubleValue", OTHER_DOUBLE, OTHER_DOUBLE);
         assertValue(defaultFirst, "stringValue", FOO, FOO);
         assertValue(defaultSecond, "stringValue", BAR, BAR);
-        assertValue(defaultFirst, "classValue", new TypeDescription.ForLoadedType(CLASS), CLASS);
-        assertValue(defaultSecond, "classValue", new TypeDescription.ForLoadedType(OTHER_CLASS), OTHER_CLASS);
-        assertValue(defaultFirst, "arrayClassValue", new TypeDescription.ForLoadedType(ARRAY_CLASS), ARRAY_CLASS);
-        assertValue(defaultSecond, "arrayClassValue", new TypeDescription.ForLoadedType(OTHER_ARRAY_CLASS), OTHER_ARRAY_CLASS);
+        assertValue(defaultFirst, "classValue", TypeDescription.ForLoadedType.of(CLASS), CLASS);
+        assertValue(defaultSecond, "classValue", TypeDescription.ForLoadedType.of(OTHER_CLASS), OTHER_CLASS);
+        assertValue(defaultFirst, "arrayClassValue", TypeDescription.ForLoadedType.of(ARRAY_CLASS), ARRAY_CLASS);
+        assertValue(defaultSecond, "arrayClassValue", TypeDescription.ForLoadedType.of(OTHER_ARRAY_CLASS), OTHER_ARRAY_CLASS);
         assertValue(defaultFirst, "enumValue", new EnumerationDescription.ForLoadedEnumeration(ENUMERATION), ENUMERATION);
         assertValue(defaultSecond, "enumValue", new EnumerationDescription.ForLoadedEnumeration(OTHER_ENUMERATION), OTHER_ENUMERATION);
         assertValue(defaultFirst, "annotationValue", AnnotationDescription.ForLoadedAnnotation.of(ANNOTATION), ANNOTATION);
@@ -365,8 +411,8 @@ public abstract class AbstractAnnotationDescriptionTest {
         assertValue(defaultSecond, "doubleArrayValue", OTHER_DOUBLE_ARRAY, OTHER_DOUBLE_ARRAY);
         assertValue(defaultFirst, "stringArrayValue", STRING_ARRAY, STRING_ARRAY);
         assertValue(defaultSecond, "stringArrayValue", OTHER_STRING_ARRAY, OTHER_STRING_ARRAY);
-        assertValue(defaultFirst, "classArrayValue", new TypeDescription[]{new TypeDescription.ForLoadedType(CLASS)}, CLASS_ARRAY);
-        assertValue(defaultSecond, "classArrayValue", new TypeDescription[]{new TypeDescription.ForLoadedType(OTHER_CLASS)}, OTHER_CLASS_ARRAY);
+        assertValue(defaultFirst, "classArrayValue", new TypeDescription[]{TypeDescription.ForLoadedType.of(CLASS)}, CLASS_ARRAY);
+        assertValue(defaultSecond, "classArrayValue", new TypeDescription[]{TypeDescription.ForLoadedType.of(OTHER_CLASS)}, OTHER_CLASS_ARRAY);
         assertValue(defaultFirst, "enumArrayValue", new EnumerationDescription[]{new EnumerationDescription.ForLoadedEnumeration(ENUMERATION)}, ENUMERATION_ARRAY);
         assertValue(defaultSecond, "enumArrayValue", new EnumerationDescription[]{new EnumerationDescription.ForLoadedEnumeration(OTHER_ENUMERATION)}, OTHER_ENUMERATION_ARRAY);
         assertValue(defaultFirst, "annotationArrayValue", new AnnotationDescription[]{AnnotationDescription.ForLoadedAnnotation.of(ANNOTATION)}, ANNOTATION_ARRAY);
@@ -376,6 +422,14 @@ public abstract class AbstractAnnotationDescriptionTest {
     @Test
     public void testRetention() throws Exception {
         assertThat(describe(first).getRetention(), is(RetentionPolicy.RUNTIME));
+    }
+
+    @Test
+    public void testAnnotationTarget() throws Exception {
+        assertThat(describe(first).getElementTypes(), is((Set<ElementType>) new HashSet<ElementType>(Arrays.asList(ElementType.ANNOTATION_TYPE,
+                ElementType.CONSTRUCTOR, ElementType.FIELD, ElementType.LOCAL_VARIABLE, ElementType.METHOD,
+                ElementType.PACKAGE, ElementType.PARAMETER, ElementType.TYPE))));
+        assertThat(describe(explicitTarget).getElementTypes(), is(Collections.singleton(ElementType.TYPE)));
     }
 
     @Test
@@ -390,25 +444,32 @@ public abstract class AbstractAnnotationDescriptionTest {
         assertThat(describe(defaultFirst).isDocumented(), is(true));
     }
 
-    private void assertValue(Annotation annotation, String methodName, Object rawValue, Object loadedValue) throws Exception {
-        assertThat(describe(annotation).getValue(new MethodDescription
-                .ForLoadedMethod(annotation.annotationType().getDeclaredMethod(methodName))), is(rawValue));
-        assertThat(describe(annotation).getValue(new MethodDescription.Latent(new TypeDescription.ForLoadedType(annotation.annotationType()),
+    private void assertValue(Annotation annotation, String methodName, Object unloadedValue, Object loadedValue) throws Exception {
+        assertThat(describe(annotation).getValue(new MethodDescription.ForLoadedMethod(annotation.annotationType().getDeclaredMethod(methodName))).resolve(),
+                is(unloadedValue));
+        assertThat(describe(annotation).getValue(new MethodDescription.Latent(TypeDescription.ForLoadedType.of(annotation.annotationType()),
                 methodName,
                 Opcodes.ACC_PUBLIC,
-                Collections.<GenericTypeDescription>emptyList(),
-                new TypeDescription.ForLoadedType(annotation.annotationType().getDeclaredMethod(methodName).getReturnType()),
+                Collections.<TypeVariableToken>emptyList(),
+                TypeDescription.Generic.OfNonGenericType.ForLoadedType.of(annotation.annotationType().getDeclaredMethod(methodName).getReturnType()),
                 Collections.<ParameterDescription.Token>emptyList(),
-                Collections.<GenericTypeDescription>emptyList(),
+                Collections.<TypeDescription.Generic>emptyList(),
                 Collections.<AnnotationDescription>emptyList(),
-                MethodDescription.NO_DEFAULT_VALUE)), is(rawValue));
-        assertThat(annotation.annotationType().getDeclaredMethod(methodName)
-                .invoke(describe(annotation).prepare(annotation.annotationType()).load()), is(loadedValue));
+                AnnotationValue.UNDEFINED,
+                TypeDescription.Generic.UNDEFINED)).resolve(), is(unloadedValue));
+        assertThat(annotation.annotationType().getDeclaredMethod(methodName).invoke(describe(annotation).prepare(annotation.annotationType()).load()),
+                is(loadedValue));
     }
 
     public enum SampleEnumeration {
         VALUE,
         OTHER
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface Sample2 {
+
+        Class<?> foo();
     }
 
     @Retention(RetentionPolicy.RUNTIME)
@@ -553,7 +614,7 @@ public abstract class AbstractAnnotationDescriptionTest {
             enumArrayValue = SampleEnumeration.VALUE,
             annotationArrayValue = @Other)
     private static class FooSample {
-
+        /* empty */
     }
 
     @Sample(booleanValue = BOOLEAN,
@@ -582,12 +643,12 @@ public abstract class AbstractAnnotationDescriptionTest {
             enumArrayValue = SampleEnumeration.VALUE,
             annotationArrayValue = @Other)
     private static class BarSample {
-
+        /* empty */
     }
 
     @SampleDefault
     private static class DefaultSample {
-
+        /* empty */
     }
 
     @SampleDefault(booleanValue = !BOOLEAN,
@@ -616,16 +677,67 @@ public abstract class AbstractAnnotationDescriptionTest {
             enumArrayValue = SampleEnumeration.OTHER,
             annotationArrayValue = @Other(BAR))
     private static class NonDefaultSample {
-
+        /* empty */
     }
 
     @Other
     private static class EnumerationCarrier {
-
+        /* empty */
     }
 
     @Other(BAR)
     private static class OtherEnumerationCarrier {
+        /* empty */
+    }
 
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    protected @interface ExplicitTarget {
+
+        @ExplicitTarget
+        class Carrier {
+            /* empty */
+        }
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface BrokenAnnotation {
+
+        String stringValue();
+
+        SampleEnumeration enumValue();
+
+        Class<?> classValue();
+    }
+
+    private static class AnnotationValueBreaker extends AsmVisitorWrapper.AbstractBase {
+
+        public ClassVisitor wrap(TypeDescription instrumentedType,
+                                 ClassVisitor classVisitor,
+                                 Implementation.Context implementationContext,
+                                 TypePool typePool,
+                                 FieldList<FieldDescription.InDefinedShape> fields,
+                                 MethodList<?> methods,
+                                 int writerFlags,
+                                 int readerFlags) {
+            return new BreakingClassVisitor(classVisitor);
+        }
+
+        private static class BreakingClassVisitor extends ClassVisitor {
+
+            public BreakingClassVisitor(ClassVisitor classVisitor) {
+                super(OpenedClassReader.ASM_API, classVisitor);
+            }
+
+            @Override
+            public void visit(int version, int access, String name, String signature, String superName, String[] interfaces) {
+                super.visit(version, access, name, signature, superName, interfaces);
+                AnnotationVisitor annotationVisitor = visitAnnotation(Type.getDescriptor(BrokenAnnotation.class), true);
+                annotationVisitor.visit("stringValue", INTEGER);
+                annotationVisitor.visitEnum("enumValue", Type.getDescriptor(SampleEnumeration.class), FOO);
+                annotationVisitor.visit("classValue", Type.getType("Lnet/bytebuddy/inexistant/Foo;"));
+                annotationVisitor.visitEnd();
+            }
+        }
     }
 }

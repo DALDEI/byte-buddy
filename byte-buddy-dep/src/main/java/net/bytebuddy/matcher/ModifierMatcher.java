@@ -1,5 +1,6 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.ModifierReviewable;
 import org.objectweb.asm.Opcodes;
 
@@ -8,6 +9,7 @@ import org.objectweb.asm.Opcodes;
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
@@ -24,23 +26,16 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
         this.mode = mode;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         return (mode.getModifiers() & target.getModifiers()) != 0;
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && mode == ((ModifierMatcher) other).mode;
-    }
-
-    @Override
-    public int hashCode() {
-        return mode.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return mode.getDescription();
     }
@@ -113,7 +108,32 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
         /**
          * Matches a type that is considered an interface.
          */
-        INTERFACE(Opcodes.ACC_INTERFACE, "isInterface()");
+        INTERFACE(Opcodes.ACC_INTERFACE, "isInterface()"),
+
+        /**
+         * Matches a type that is considered an annotation.
+         */
+        ANNOTATION(Opcodes.ACC_ANNOTATION, "isAnnotation()"),
+
+        /**
+         * Matches a volatile field.
+         */
+        VOLATILE(Opcodes.ACC_VOLATILE, "isVolatile()"),
+
+        /**
+         * Matches a transient field.
+         */
+        TRANSIENT(Opcodes.ACC_TRANSIENT, "isTransient()"),
+
+        /**
+         * Matches a mandated parameter.
+         */
+        MANDATED(Opcodes.ACC_MANDATED, "isMandated()"),
+
+        /**
+         * Matches a type or field for describing an enumeration.
+         */
+        ENUMERATION(Opcodes.ACC_ENUM, "isEnum()");
 
         /**
          * The mask of the modifier to match.
@@ -154,7 +174,9 @@ public class ModifierMatcher<T extends ModifierReviewable> extends ElementMatche
             return modifiers;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String toString() {
             return "ModifierMatcher.Mode." + name();
         }

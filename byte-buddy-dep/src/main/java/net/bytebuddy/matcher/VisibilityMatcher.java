@@ -1,5 +1,6 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.ByteCodeElement;
 import net.bytebuddy.description.type.TypeDescription;
 
@@ -8,6 +9,7 @@ import net.bytebuddy.description.type.TypeDescription;
  *
  * @param <T>The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class VisibilityMatcher<T extends ByteCodeElement> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
@@ -24,23 +26,16 @@ public class VisibilityMatcher<T extends ByteCodeElement> extends ElementMatcher
         this.typeDescription = typeDescription;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         return target.isVisibleTo(typeDescription);
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && typeDescription.equals(((VisibilityMatcher) other).typeDescription);
-    }
-
-    @Override
-    public int hashCode() {
-        return typeDescription.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return "isVisibleTo(" + typeDescription + ")";
     }

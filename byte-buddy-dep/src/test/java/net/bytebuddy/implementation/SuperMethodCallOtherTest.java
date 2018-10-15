@@ -1,10 +1,13 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.method.ParameterDescription;
 import net.bytebuddy.description.method.ParameterList;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.implementation.bytecode.StackSize;
 import net.bytebuddy.implementation.bytecode.constant.TextConstant;
@@ -13,7 +16,6 @@ import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.test.utility.CallTraceable;
 import net.bytebuddy.test.utility.JavaVersionRule;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -24,14 +26,13 @@ import org.objectweb.asm.MethodVisitor;
 
 import java.lang.reflect.Method;
 
-import static net.bytebuddy.matcher.ElementMatchers.*;
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
+import static net.bytebuddy.matcher.ElementMatchers.not;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.verifyZeroInteractions;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
-public class SuperMethodCallOtherTest extends AbstractImplementationTest {
+public class SuperMethodCallOtherTest {
 
     private static final String SINGLE_DEFAULT_METHOD = "net.bytebuddy.test.precompiled.SingleDefaultMethodInterface";
 
@@ -51,7 +52,10 @@ public class SuperMethodCallOtherTest extends AbstractImplementationTest {
     private InstrumentedType instrumentedType;
 
     @Mock
-    private TypeDescription typeDescription, superType, returnType, declaringType;
+    private TypeDescription typeDescription, rawSuperClass, returnType, declaringType;
+
+    @Mock
+    private TypeDescription.Generic superClass, genericReturnType;
 
     @Mock
     private Implementation.Target implementationTarget;
@@ -66,15 +70,17 @@ public class SuperMethodCallOtherTest extends AbstractImplementationTest {
     private MethodDescription methodDescription;
 
     @Mock
-    private MethodDescription.Token methodToken;
+    private MethodDescription.SignatureToken token;
 
     @Mock
-    private MethodList superTypeMethods;
+    private MethodList superClassMethods;
 
     @Before
     public void setUp() throws Exception {
-        when(implementationTarget.getTypeDescription()).thenReturn(typeDescription);
-        when(methodDescription.asToken()).thenReturn(methodToken);
+        when(implementationTarget.getInstrumentedType()).thenReturn(typeDescription);
+        when(methodDescription.asSignatureToken()).thenReturn(token);
+        when(genericReturnType.asErasure()).thenReturn(returnType);
+        when(superClass.asErasure()).thenReturn(rawSuperClass);
     }
 
     @Test
@@ -86,48 +92,52 @@ public class SuperMethodCallOtherTest extends AbstractImplementationTest {
     @Test(expected = IllegalStateException.class)
     @SuppressWarnings("unchecked")
     public void testConstructor() throws Exception {
-        when(typeDescription.getSuperType()).thenReturn(superType);
+        when(typeDescription.getSuperClass()).thenReturn(superClass);
         when(methodDescription.isConstructor()).thenReturn(true);
-        when(superType.getDeclaredMethods()).thenReturn(superTypeMethods);
-        when(superTypeMethods.filter(any(ElementMatcher.class))).thenReturn(superTypeMethods);
-        when(implementationTarget.invokeDominant(methodToken)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
+        when(rawSuperClass.getDeclaredMethods()).thenReturn(superClassMethods);
+        when(superClassMethods.filter(any(ElementMatcher.class))).thenReturn(superClassMethods);
+        when(implementationTarget.invokeDominant(token)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
         SuperMethodCall.INSTANCE.appender(implementationTarget).apply(methodVisitor, implementationContext, methodDescription);
     }
 
     @Test(expected = IllegalStateException.class)
     @SuppressWarnings("unchecked")
     public void testStaticMethod() throws Exception {
-        when(typeDescription.getSuperType()).thenReturn(superType);
+        when(typeDescription.getSuperClass()).thenReturn(superClass);
         when(methodDescription.isStatic()).thenReturn(true);
-        when(methodDescription.getParameters()).thenReturn((ParameterList) new ParameterList.Empty());
-        when(methodDescription.getReturnType()).thenReturn(returnType);
+        when(methodDescription.getParameters()).thenReturn((ParameterList) new ParameterList.Empty<ParameterDescription>());
+        when(methodDescription.getReturnType()).thenReturn(genericReturnType);
         when(returnType.getStackSize()).thenReturn(StackSize.SINGLE);
-        when(superType.getDeclaredMethods()).thenReturn(superTypeMethods);
-        when(superTypeMethods.filter(any(ElementMatcher.class))).thenReturn(superTypeMethods);
-        when(implementationTarget.invokeDominant(methodToken)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
+        when(rawSuperClass.getDeclaredMethods()).thenReturn(superClassMethods);
+        when(superClassMethods.filter(any(ElementMatcher.class))).thenReturn(superClassMethods);
+        when(implementationTarget.invokeDominant(token)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
         SuperMethodCall.INSTANCE.appender(implementationTarget).apply(methodVisitor, implementationContext, methodDescription);
     }
 
     @Test(expected = IllegalStateException.class)
     @SuppressWarnings("unchecked")
     public void testNoSuper() throws Exception {
-        when(typeDescription.getSuperType()).thenReturn(superType);
-        when(methodDescription.getParameters()).thenReturn((ParameterList) new ParameterList.Empty());
-        when(methodDescription.getReturnType()).thenReturn(returnType);
+        when(typeDescription.getSuperClass()).thenReturn(superClass);
+        when(methodDescription.getParameters()).thenReturn((ParameterList) new ParameterList.Empty<ParameterDescription>());
+        when(methodDescription.getReturnType()).thenReturn(genericReturnType);
         when(methodDescription.getDeclaringType()).thenReturn(declaringType);
         when(declaringType.getStackSize()).thenReturn(StackSize.SINGLE);
         when(returnType.getStackSize()).thenReturn(StackSize.SINGLE);
-        when(superType.getDeclaredMethods()).thenReturn(superTypeMethods);
-        when(superTypeMethods.filter(any(ElementMatcher.class))).thenReturn(superTypeMethods);
-        when(implementationTarget.invokeDominant(methodToken)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
+        when(rawSuperClass.getDeclaredMethods()).thenReturn(superClassMethods);
+        when(superClassMethods.filter(any(ElementMatcher.class))).thenReturn(superClassMethods);
+        when(implementationTarget.invokeDominant(token)).thenReturn(Implementation.SpecialMethodInvocation.Illegal.INSTANCE);
         SuperMethodCall.INSTANCE.appender(implementationTarget).apply(methodVisitor, implementationContext, methodDescription);
     }
 
     @Test
     public void testAndThen() throws Exception {
-        DynamicType.Loaded<Foo> loaded = implement(Foo.class, SuperMethodCall.INSTANCE
-                .andThen(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE)));
-        Foo foo = loaded.getLoaded().newInstance();
+        DynamicType.Loaded<Foo> loaded = new ByteBuddy()
+                .subclass(Foo.class)
+                .method(isDeclaredBy(Foo.class))
+                .intercept(SuperMethodCall.INSTANCE.andThen(new Implementation.Simple(new TextConstant(FOO), MethodReturn.REFERENCE)))
+                .make()
+                .load(Foo.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        Foo foo = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(foo.foo(), is(FOO));
         foo.assertOnlyCall(FOO);
     }
@@ -135,44 +145,42 @@ public class SuperMethodCallOtherTest extends AbstractImplementationTest {
     @Test
     @JavaVersionRule.Enforce(8)
     public void testUnambiguousDirectDefaultMethod() throws Exception {
-        DynamicType.Loaded<?> loaded = implement(Object.class,
-                SuperMethodCall.INSTANCE,
-                getClass().getClassLoader(),
-                isMethod().and(not(isDeclaredBy(Object.class))),
-                Class.forName(SINGLE_DEFAULT_METHOD));
+        DynamicType.Loaded<?> loaded = new ByteBuddy()
+                .subclass(Object.class)
+                .implement(Class.forName(SINGLE_DEFAULT_METHOD))
+                .intercept(SuperMethodCall.INSTANCE)
+                .make()
+                .load(Class.forName(SINGLE_DEFAULT_METHOD).getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
         Method method = loaded.getLoaded().getDeclaredMethod(FOO);
-        Object instance = loaded.getLoaded().newInstance();
+        Object instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
         assertThat(method.invoke(instance), is((Object) FOO));
     }
 
+    @Test
+    @JavaVersionRule.Enforce(8)
+    public void testInheritedDefaultMethod() throws Exception {
+        DynamicType.Loaded<?> loaded = new ByteBuddy()
+                .subclass(Class.forName(SINGLE_DEFAULT_METHOD_CLASS))
+                .method(not(isDeclaredBy(Object.class)))
+                .intercept(SuperMethodCall.INSTANCE)
+                .make()
+                .load(Class.forName(SINGLE_DEFAULT_METHOD_CLASS).getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
+        assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
+        Method method = loaded.getLoaded().getDeclaredMethod(FOO);
+        Object instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(method.invoke(instance), is((Object) FOO));
+    }
 
     @Test(expected = IllegalStateException.class)
     @JavaVersionRule.Enforce(8)
     public void testAmbiguousDirectDefaultMethodThrowsException() throws Exception {
-        implement(Object.class,
-                SuperMethodCall.INSTANCE,
-                getClass().getClassLoader(),
-                not(isDeclaredBy(Object.class)),
-                Class.forName(SINGLE_DEFAULT_METHOD), Class.forName(CONFLICTING_INTERFACE));
-    }
-
-
-    @Test(expected = IllegalStateException.class)
-    @JavaVersionRule.Enforce(8)
-    public void testNonDeclaredDefaultMethodThrowsException() throws Exception {
-        implement(Class.forName(SINGLE_DEFAULT_METHOD_CLASS),
-                SuperMethodCall.INSTANCE,
-                getClass().getClassLoader(),
-                isMethod().and(not(isDeclaredBy(Object.class))));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(SuperMethodCall.class).apply();
-        ObjectPropertyAssertion.of(SuperMethodCall.WithoutReturn.class).apply();
-        ObjectPropertyAssertion.of(SuperMethodCall.Appender.class).apply();
-        ObjectPropertyAssertion.of(SuperMethodCall.Appender.TerminationHandler.class).apply();
+        new ByteBuddy()
+                .subclass(Object.class)
+                .implement(Class.forName(SINGLE_DEFAULT_METHOD), Class.forName(CONFLICTING_INTERFACE))
+                .intercept(SuperMethodCall.INSTANCE)
+                .make()
+                .load(Class.forName(SINGLE_DEFAULT_METHOD).getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
     }
 
     public static class Foo extends CallTraceable {

@@ -1,5 +1,6 @@
 package net.bytebuddy.description.enumeration;
 
+import net.bytebuddy.description.NamedElement;
 import net.bytebuddy.description.type.TypeDescription;
 
 import java.util.ArrayList;
@@ -9,7 +10,7 @@ import java.util.List;
  * Describes an enumeration value. Note that the {@link java.lang.Object#toString} method always returns the
  * value as if the method was not overridden, i.e. the name of the enumeration constant.
  */
-public interface EnumerationDescription {
+public interface EnumerationDescription extends NamedElement {
 
     /**
      * Returns the name of this instance's enumeration value.
@@ -39,16 +40,27 @@ public interface EnumerationDescription {
      */
     abstract class AbstractBase implements EnumerationDescription {
 
-        @Override
-        public boolean equals(Object other) {
-            return other == this || other instanceof EnumerationDescription
-                    && (((EnumerationDescription) other)).getEnumerationType().equals(getEnumerationType())
-                    && (((EnumerationDescription) other)).getValue().equals(getValue());
+        /**
+         * {@inheritDoc}
+         */
+        public String getActualName() {
+            return getValue();
         }
 
         @Override
         public int hashCode() {
             return getValue().hashCode() + 31 * getEnumerationType().hashCode();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            } else if (!(other instanceof EnumerationDescription)) {
+                return false;
+            }
+            EnumerationDescription enumerationDescription = (EnumerationDescription) other;
+            return getEnumerationType().equals(enumerationDescription.getEnumerationType()) && getValue().equals(enumerationDescription.getValue());
         }
 
         @Override
@@ -90,23 +102,28 @@ public interface EnumerationDescription {
             return result;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getValue() {
             return value.name();
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public TypeDescription getEnumerationType() {
-            return new TypeDescription.ForLoadedType(value.getDeclaringClass());
+            return TypeDescription.ForLoadedType.of(value.getDeclaringClass());
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         @SuppressWarnings("unchecked")
         public <T extends Enum<T>> T load(Class<T> type) {
-            if (value.getDeclaringClass() != type) {
-                throw new IllegalArgumentException(type + " does not represent " + value);
-            }
-            return (T) value;
+            return value.getDeclaringClass() == type
+                    ? (T) value
+                    : Enum.valueOf(type, value.name());
         }
     }
 
@@ -136,17 +153,23 @@ public interface EnumerationDescription {
             this.value = value;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public String getValue() {
             return value;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public TypeDescription getEnumerationType() {
             return enumerationType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public <T extends Enum<T>> T load(Class<T> type) {
             if (!enumerationType.represents(type)) {
                 throw new IllegalArgumentException(type + " does not represent " + enumerationType);

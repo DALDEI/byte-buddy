@@ -1,10 +1,9 @@
 package net.bytebuddy.implementation.bytecode.assign;
 
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 public class AssignerTypingTest {
 
@@ -18,10 +17,5 @@ public class AssignerTypingTest {
     public void testDynamic() throws Exception {
         assertThat(Assigner.Typing.of(true), is(Assigner.Typing.DYNAMIC));
         assertThat(Assigner.Typing.DYNAMIC.isDynamic(), is(true));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(Assigner.Typing.class).apply();
     }
 }

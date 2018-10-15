@@ -15,8 +15,8 @@ import org.mockito.Mock;
 import java.util.Arrays;
 import java.util.Collection;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -32,7 +32,7 @@ public class PrimitiveTypeAwareAssignerUnboxingTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription sourceTypeDescription, targetTypeDescription;
+    private TypeDescription.Generic sourceTypeDescription, targetTypeDescription;
 
     @Mock
     private Assigner chainedAssigner;

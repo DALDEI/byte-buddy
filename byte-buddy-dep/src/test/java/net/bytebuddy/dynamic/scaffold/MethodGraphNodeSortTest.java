@@ -1,10 +1,9 @@
 package net.bytebuddy.dynamic.scaffold;
 
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 public class MethodGraphNodeSortTest {
 
@@ -34,10 +33,5 @@ public class MethodGraphNodeSortTest {
         assertThat(MethodGraph.Node.Sort.UNRESOLVED.isResolved(), is(false));
         assertThat(MethodGraph.Node.Sort.UNRESOLVED.isUnique(), is(false));
         assertThat(MethodGraph.Node.Sort.UNRESOLVED.isMadeVisible(), is(false));
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(MethodGraph.Node.Sort.class).apply();
     }
 }

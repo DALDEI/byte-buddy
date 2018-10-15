@@ -32,26 +32,22 @@ public enum EnumerationState implements ModifierContributor.ForType, ModifierCon
     }
 
     /**
-     * Creates an enumeration state from a boolean value indicating if a type or member is supposed to be synthetic.
-     *
-     * @param enumeration {@code true} if the state is supposed to describe an enumeration.
-     * @return The corresponding synthetic state.
+     * {@inheritDoc}
      */
-    public static EnumerationState is(boolean enumeration) {
-        return enumeration ? ENUMERATION : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_ENUM;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -63,10 +59,5 @@ public enum EnumerationState implements ModifierContributor.ForType, ModifierCon
      */
     public boolean isEnumeration() {
         return this == ENUMERATION;
-    }
-
-    @Override
-    public String toString() {
-        return "EnumerationState." + name();
     }
 }

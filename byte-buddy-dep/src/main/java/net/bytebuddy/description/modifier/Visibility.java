@@ -41,17 +41,23 @@ public enum Visibility implements ModifierContributor.ForType, ModifierContribut
         this.mask = mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED | Opcodes.ACC_PRIVATE;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PACKAGE_PRIVATE;
     }
@@ -92,8 +98,28 @@ public enum Visibility implements ModifierContributor.ForType, ModifierContribut
         return (mask & Opcodes.ACC_PRIVATE) != 0;
     }
 
-    @Override
-    public String toString() {
-        return "Visibility." + name();
+    /**
+     * Expands the visibility to be at least as high as this visibility and the provided visibility.
+     *
+     * @param visibility A visibility to compare against.
+     * @return A visibility that is as least as high as this and the supplied visibility.
+     */
+    public Visibility expandTo(Visibility visibility) {
+        switch (visibility) {
+            case PUBLIC:
+                return PUBLIC;
+            case PROTECTED:
+                return this == PUBLIC
+                        ? PUBLIC
+                        : visibility;
+            case PACKAGE_PRIVATE:
+                return this == PRIVATE
+                        ? PACKAGE_PRIVATE
+                        : this;
+            case PRIVATE:
+                return this;
+            default:
+                throw new IllegalStateException("Unexpected visibility: " + visibility);
+        }
     }
 }

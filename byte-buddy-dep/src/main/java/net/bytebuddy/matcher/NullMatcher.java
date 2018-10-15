@@ -1,28 +1,25 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 /**
  * An element matcher that matches the {@code null} value.
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class NullMatcher<T> extends ElementMatcher.Junction.AbstractBase<T> {
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
         return target == null;
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass());
-    }
-
-    @Override
-    public int hashCode() {
-        return 31;
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
         return "isNull()";
     }

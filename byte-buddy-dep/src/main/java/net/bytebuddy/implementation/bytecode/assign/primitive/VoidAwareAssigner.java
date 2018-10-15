@@ -1,5 +1,6 @@
 package net.bytebuddy.implementation.bytecode.assign.primitive;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.implementation.bytecode.Removal;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
@@ -17,6 +18,7 @@ import net.bytebuddy.implementation.bytecode.constant.DefaultValue;
  * assigner.</li>
  * </ol>
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class VoidAwareAssigner implements Assigner {
 
     /**
@@ -34,34 +36,20 @@ public class VoidAwareAssigner implements Assigner {
         this.chained = chained;
     }
 
-    @Override
-    public StackManipulation assign(TypeDescription sourceType, TypeDescription targetType, Typing typing) {
-        if (sourceType.represents(void.class) && targetType.represents(void.class)) {
+    /**
+     * {@inheritDoc}
+     */
+    public StackManipulation assign(TypeDescription.Generic source, TypeDescription.Generic target, Typing typing) {
+        if (source.represents(void.class) && target.represents(void.class)) {
             return StackManipulation.Trivial.INSTANCE;
-        } else if (sourceType.represents(void.class) /* && subType != void.class */) {
+        } else if (source.represents(void.class) /* && target != void.class */) {
             return typing.isDynamic()
-                    ? DefaultValue.of(targetType)
+                    ? DefaultValue.of(target)
                     : StackManipulation.Illegal.INSTANCE;
-        } else if (/* superType != void.class && */ targetType.represents(void.class)) {
-            return Removal.pop(sourceType);
-        } else /* superType != void.class && subType != void.class */ {
-            return chained.assign(sourceType, targetType, typing);
+        } else if (/* source != void.class && */ target.represents(void.class)) {
+            return Removal.of(source);
+        } else /* source != void.class && target != void.class */ {
+            return chained.assign(source, target, typing);
         }
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && chained.equals(((VoidAwareAssigner) other).chained);
-    }
-
-    @Override
-    public int hashCode() {
-        return chained.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "VoidAwareAssigner{chained=" + chained + '}';
     }
 }

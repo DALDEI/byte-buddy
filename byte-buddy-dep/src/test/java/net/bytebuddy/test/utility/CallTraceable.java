@@ -4,9 +4,8 @@ package net.bytebuddy.test.utility;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 
 public class CallTraceable {
 
@@ -23,7 +22,7 @@ public class CallTraceable {
     public void assertOnlyCall(String name, Object... arguments) {
         assertThat(methodCalls.size(), is(1));
         assertThat(methodCalls.get(0).name, is(name));
-        assertThat(methodCalls.get(0).arguments, equalTo(arguments));
+        assertThat(methodCalls.get(0).arguments, is(arguments));
     }
 
     public void assertZeroCalls() {

@@ -5,8 +5,11 @@ import javassist.util.proxy.MethodHandler;
 import javassist.util.proxy.ProxyFactory;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.benchmark.specimen.ExampleInterface;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.bytebuddy.implementation.StubMethod;
+import net.bytebuddy.pool.TypePool;
 import net.sf.cglib.proxy.CallbackHelper;
 import net.sf.cglib.proxy.Enhancer;
 import net.sf.cglib.proxy.FixedValue;
@@ -158,6 +161,101 @@ public class ClassByImplementationBenchmark {
     }
 
     /**
+     * A description of {@link ClassByExtensionBenchmark#baseClass}.
+     */
+    private TypeDescription baseClassDescription;
+
+    /**
+     * Sets up this benchmark.
+     */
+    @Setup
+    public void setup() {
+        baseClassDescription = TypePool.Default.ofSystemLoader().describe(baseClass.getName()).resolve();
+    }
+
+    /**
+     * Creates a baseline for the benchmark.
+     *
+     * @return A simple object that is not transformed.
+     */
+    @Benchmark
+    public ExampleInterface baseline() {
+        return new ExampleInterface() {
+            public boolean method(boolean arg) {
+                return false;
+            }
+
+            public byte method(byte arg) {
+                return 0;
+            }
+
+            public short method(short arg) {
+                return 0;
+            }
+
+            public int method(int arg) {
+                return 0;
+            }
+
+            public char method(char arg) {
+                return 0;
+            }
+
+            public long method(long arg) {
+                return 0;
+            }
+
+            public float method(float arg) {
+                return 0;
+            }
+
+            public double method(double arg) {
+                return 0;
+            }
+
+            public Object method(Object arg) {
+                return null;
+            }
+
+            public boolean[] method(boolean arg1, boolean arg2, boolean arg3) {
+                return null;
+            }
+
+            public byte[] method(byte arg1, byte arg2, byte arg3) {
+                return null;
+            }
+
+            public short[] method(short arg1, short arg2, short arg3) {
+                return null;
+            }
+
+            public int[] method(int arg1, int arg2, int arg3) {
+                return null;
+            }
+
+            public char[] method(char arg1, char arg2, char arg3) {
+                return null;
+            }
+
+            public long[] method(long arg1, long arg2, long arg3) {
+                return null;
+            }
+
+            public float[] method(float arg1, float arg2, float arg3) {
+                return null;
+            }
+
+            public double[] method(double arg1, double arg2, double arg3) {
+                return null;
+            }
+
+            public Object[] method(Object arg1, Object arg2, Object arg3) {
+                return null;
+            }
+        };
+    }
+
+    /**
      * Performs a benchmark of an interface implementation using Byte Buddy.
      *
      * @return The created instance, in order to avoid JIT removal.
@@ -166,12 +264,35 @@ public class ClassByImplementationBenchmark {
     @Benchmark
     public ExampleInterface benchmarkByteBuddy() throws Exception {
         return new ByteBuddy()
-                .withIgnoredMethods(none())
+                .with(TypeValidation.DISABLED)
+                .ignore(none())
                 .subclass(baseClass)
                 .method(isDeclaredBy(baseClass)).intercept(StubMethod.INSTANCE)
                 .make()
                 .load(newClassLoader(), ClassLoadingStrategy.Default.INJECTION)
                 .getLoaded()
+                .getDeclaredConstructor()
+                .newInstance();
+    }
+
+    /**
+     * Performs a benchmark of an interface implementation using Byte Buddy. This benchmark uses a type pool to compare against
+     * usage of the reflection API.
+     *
+     * @return The created instance, in order to avoid JIT removal.
+     * @throws java.lang.Exception If the reflective invocation causes an exception.
+     */
+    @Benchmark
+    public ExampleInterface benchmarkByteBuddyWithTypePool() throws Exception {
+        return (ExampleInterface) new ByteBuddy()
+                .with(TypeValidation.DISABLED)
+                .ignore(none())
+                .subclass(baseClassDescription)
+                .method(isDeclaredBy(baseClassDescription)).intercept(StubMethod.INSTANCE)
+                .make()
+                .load(newClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded()
+                .getDeclaredConstructor()
                 .newInstance();
     }
 
@@ -187,12 +308,10 @@ public class ClassByImplementationBenchmark {
         enhancer.setClassLoader(newClassLoader());
         enhancer.setSuperclass(baseClass);
         CallbackHelper callbackHelper = new CallbackHelper(Object.class, new Class[]{baseClass}) {
-            @Override
             protected Object getCallback(Method method) {
                 if (method.getDeclaringClass() == baseClass) {
                     return new FixedValue() {
-                        @Override
-                        public Object loadObject() throws Exception {
+                        public Object loadObject() {
                             return null;
                         }
                     };
@@ -214,14 +333,13 @@ public class ClassByImplementationBenchmark {
      */
     @Benchmark
     public ExampleInterface benchmarkJavassist() throws Exception {
-        ProxyFactory proxyFactory = new ProxyFactory();
-        proxyFactory.setUseCache(false);
-        ProxyFactory.classLoaderProvider = new ProxyFactory.ClassLoaderProvider() {
-            @Override
-            public ClassLoader get(ProxyFactory proxyFactory) {
+        ProxyFactory proxyFactory = new ProxyFactory() {
+            protected ClassLoader getClassLoader() {
                 return newClassLoader();
             }
         };
+        proxyFactory.setUseCache(false);
+        proxyFactory.setUseWriteReplace(false);
         proxyFactory.setSuperclass(Object.class);
         proxyFactory.setInterfaces(new Class<?>[]{baseClass});
         proxyFactory.setFilter(new MethodFilter() {
@@ -229,7 +347,8 @@ public class ClassByImplementationBenchmark {
                 return true;
             }
         });
-        Object instance = proxyFactory.createClass().newInstance();
+        @SuppressWarnings("unchecked")
+        Object instance = proxyFactory.createClass().getDeclaredConstructor().newInstance();
         ((javassist.util.proxy.Proxy) instance).setHandler(new MethodHandler() {
             public Object invoke(Object self,
                                  Method thisMethod,
@@ -273,8 +392,7 @@ public class ClassByImplementationBenchmark {
         return (ExampleInterface) Proxy.newProxyInstance(newClassLoader(),
                 new Class<?>[]{baseClass},
                 new InvocationHandler() {
-                    @Override
-                    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+                    public Object invoke(Object proxy, Method method, Object[] args) {
                         Class<?> returnType = method.getReturnType();
                         if (returnType.isPrimitive()) {
                             if (returnType == boolean.class) {

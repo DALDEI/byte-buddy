@@ -1,13 +1,13 @@
 package net.bytebuddy.benchmark;
 
 import net.bytebuddy.benchmark.specimen.ExampleClass;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Test;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
 
 public class ClassByExtensionBenchmarkTest {
 
@@ -64,41 +64,148 @@ public class ClassByExtensionBenchmarkTest {
     @Before
     public void setUp() throws Exception {
         classByExtensionBenchmark = new ClassByExtensionBenchmark();
+        classByExtensionBenchmark.setup();
     }
 
     @Test
-    public void testByteBuddyWithAnnotationsClassCreation() throws Exception {
-        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithAnnotations();
-        assertNotEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass());
-        assertEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass().getSuperclass());
-        assertNotEquals(instance.getClass(), classByExtensionBenchmark.benchmarkByteBuddyWithAnnotations());
+    public void testBaseline() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.baseline();
+        assertThat(instance.getClass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithProxiesClassCreation() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithProxy();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithProxiesClassCreationCached() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithProxyAndReusedDelegator();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithProxiesClassCreationWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithProxyWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithProxiesClassCreationCachedWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithProxyAndReusedDelegatorWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithAccessorClassCreation() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithAccessor();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithAccessorClassCreationCached() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithAccessorAndReusedDelegator();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithAccessorClassCreationWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithAccessorWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithAccessorClassCreationCachedWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithAccessorAndReusedDelegatorWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithPrefixClassCreation() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithPrefix();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithPrefixClassCreationCached() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithPrefixAndReusedDelegator();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithPrefixClassCreationWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithPrefixWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
+        assertReturnValues(instance);
+    }
+
+    @Test
+    public void testByteBuddyWithPrefixClassCreationCachedWithTypePool() throws Exception {
+        ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddyWithPrefixAndReusedDelegatorWithTypePool();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddyWithProxy().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
         assertReturnValues(instance);
     }
 
     @Test
     public void testByteBuddySpecializedClassCreation() throws Exception {
         ExampleClass instance = classByExtensionBenchmark.benchmarkByteBuddySpecialized();
-        assertNotEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass());
-        assertEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass().getSuperclass());
-        assertNotEquals(instance.getClass(), classByExtensionBenchmark.benchmarkByteBuddySpecialized());
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkByteBuddySpecialized().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
         assertReturnValues(instance);
     }
 
     @Test
     public void testCglibClassCreation() throws Exception {
         ExampleClass instance = classByExtensionBenchmark.benchmarkCglib();
-        assertNotEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass());
-        assertEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass().getSuperclass());
-        assertNotEquals(instance.getClass(), classByExtensionBenchmark.benchmarkCglib());
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkCglib().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
         assertReturnValues(instance);
     }
 
     @Test
     public void testJavassistClassCreation() throws Exception {
         ExampleClass instance = classByExtensionBenchmark.benchmarkJavassist();
-        assertNotEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass());
-        assertEquals(ClassByExtensionBenchmark.BASE_CLASS, instance.getClass().getSuperclass());
-        assertNotEquals(instance.getClass(), classByExtensionBenchmark.benchmarkJavassist());
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS)));
+        assertThat(instance.getClass().getSuperclass(), CoreMatchers.<Class<?>>is(ClassByExtensionBenchmark.BASE_CLASS));
+        assertThat(classByExtensionBenchmark.benchmarkJavassist().getClass(), not(CoreMatchers.<Class<?>>is(instance.getClass())));
         assertReturnValues(instance);
     }
 }

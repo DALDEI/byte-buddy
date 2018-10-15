@@ -1,19 +1,27 @@
 package net.bytebuddy.utility;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * A utility for draining the contents of an {@link java.io.InputStream} into a {@code byte} array.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class StreamDrainer {
 
     /**
      * The default size of the buffer for draining a stream.
      */
     public static final int DEFAULT_BUFFER_SIZE = 1024;
+
+    /**
+     * A default instance using the {@link StreamDrainer#DEFAULT_BUFFER_SIZE}.
+     */
+    public static final StreamDrainer DEFAULT = new StreamDrainer();
 
     /**
      * A convenience constant referring to the value representing the end of a stream.
@@ -54,7 +62,7 @@ public class StreamDrainer {
      * @throws IOException If the stream reading causes an error.
      */
     public byte[] drain(InputStream inputStream) throws IOException {
-        List<byte[]> previousBytes = new LinkedList<byte[]>();
+        List<byte[]> previousBytes = new ArrayList<byte[]>();
         byte[] currentArray = new byte[bufferSize];
         int currentIndex = 0;
         int currentRead;
@@ -74,21 +82,5 @@ public class StreamDrainer {
         }
         System.arraycopy(currentArray, FROM_BEGINNING, result, arrayIndex * bufferSize, currentIndex);
         return result;
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && bufferSize == ((StreamDrainer) other).bufferSize;
-    }
-
-    @Override
-    public int hashCode() {
-        return bufferSize;
-    }
-
-    @Override
-    public String toString() {
-        return "StreamDrainer{bufferSize=" + bufferSize + '}';
     }
 }

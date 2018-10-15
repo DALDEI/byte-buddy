@@ -20,8 +20,8 @@ import org.objectweb.asm.Type;
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.*;
 
 @RunWith(Parameterized.class)
@@ -45,7 +45,7 @@ public class PrimitiveUnboxingDelegateWideningTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription referenceTypeDescription, primitiveTypeDescription;
+    private TypeDescription.Generic referenceTypeDescription, primitiveTypeDescription;
 
     @Mock
     private Assigner chainedAssigner;

@@ -2,7 +2,7 @@ package net.bytebuddy.dynamic.loading;
 
 import net.bytebuddy.test.utility.IntegrationRule;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -15,10 +15,10 @@ import java.util.Enumeration;
 import java.util.NoSuchElementException;
 
 import static net.bytebuddy.matcher.ElementMatchers.isBootstrapClassLoader;
+import static net.bytebuddy.matcher.ElementMatchers.not;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.*;
 
 public class MultipleParentClassLoaderTest {
@@ -37,13 +37,14 @@ public class MultipleParentClassLoaderTest {
     private URL fooUrl, barFirstUrl, barSecondUrl, quxUrl;
 
     @Before
+    @SuppressWarnings("unchecked")
     public void setUp() throws Exception {
-        doReturn(Foo.class).when(first).loadClass(FOO);
-        doReturn(BarFirst.class).when(first).loadClass(BAR);
+        when(first.loadClass(FOO)).thenReturn((Class) Foo.class);
+        when(first.loadClass(BAR)).thenReturn((Class) BarFirst.class);
         when(first.loadClass(QUX)).thenThrow(new ClassNotFoundException());
         when(first.loadClass(BAZ)).thenThrow(new ClassNotFoundException());
-        doReturn(BarSecond.class).when(second).loadClass(BAR);
-        doReturn(Qux.class).when(second).loadClass(QUX);
+        when(second.loadClass(BAR)).thenReturn((Class) BarSecond.class);
+        when(second.loadClass(QUX)).thenReturn((Class) Qux.class);
         when(second.loadClass(BAZ)).thenThrow(new ClassNotFoundException());
         fooUrl = new URL(SCHEME + FOO);
         barFirstUrl = new URL(SCHEME + BAR);
@@ -63,23 +64,31 @@ public class MultipleParentClassLoaderTest {
     public void testSingleParentReturnsOriginal() throws Exception {
         assertThat(new MultipleParentClassLoader.Builder()
                 .append(getClass().getClassLoader(), getClass().getClassLoader())
-                .build(), is(getClass().getClassLoader()));
+                .build(), is(ClassLoader.getSystemClassLoader()));
+    }
+
+    @Test
+    public void testSingleParentReturnsOriginalChained() throws Exception {
+        assertThat(new MultipleParentClassLoader.Builder()
+                .append(ClassLoader.getSystemClassLoader())
+                .append(ClassLoader.getSystemClassLoader())
+                .build(), is(ClassLoader.getSystemClassLoader()));
     }
 
     @Test
     public void testClassLoaderFilter() throws Exception {
         assertThat(new MultipleParentClassLoader.Builder()
                 .append(getClass().getClassLoader(), null)
-                .filter(isBootstrapClassLoader())
+                .filter(not(isBootstrapClassLoader()))
                 .build(), is(getClass().getClassLoader()));
     }
 
     @Test
     public void testMultipleParentClassLoading() throws Exception {
         ClassLoader classLoader = new MultipleParentClassLoader.Builder().append(first, second, null).build();
-        assertEquals(Foo.class, classLoader.loadClass(FOO));
-        assertEquals(BarFirst.class, classLoader.loadClass(BAR));
-        assertEquals(Qux.class, classLoader.loadClass(QUX));
+        assertThat(classLoader.loadClass(FOO), CoreMatchers.<Class<?>>is(Foo.class));
+        assertThat(classLoader.loadClass(BAR), CoreMatchers.<Class<?>>is(BarFirst.class));
+        assertThat(classLoader.loadClass(QUX), CoreMatchers.<Class<?>>is(Qux.class));
         verify(first).loadClass(FOO);
         verify(first).loadClass(BAR);
         verify(first).loadClass(QUX);
@@ -142,11 +151,29 @@ public class MultipleParentClassLoaderTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(MultipleParentClassLoader.class).applyBasic();
-        ObjectPropertyAssertion.of(MultipleParentClassLoader.CompoundEnumeration.class).applyBasic();
-        ObjectPropertyAssertion.of(MultipleParentClassLoader.Builder.class).apply();
-        ObjectPropertyAssertion.of(MultipleParentClassLoader.Builder.ClassLoaderCreationAction.class).apply();
+    public void testMultipleParentClassLoaderExplicitParentOnly() throws Exception {
+        assertThat(new MultipleParentClassLoader.Builder().build(first), is(first));
+    }
+
+    @Test
+    public void testMultipleParentClassLoaderExplicitParentPreIncluded() throws Exception {
+        assertThat(new MultipleParentClassLoader.Builder().append(first).build(first), is(first));
+    }
+
+    @Test
+    public void testMultipleParentClassLoaderExplicitParentPreIncludedWithOther() throws Exception {
+        ClassLoader classLoader = new MultipleParentClassLoader.Builder().append(first, second).build(first);
+        ;
+        assertThat(classLoader, CoreMatchers.not(first));
+        assertThat(classLoader, CoreMatchers.not(second));
+        assertThat(classLoader.getParent(), is(first));
+    }
+
+    @Test
+    public void testMultipleParentClassLoaderExplicitParentNotPreIncludedWithOther() throws Exception {
+        ClassLoader classLoader = new MultipleParentClassLoader.Builder().append(second).build(first);
+        assertThat(classLoader, CoreMatchers.not(second));
+        assertThat(classLoader.getParent(), is(first));
     }
 
     public static class Foo {
@@ -173,12 +200,10 @@ public class MultipleParentClassLoaderTest {
             this.element = element;
         }
 
-        @Override
         public boolean hasMoreElements() {
             return element != null;
         }
 
-        @Override
         public URL nextElement() {
             if (!hasMoreElements()) {
                 throw new AssertionError();

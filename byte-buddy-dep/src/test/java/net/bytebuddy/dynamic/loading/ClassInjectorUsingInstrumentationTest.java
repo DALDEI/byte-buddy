@@ -5,7 +5,6 @@ import net.bytebuddy.agent.ByteBuddyAgent;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.test.utility.AgentAttachmentRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import net.bytebuddy.utility.RandomString;
 import org.junit.Before;
 import org.junit.Rule;
@@ -66,8 +65,11 @@ public class ClassInjectorUsingInstrumentationTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(ClassInjector.UsingInstrumentation.class).apply();
-        ObjectPropertyAssertion.of(ClassInjector.UsingInstrumentation.Target.class).apply();
+    @AgentAttachmentRule.Enforce
+    public void testAvailable() {
+        assertThat(ClassInjector.UsingInstrumentation.isAvailable(), is(true));
+        assertThat(ClassInjector.UsingInstrumentation.of(folder,
+                        ClassInjector.UsingInstrumentation.Target.SYSTEM,
+                        ByteBuddyAgent.install()).isAlive(), is(true));
     }
 }

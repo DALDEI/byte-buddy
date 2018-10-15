@@ -32,26 +32,22 @@ public enum ParameterManifestation implements ModifierContributor.ForParameter {
     }
 
     /**
-     * Creates a new parameter manifestation from a boolean value which indicates if the returned state should represent a final modifier.
-     *
-     * @param finalState {@code true} if the returned state should indicate a final parameter.
-     * @return A corresponding parameter manifestation.
+     * {@inheritDoc}
      */
-    public static ParameterManifestation is(boolean finalState) {
-        return finalState ? FINAL : PLAIN;
-    }
-
-    @Override
     public int getMask() {
         return mask;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public int getRange() {
         return Opcodes.ACC_FINAL;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDefault() {
         return this == PLAIN;
     }
@@ -63,10 +59,5 @@ public enum ParameterManifestation implements ModifierContributor.ForParameter {
      */
     public boolean isFinal() {
         return this == FINAL;
-    }
-
-    @Override
-    public String toString() {
-        return "ParameterManifestation." + name();
     }
 }

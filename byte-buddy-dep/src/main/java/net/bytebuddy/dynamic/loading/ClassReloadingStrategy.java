@@ -1,16 +1,22 @@
 package net.bytebuddy.dynamic.loading;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.utility.StreamDrainer;
+import net.bytebuddy.dynamic.ClassFileLocator;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.lang.instrument.*;
+import java.lang.instrument.ClassDefinition;
+import java.lang.instrument.ClassFileTransformer;
+import java.lang.instrument.Instrumentation;
+import java.lang.instrument.UnmodifiableClassException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
 import java.security.ProtectionDomain;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -27,27 +33,28 @@ import java.util.concurrent.ConcurrentHashMap;
  * recommended to use this {@link ClassLoadingStrategy} with arbitrary classes.
  * </p>
  */
-public class ClassReloadingStrategy implements ClassLoadingStrategy {
+@HashCodeAndEqualsPlugin.Enhance
+public class ClassReloadingStrategy implements ClassLoadingStrategy<ClassLoader> {
 
     /**
-     * The name of the Byte Buddy agent class.
+     * The name of the Byte Buddy {@code net.bytebuddy.agent.Installer} class.
      */
-    private static final String BYTE_BUDDY_AGENT_TYPE = "net.bytebuddy.agent.ByteBuddyAgent";
+    private static final String INSTALLER_TYPE = "net.bytebuddy.agent.Installer";
 
     /**
-     * The name of the {@code ByteBuddyAgent} class's method for obtaining an instrumentation.
+     * The name of the {@code net.bytebuddy.agent.Installer} getter for reading an installed {@link Instrumentation}.
      */
-    private static final String GET_INSTRUMENTATION_METHOD = "getInstrumentation";
+    private static final String INSTRUMENTATION_GETTER = "getInstrumentation";
 
     /**
-     * Base for access to a reflective member to make the code more readable.
+     * Indicator for access to a static member via reflection to make the code more readable.
      */
-    private static final Object STATIC_METHOD = null;
+    private static final Object STATIC_MEMBER = null;
 
     /**
-     * The class file extension.
+     * A dispatcher to use with some methods of the {@link Instrumentation} API.
      */
-    private static final String CLASS_FILE_EXTENSION = ".class";
+    protected static final Dispatcher DISPATCHER = AccessController.doPrivileged(Dispatcher.CreationAction.INSTANCE);
 
     /**
      * This instance's instrumentation.
@@ -55,9 +62,9 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
     private final Instrumentation instrumentation;
 
     /**
-     * An engine which performs the actual redefinition of a {@link java.lang.Class}.
+     * An strategy which performs the actual redefinition of a {@link java.lang.Class}.
      */
-    private final Engine engine;
+    private final Strategy strategy;
 
     /**
      * The strategy to apply for injecting classes into the bootstrap class loader.
@@ -65,49 +72,89 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
     private final BootstrapInjection bootstrapInjection;
 
     /**
-     * Creates a class reloading strategy for the given instrumentation. The given instrumentation must either
-     * support {@link java.lang.instrument.Instrumentation#isRedefineClassesSupported()} or
-     * {@link java.lang.instrument.Instrumentation#isRetransformClassesSupported()}. If both modes are supported,
-     * classes will be transformed using a class redefinition.
-     *
-     * @param instrumentation The instrumentation to be used by this reloading strategy.
+     * The preregistered types of this instance.
      */
-    public ClassReloadingStrategy(Instrumentation instrumentation) {
-        this.instrumentation = instrumentation;
-        if (instrumentation.isRedefineClassesSupported()) {
-            engine = Engine.REDEFINITION;
-        } else if (instrumentation.isRetransformClassesSupported()) {
-            engine = Engine.RETRANSFORMATION;
-        } else {
-            throw new IllegalArgumentException("Instrumentation does not support class redefinition: " + instrumentation);
-        }
-        bootstrapInjection = BootstrapInjection.Disabled.INSTANCE;
-    }
+    private final Map<String, Class<?>> preregisteredTypes;
 
     /**
      * Creates a class reloading strategy for the given instrumentation using an explicit transformation strategy which
-     * is represented by an {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy.Engine}.
+     * is represented by an {@link Strategy}. The given instrumentation
+     * must support the strategy's transformation type.
      *
      * @param instrumentation The instrumentation to be used by this reloading strategy.
-     * @param engine          An engine which performs the actual redefinition of a {@link java.lang.Class}.
+     * @param strategy        A strategy which performs the actual redefinition of a {@link java.lang.Class}.
      */
-    public ClassReloadingStrategy(Instrumentation instrumentation, Engine engine) {
-        this.instrumentation = instrumentation;
-        this.engine = engine;
-        bootstrapInjection = BootstrapInjection.Disabled.INSTANCE;
+    public ClassReloadingStrategy(Instrumentation instrumentation, Strategy strategy) {
+        this(instrumentation,
+                strategy,
+                BootstrapInjection.Disabled.INSTANCE,
+                Collections.<String, Class<?>>emptyMap());
     }
 
     /**
      * Creates a new class reloading strategy.
      *
      * @param instrumentation    The instrumentation to be used by this reloading strategy.
-     * @param engine             An engine which performs the actual redefinition of a {@link java.lang.Class}.
+     * @param strategy           An strategy which performs the actual redefinition of a {@link java.lang.Class}.
      * @param bootstrapInjection The bootstrap class loader injection strategy to use.
+     * @param preregisteredTypes The preregistered types of this instance.
      */
-    protected ClassReloadingStrategy(Instrumentation instrumentation, Engine engine, BootstrapInjection bootstrapInjection) {
+    protected ClassReloadingStrategy(Instrumentation instrumentation,
+                                     Strategy strategy,
+                                     BootstrapInjection bootstrapInjection,
+                                     Map<String, Class<?>> preregisteredTypes) {
         this.instrumentation = instrumentation;
-        this.engine = engine;
+        this.strategy = strategy.validate(instrumentation);
         this.bootstrapInjection = bootstrapInjection;
+        this.preregisteredTypes = preregisteredTypes;
+    }
+
+    /**
+     * Creates a class reloading strategy for the given instrumentation. The given instrumentation must either
+     * support {@link java.lang.instrument.Instrumentation#isRedefineClassesSupported()} or
+     * {@link java.lang.instrument.Instrumentation#isRetransformClassesSupported()}. If both modes are supported,
+     * classes will be transformed using a class retransformation.
+     *
+     * @param instrumentation The instrumentation to be used by this reloading strategy.
+     * @return A suitable class reloading strategy.
+     */
+    public static ClassReloadingStrategy of(Instrumentation instrumentation) {
+        if (DISPATCHER.isRetransformClassesSupported(instrumentation)) {
+            return new ClassReloadingStrategy(instrumentation, Strategy.RETRANSFORMATION);
+        } else if (instrumentation.isRedefineClassesSupported()) {
+            return new ClassReloadingStrategy(instrumentation, Strategy.REDEFINITION);
+        } else {
+            throw new IllegalArgumentException("Instrumentation does not support reloading of classes: " + instrumentation);
+        }
+    }
+
+    /**
+     * <p>
+     * Obtains a {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy} from an installed Byte Buddy agent. This
+     * agent must be installed either by adding the {@code byte-buddy-agent.jar} when starting up the JVM by
+     * </p>
+     * <p>
+     * <code>
+     * java -javaagent:byte-buddy-agent.jar -jar app.jar
+     * </code>
+     * </p>
+     * or after the start up using the Attach API. A convenience installer for the OpenJDK is provided by the
+     * {@code ByteBuddyAgent} within the {@code byte-buddy-agent} module. The strategy is determined by the agent's support
+     * for redefinition where are retransformation is preferred over a redefinition.
+     *
+     * @return A class reloading strategy which uses the Byte Buddy agent's {@link java.lang.instrument.Instrumentation}.
+     */
+    public static ClassReloadingStrategy fromInstalledAgent() {
+        try {
+            return ClassReloadingStrategy.of((Instrumentation) ClassLoader.getSystemClassLoader()
+                    .loadClass(INSTALLER_TYPE)
+                    .getMethod(INSTRUMENTATION_GETTER)
+                    .invoke(STATIC_MEMBER));
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalStateException("The Byte Buddy agent is not installed or not accessible", exception);
+        }
     }
 
     /**
@@ -123,14 +170,15 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
      * or after the start up using the Attach API. A convenience installer for the OpenJDK is provided by the
      * {@code ByteBuddyAgent} within the {@code byte-buddy-agent} module.
      *
+     * @param strategy The strategy to use.
      * @return A class reloading strategy which uses the Byte Buddy agent's {@link java.lang.instrument.Instrumentation}.
      */
-    public static ClassReloadingStrategy fromInstalledAgent() {
+    public static ClassReloadingStrategy fromInstalledAgent(Strategy strategy) {
         try {
             return new ClassReloadingStrategy((Instrumentation) ClassLoader.getSystemClassLoader()
-                    .loadClass(BYTE_BUDDY_AGENT_TYPE)
-                    .getDeclaredMethod(GET_INSTRUMENTATION_METHOD)
-                    .invoke(STATIC_METHOD));
+                    .loadClass(INSTALLER_TYPE)
+                    .getMethod(INSTRUMENTATION_GETTER)
+                    .invoke(STATIC_MEMBER), strategy);
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -138,26 +186,33 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
         }
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Map<TypeDescription, Class<?>> load(ClassLoader classLoader, Map<TypeDescription, byte[]> types) {
-        Map<TypeDescription, Class<?>> loadedClasses = new HashMap<TypeDescription, Class<?>>(types.size());
-        Map<TypeDescription, byte[]> unloadedClasses = new HashMap<TypeDescription, byte[]>(types.size());
-        Map<Class<?>, ClassDefinition> classDefinitions = new ConcurrentHashMap<Class<?>, ClassDefinition>(types.size());
+        Map<String, Class<?>> availableTypes = new HashMap<String, Class<?>>(preregisteredTypes);
+        for (Class<?> type : instrumentation.getInitiatedClasses(classLoader)) {
+            availableTypes.put(TypeDescription.ForLoadedType.getName(type), type);
+        }
+        Map<Class<?>, ClassDefinition> classDefinitions = new ConcurrentHashMap<Class<?>, ClassDefinition>();
+        Map<TypeDescription, Class<?>> loadedClasses = new HashMap<TypeDescription, Class<?>>();
+        Map<TypeDescription, byte[]> unloadedClasses = new LinkedHashMap<TypeDescription, byte[]>();
         for (Map.Entry<TypeDescription, byte[]> entry : types.entrySet()) {
-            try {
-                Class<?> type = classLoader.loadClass(entry.getKey().getName());
+            Class<?> type = availableTypes.get(entry.getKey().getName());
+            if (type != null) {
                 classDefinitions.put(type, new ClassDefinition(type, entry.getValue()));
                 loadedClasses.put(entry.getKey(), type);
-            } catch (ClassNotFoundException ignored) {
+            } else {
                 unloadedClasses.put(entry.getKey(), entry.getValue());
             }
         }
         try {
-            engine.apply(instrumentation, classDefinitions);
-            ClassInjector classInjector = classLoader == null
-                    ? bootstrapInjection.make(instrumentation)
-                    : new ClassInjector.UsingReflection(classLoader);
-            loadedClasses.putAll(classInjector.inject(unloadedClasses));
+            strategy.apply(instrumentation, classDefinitions);
+            if (!unloadedClasses.isEmpty()) {
+                loadedClasses.putAll((classLoader == null
+                        ? bootstrapInjection.make(instrumentation)
+                        : new ClassInjector.UsingReflection(classLoader)).inject(unloadedClasses));
+            }
         } catch (ClassNotFoundException exception) {
             throw new IllegalArgumentException("Could not locate classes for redefinition", exception);
         } catch (UnmodifiableClassException exception) {
@@ -167,31 +222,35 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
     }
 
     /**
-     * Resets all classes to their original definition.
+     * Resets all classes to their original definition while using the first type's class loader as a class file locator.
      *
      * @param type The types to reset.
      * @return This class reloading strategy.
+     * @throws IOException If a class file locator causes an IO exception.
      */
-    public ClassReloadingStrategy reset(Class<?>... type) {
-        Map<Class<?>, ClassDefinition> classDefinitions = new ConcurrentHashMap<Class<?>, ClassDefinition>(type.length);
-        try {
-            for (Class<?> aType : type) {
-                InputStream inputStream = aType.getClassLoader().getResourceAsStream(aType.getName().replace('.', '/') + CLASS_FILE_EXTENSION);
-                try {
-                    classDefinitions.put(aType, new ClassDefinition(aType, new StreamDrainer().drain(inputStream)));
-                } finally {
-                    inputStream.close();
-                }
+    public ClassReloadingStrategy reset(Class<?>... type) throws IOException {
+        return type.length == 0
+                ? this
+                : reset(ClassFileLocator.ForClassLoader.of(type[0].getClassLoader()), type);
+    }
+
+    /**
+     * Resets all classes to their original definition.
+     *
+     * @param classFileLocator The class file locator to use.
+     * @param type             The types to reset.
+     * @return This class reloading strategy.
+     * @throws IOException If a class file locator causes an IO exception.
+     */
+    public ClassReloadingStrategy reset(ClassFileLocator classFileLocator, Class<?>... type) throws IOException {
+        if (type.length > 0) {
+            try {
+                strategy.reset(instrumentation, classFileLocator, Arrays.asList(type));
+            } catch (ClassNotFoundException exception) {
+                throw new IllegalArgumentException("Cannot locate types " + Arrays.toString(type), exception);
+            } catch (UnmodifiableClassException exception) {
+                throw new IllegalStateException("Cannot reset types " + Arrays.toString(type), exception);
             }
-        } catch (IOException exception) {
-            throw new IllegalStateException("Exception while resetting types " + Arrays.toString(type), exception);
-        }
-        try {
-            engine.apply(instrumentation, classDefinitions);
-        } catch (ClassNotFoundException exception) {
-            throw new IllegalArgumentException("Cannot locate types " + Arrays.toString(type), exception);
-        } catch (UnmodifiableClassException exception) {
-            throw new IllegalStateException("Cannot reset types " + Arrays.toString(type), exception);
         }
         return this;
     }
@@ -203,68 +262,327 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
      * @return A class reloading strategy with bootstrap injection enabled.
      */
     public ClassReloadingStrategy enableBootstrapInjection(File folder) {
-        return new ClassReloadingStrategy(instrumentation, engine, new BootstrapInjection.Enabled(folder));
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && engine == ((ClassReloadingStrategy) other).engine
-                && instrumentation.equals(((ClassReloadingStrategy) other).instrumentation)
-                && bootstrapInjection.equals(((ClassReloadingStrategy) other).bootstrapInjection);
-    }
-
-    @Override
-    public int hashCode() {
-        return 31 * 31 * instrumentation.hashCode() + 31 * engine.hashCode() + bootstrapInjection.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "ClassReloadingStrategy{" +
-                "instrumentation=" + instrumentation +
-                ", engine=" + engine +
-                ", bootstrapInjection=" + bootstrapInjection +
-                '}';
+        return new ClassReloadingStrategy(instrumentation, strategy, new BootstrapInjection.Enabled(folder), preregisteredTypes);
     }
 
     /**
-     * An engine which performs the actual redefinition of a {@link java.lang.Class}.
+     * Registers a type to be explicitly available without explicit lookup.
+     *
+     * @param type The loaded types that are explicitly available.
+     * @return This class reloading strategy with the given types being explicitly available.
      */
-    public enum Engine {
+    public ClassReloadingStrategy preregistered(Class<?>... type) {
+        Map<String, Class<?>> preregisteredTypes = new HashMap<String, Class<?>>(this.preregisteredTypes);
+        for (Class<?> aType : type) {
+            preregisteredTypes.put(TypeDescription.ForLoadedType.getName(aType), aType);
+        }
+        return new ClassReloadingStrategy(instrumentation, strategy, bootstrapInjection, preregisteredTypes);
+    }
+
+    /**
+     * A dispatcher to interact with the instrumentation API.
+     */
+    protected interface Dispatcher {
 
         /**
-         * Redefines a class using
-         * {@link java.lang.instrument.Instrumentation#redefineClasses(java.lang.instrument.ClassDefinition...)}.
+         * Invokes the {@code Instrumentation#isModifiableClass} method.
+         *
+         * @param instrumentation The instrumentation instance to invoke the method on.
+         * @param type            The type to consider for modifiability.
+         * @return {@code true} if the supplied type can be modified.
+         */
+        boolean isModifiableClass(Instrumentation instrumentation, Class<?> type);
+
+        /**
+         * Invokes the {@code Instrumentation#isRetransformClassesSupported} method.
+         *
+         * @param instrumentation The instrumentation instance to invoke the method on.
+         * @return {@code true} if the supplied instrumentation instance supports retransformation.
+         */
+        boolean isRetransformClassesSupported(Instrumentation instrumentation);
+
+        /**
+         * Registers a transformer.
+         *
+         * @param instrumentation      The instrumentation instance to invoke the method on.
+         * @param classFileTransformer The class file transformer to register.
+         * @param canRetransform       {@code true} if the class file transformer should be invoked upon a retransformation.
+         */
+        void addTransformer(Instrumentation instrumentation, ClassFileTransformer classFileTransformer, boolean canRetransform);
+
+        /**
+         * Retransforms the supplied classes.
+         *
+         * @param instrumentation The instrumentation instance to invoke the method on.
+         * @param type            The types to retransform.
+         * @throws UnmodifiableClassException If any of the supplied types are unmodifiable.
+         */
+        void retransformClasses(Instrumentation instrumentation, Class<?>[] type) throws UnmodifiableClassException;
+
+        /**
+         * An action to create an appropriate {@link Dispatcher}.
+         */
+        enum CreationAction implements PrivilegedAction<Dispatcher> {
+
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * {@inheritDoc}
+             */
+            public Dispatcher run() {
+                try {
+                    return new ForJava6CapableVm(Instrumentation.class.getMethod("isModifiableClass", Class.class),
+                            Instrumentation.class.getMethod("isRetransformClassesSupported"),
+                            Instrumentation.class.getMethod("addTransformer", ClassFileTransformer.class, boolean.class),
+                            Instrumentation.class.getMethod("retransformClasses", Class[].class));
+                } catch (NoSuchMethodException ignored) {
+                    return ForLegacyVm.INSTANCE;
+                }
+            }
+        }
+
+        /**
+         * A dispatcher for a legacy VM that does not support retransformation.
+         */
+        enum ForLegacyVm implements Dispatcher {
+
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * {@inheritDoc}
+             */
+            public boolean isModifiableClass(Instrumentation instrumentation, Class<?> type) {
+                return !type.isArray() && !type.isPrimitive();
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public boolean isRetransformClassesSupported(Instrumentation instrumentation) {
+                return false;
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public void addTransformer(Instrumentation instrumentation, ClassFileTransformer classFileTransformer, boolean canRetransform) {
+                if (canRetransform) {
+                    throw new UnsupportedOperationException("Cannot apply retransformation on legacy VM");
+                } else {
+                    instrumentation.addTransformer(classFileTransformer);
+                }
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public void retransformClasses(Instrumentation instrumentation, Class<?>[] type) {
+                throw new IllegalStateException();
+            }
+        }
+
+        /**
+         * A dispatcher for a Java 6 capable VM that is potentially capable of retransformation.
+         */
+        class ForJava6CapableVm implements Dispatcher {
+
+            /**
+             * The {@code Instrumentation#isModifiableClass} method.
+             */
+            private final Method isModifiableClass;
+
+            /**
+             * The {@code Instrumentation#isRetransformClassesSupported} method.
+             */
+            private final Method isRetransformClassesSupported;
+
+            /**
+             * The {@code Instrumentation#addTransformer} method.
+             */
+            private final Method addTransformer;
+
+            /**
+             * The {@code Instrumentation#retransformClasses} method.
+             */
+            private final Method retransformClasses;
+
+            /**
+             * Creates a dispatcher for a Java 6 compatible VM.
+             *
+             * @param isModifiableClass             The {@code Instrumentation#isModifiableClass} method.
+             * @param isRetransformClassesSupported The {@code Instrumentation#isRetransformClassesSupported} method.
+             * @param addTransformer                The {@code Instrumentation#addTransformer} method.
+             * @param retransformClasses            The {@code Instrumentation#retransformClasses} method.
+             */
+            protected ForJava6CapableVm(Method isModifiableClass,
+                                        Method isRetransformClassesSupported,
+                                        Method addTransformer,
+                                        Method retransformClasses) {
+                this.isModifiableClass = isModifiableClass;
+                this.isRetransformClassesSupported = isRetransformClassesSupported;
+                this.addTransformer = addTransformer;
+                this.retransformClasses = retransformClasses;
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public boolean isModifiableClass(Instrumentation instrumentation, Class<?> type) {
+                try {
+                    return (Boolean) isModifiableClass.invoke(instrumentation, type);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException("Cannot access java.lang.instrument.Instrumentation#isModifiableClass", exception);
+                } catch (InvocationTargetException exception) {
+                    throw new IllegalStateException("Error invoking java.lang.instrument.Instrumentation#isModifiableClass", exception.getCause());
+                }
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public boolean isRetransformClassesSupported(Instrumentation instrumentation) {
+                try {
+                    return (Boolean) isRetransformClassesSupported.invoke(instrumentation);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException("Cannot access java.lang.instrument.Instrumentation#isModifiableClass", exception);
+                } catch (InvocationTargetException exception) {
+                    throw new IllegalStateException("Error invoking java.lang.instrument.Instrumentation#isModifiableClass", exception.getCause());
+                }
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public void addTransformer(Instrumentation instrumentation, ClassFileTransformer classFileTransformer, boolean canRetransform) {
+                try {
+                    addTransformer.invoke(instrumentation, classFileTransformer, canRetransform);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException("Cannot access java.lang.instrument.Instrumentation#addTransformer", exception);
+                } catch (InvocationTargetException exception) {
+                    throw new IllegalStateException("Error invoking java.lang.instrument.Instrumentation#addTransformer", exception.getCause());
+                }
+            }
+
+            /**
+             * {@inheritDoc}
+             */
+            public void retransformClasses(Instrumentation instrumentation, Class<?>[] type) throws UnmodifiableClassException {
+                try {
+                    retransformClasses.invoke(instrumentation, (Object) type);
+                } catch (IllegalAccessException exception) {
+                    throw new IllegalStateException("Cannot access java.lang.instrument.Instrumentation#retransformClasses", exception);
+                } catch (InvocationTargetException exception) {
+                    Throwable cause = exception.getCause();
+                    if (cause instanceof UnmodifiableClassException) {
+                        throw (UnmodifiableClassException) cause;
+                    } else {
+                        throw new IllegalStateException("Error invoking java.lang.instrument.Instrumentation#retransformClasses", cause);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * A strategy which performs the actual redefinition of a {@link java.lang.Class}.
+     */
+    public enum Strategy {
+
+        /**
+         * <p>
+         * Redefines a class using {@link java.lang.instrument.Instrumentation#redefineClasses(java.lang.instrument.ClassDefinition...)}.
+         * </p>
+         * <p>
+         * This strategy can be more efficient. However, the redefinition strategy does not allow to reset VM anonymous classes (e.g.
+         * classes that represent lambda expressions).
+         * </p>
          */
         REDEFINITION(true) {
             @Override
-            protected void apply(Instrumentation instrumentation,
-                                 Map<Class<?>, ClassDefinition> classDefinitions) throws UnmodifiableClassException, ClassNotFoundException {
+            protected void apply(Instrumentation instrumentation, Map<Class<?>, ClassDefinition> classDefinitions)
+                    throws UnmodifiableClassException, ClassNotFoundException {
                 instrumentation.redefineClasses(classDefinitions.values().toArray(new ClassDefinition[classDefinitions.size()]));
+            }
+
+            @Override
+            protected Strategy validate(Instrumentation instrumentation) {
+                if (!instrumentation.isRedefineClassesSupported()) {
+                    throw new IllegalArgumentException("Does not support redefinition: " + instrumentation);
+                }
+                return this;
+            }
+
+            @Override
+            public void reset(Instrumentation instrumentation, ClassFileLocator classFileLocator, List<Class<?>> types)
+                    throws IOException, UnmodifiableClassException, ClassNotFoundException {
+                Map<Class<?>, ClassDefinition> classDefinitions = new HashMap<Class<?>, ClassDefinition>(types.size());
+                for (Class<?> type : types) {
+                    classDefinitions.put(type, new ClassDefinition(type, classFileLocator.locate(TypeDescription.ForLoadedType.getName(type)).resolve()));
+                }
+                apply(instrumentation, classDefinitions);
             }
         },
 
         /**
+         * <p>
          * Redefines a class using
          * {@link java.lang.instrument.Instrumentation#retransformClasses(Class[])}. This requires synchronization on
          * the {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy#instrumentation} object.
+         * </p>
+         * <p>
+         * This strategy can require more time to be applied but does not struggle to reset VM anonymous classes (e.g. classes
+         * that represent lambda expressions).
+         * </p>
          */
         RETRANSFORMATION(false) {
             @Override
             protected void apply(Instrumentation instrumentation, Map<Class<?>, ClassDefinition> classDefinitions) throws UnmodifiableClassException {
                 ClassRedefinitionTransformer classRedefinitionTransformer = new ClassRedefinitionTransformer(classDefinitions);
-                synchronized (instrumentation) {
-                    instrumentation.addTransformer(classRedefinitionTransformer, REDEFINE_CLASSES);
+                synchronized (this) {
+                    DISPATCHER.addTransformer(instrumentation, classRedefinitionTransformer, REDEFINE_CLASSES);
                     try {
-                        instrumentation.retransformClasses(classDefinitions.keySet().toArray(new Class<?>[classDefinitions.size()]));
+                        DISPATCHER.retransformClasses(instrumentation, classDefinitions.keySet().toArray(new Class<?>[classDefinitions.size()]));
                     } finally {
                         instrumentation.removeTransformer(classRedefinitionTransformer);
                     }
                 }
                 classRedefinitionTransformer.assertTransformation();
             }
+
+            @Override
+            protected Strategy validate(Instrumentation instrumentation) {
+                if (!DISPATCHER.isRetransformClassesSupported(instrumentation)) {
+                    throw new IllegalArgumentException("Does not support retransformation: " + instrumentation);
+                }
+                return this;
+            }
+
+            @Override
+            public void reset(Instrumentation instrumentation, ClassFileLocator classFileLocator, List<Class<?>> types) throws UnmodifiableClassException, ClassNotFoundException {
+                for (Class<?> type : types) {
+                    if (!DISPATCHER.isModifiableClass(instrumentation, type)) {
+                        throw new IllegalArgumentException("Cannot modify type: " + type);
+                    }
+                }
+                DISPATCHER.addTransformer(instrumentation, ClassResettingTransformer.INSTANCE, REDEFINE_CLASSES);
+                try {
+                    DISPATCHER.retransformClasses(instrumentation, types.toArray(new Class<?>[types.size()]));
+                } finally {
+                    instrumentation.removeTransformer(ClassResettingTransformer.INSTANCE);
+                }
+            }
         };
+
+        /**
+         * Indicates that a class is not redefined.
+         */
+        private static final byte[] NO_REDEFINITION = null;
 
         /**
          * Instructs a {@link java.lang.instrument.ClassFileTransformer} to redefine classes.
@@ -272,45 +590,59 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
         private static final boolean REDEFINE_CLASSES = true;
 
         /**
-         * {@code true} if the {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy.Engine#REDEFINITION} engine
+         * {@code true} if the {@link Strategy#REDEFINITION} strategy
          * is used.
          */
         private final boolean redefinition;
 
         /**
-         * Creates a new engine.
+         * Creates a new strategy.
          *
-         * @param redefinition {@code true} if the {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy.Engine#REDEFINITION} engine
-         *                     is used.
+         * @param redefinition {@code true} if the {@link Strategy#REDEFINITION} strategy is used.
          */
-        Engine(boolean redefinition) {
+        Strategy(boolean redefinition) {
             this.redefinition = redefinition;
         }
 
         /**
-         * Applies this engine for the given arguments.
+         * Applies this strategy for the given arguments.
          *
          * @param instrumentation  The instrumentation to be used for applying the redefinition.
          * @param classDefinitions A mapping of the classes to be redefined to their redefinition.
          * @throws UnmodifiableClassException If a class is not modifiable.
          * @throws ClassNotFoundException     If a class was not found.
          */
-        protected abstract void apply(Instrumentation instrumentation,
-                                      Map<Class<?>, ClassDefinition> classDefinitions) throws UnmodifiableClassException, ClassNotFoundException;
+        protected abstract void apply(Instrumentation instrumentation, Map<Class<?>, ClassDefinition> classDefinitions)
+                throws UnmodifiableClassException, ClassNotFoundException;
 
         /**
-         * Returns {@code true} if this engine represents {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy.Engine#REDEFINITION}.
+         * Validates that this strategy supports a given transformation type.
          *
-         * @return {@code true} if this engine represents {@link net.bytebuddy.dynamic.loading.ClassReloadingStrategy.Engine#REDEFINITION}.
+         * @param instrumentation The instrumentation instance being used.
+         * @return This strategy.
+         */
+        protected abstract Strategy validate(Instrumentation instrumentation);
+
+        /**
+         * Returns {@code true} if this strategy represents {@link Strategy#REDEFINITION}.
+         *
+         * @return {@code true} if this strategy represents {@link Strategy#REDEFINITION}.
          */
         public boolean isRedefinition() {
             return redefinition;
         }
 
-        @Override
-        public String toString() {
-            return "ClassReloadingStrategy.Engine." + name();
-        }
+        /**
+         * Resets the provided types to their original format.
+         *
+         * @param instrumentation  The instrumentation instance to use for class redefinition or retransformation.
+         * @param classFileLocator The class file locator to use.
+         * @param types            The types to reset.
+         * @throws IOException                If an I/O exception occurs.
+         * @throws UnmodifiableClassException If a class is not modifiable.
+         * @throws ClassNotFoundException     If a class could not be found.
+         */
+        public abstract void reset(Instrumentation instrumentation, ClassFileLocator classFileLocator, List<Class<?>> types) throws IOException, UnmodifiableClassException, ClassNotFoundException;
 
         /**
          * A class file transformer that applies a given {@link java.lang.instrument.ClassDefinition}.
@@ -331,31 +663,53 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
                 this.redefinedClasses = redefinedClasses;
             }
 
-            @Override
-            public byte[] transform(ClassLoader loader,
-                                    String className,
+            /**
+             * {@inheritDoc}
+             */
+            @SuppressFBWarnings(value = "EI_EXPOSE_REP", justification = "Value is always null")
+            public byte[] transform(ClassLoader classLoader,
+                                    String internalTypeName,
                                     Class<?> classBeingRedefined,
                                     ProtectionDomain protectionDomain,
-                                    byte[] classfileBuffer) throws IllegalClassFormatException {
-                ClassDefinition redefinedClass = redefinedClasses.remove(classBeingRedefined);
-                if (redefinedClass == null) {
-                    throw new IllegalArgumentException("Encountered class without redefinition information");
+                                    byte[] classfileBuffer) {
+                if (internalTypeName == null) {
+                    return NO_REDEFINITION;
                 }
-                return redefinedClass.getDefinitionClassFile();
+                ClassDefinition redefinedClass = redefinedClasses.remove(classBeingRedefined);
+                return redefinedClass == null
+                        ? NO_REDEFINITION
+                        : redefinedClass.getDefinitionClassFile();
             }
 
             /**
              * Validates that all given classes were redefined.
              */
             public void assertTransformation() {
-                if (redefinedClasses.size() > 0) {
+                if (!redefinedClasses.isEmpty()) {
                     throw new IllegalStateException("Could not transform: " + redefinedClasses.keySet());
                 }
             }
+        }
 
-            @Override
-            public String toString() {
-                return "ClassReloadingStrategy.Engine.ClassRedefinitionTransformer{redefinedClasses=" + redefinedClasses + '}';
+        /**
+         * A transformer that indicates that a class file should not be transformed.
+         */
+        protected enum ClassResettingTransformer implements ClassFileTransformer {
+
+            /**
+             * The singleton instance.
+             */
+            INSTANCE;
+
+            /**
+             * {@inheritDoc}
+             */
+            public byte[] transform(ClassLoader classLoader,
+                                    String internalTypeName,
+                                    Class<?> classBeingRedefined,
+                                    ProtectionDomain protectionDomain,
+                                    byte[] classfileBuffer) {
+                return NO_REDEFINITION;
             }
         }
     }
@@ -383,20 +737,18 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
              */
             INSTANCE;
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public ClassInjector make(Instrumentation instrumentation) {
                 throw new IllegalStateException("Bootstrap injection is not enabled");
-            }
-
-            @Override
-            public String toString() {
-                return "ClassReloadingStrategy.BootstrapInjection.Disabled." + name();
             }
         }
 
         /**
          * An enabled bootstrap class loader injection strategy.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Enabled implements BootstrapInjection {
 
             /**
@@ -413,27 +765,11 @@ public class ClassReloadingStrategy implements ClassLoadingStrategy {
                 this.folder = folder;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public ClassInjector make(Instrumentation instrumentation) {
                 return ClassInjector.UsingInstrumentation.of(folder, ClassInjector.UsingInstrumentation.Target.BOOTSTRAP, instrumentation);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && folder.equals(((Enabled) other).folder);
-            }
-
-            @Override
-            public int hashCode() {
-                return folder.hashCode();
-            }
-
-            @Override
-            public String toString() {
-                return "ClassReloadingStrategy.BootstrapInjection.Enabled{" +
-                        "folder=" + folder +
-                        '}';
             }
         }
     }

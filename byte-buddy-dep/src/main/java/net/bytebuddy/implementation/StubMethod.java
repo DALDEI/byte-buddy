@@ -19,36 +19,51 @@ import org.objectweb.asm.MethodVisitor;
  * <li>A {@code null} reference for any reference types. Note that this includes primitive wrapper types.</li>
  * </ol>
  */
-public enum StubMethod implements Implementation, ByteCodeAppender {
+public enum StubMethod implements Implementation.Composable, ByteCodeAppender {
 
     /**
      * The singleton instance.
      */
     INSTANCE;
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public InstrumentedType prepare(InstrumentedType instrumentedType) {
         return instrumentedType;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public ByteCodeAppender appender(Target implementationTarget) {
         return this;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
+    public Implementation andThen(Implementation implementation) {
+        return implementation;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public Composable andThen(Composable implementation) {
+        return implementation;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public Size apply(MethodVisitor methodVisitor,
                       Context implementationContext,
                       MethodDescription instrumentedMethod) {
         StackManipulation.Size stackSize = new StackManipulation.Compound(
-                DefaultValue.of(instrumentedMethod.getReturnType().asErasure()),
-                MethodReturn.returning(instrumentedMethod.getReturnType().asErasure())
+                DefaultValue.of(instrumentedMethod.getReturnType()),
+                MethodReturn.of(instrumentedMethod.getReturnType())
         ).apply(methodVisitor, implementationContext);
         return new Size(stackSize.getMaximalSize(), instrumentedMethod.getStackSize());
-    }
-
-    @Override
-    public String toString() {
-        return "StubMethod." + name();
     }
 }

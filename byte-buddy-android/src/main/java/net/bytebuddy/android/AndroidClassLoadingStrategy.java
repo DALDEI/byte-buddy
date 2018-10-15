@@ -2,10 +2,13 @@ package net.bytebuddy.android;
 
 import android.annotation.TargetApi;
 import android.os.Build;
+import com.android.dx.cf.direct.DirectClassFile;
+import com.android.dx.cf.direct.StdAttributeFactory;
 import com.android.dx.dex.DexOptions;
 import com.android.dx.dex.cf.CfOptions;
 import com.android.dx.dex.cf.CfTranslator;
 import com.android.dx.dex.file.DexFile;
+import dalvik.system.BaseDexClassLoader;
 import dalvik.system.DexClassLoader;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import net.bytebuddy.description.type.TypeDescription;
@@ -13,8 +16,11 @@ import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.utility.RandomString;
 
 import java.io.*;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.logging.Logger;
@@ -46,8 +52,7 @@ import java.util.logging.Logger;
  * <a href="https://developer.android.com/sdk/terms.html">their terms and conditions</a>.
  * </p>
  */
-@TargetApi(Build.VERSION_CODES.CUPCAKE)
-public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
+public abstract class AndroidClassLoadingStrategy implements ClassLoadingStrategy<ClassLoader> {
 
     /**
      * The name of the dex file that the {@link dalvik.system.DexClassLoader} expects to find inside of a jar file
@@ -74,35 +79,22 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
      * A directory that is <b>not shared with other applications</b> to be used for storing generated classes and
      * their processed forms.
      */
-    private final File privateDirectory;
+    protected final File privateDirectory;
 
     /**
      * A generator for random string values.
      */
-    private final RandomString randomString;
+    protected final RandomString randomString;
 
     /**
-     * Creates a new Android class loading strategy that uses the given folder for storing classes. The created
-     * class loading strategy makes use of the
-     * {@link net.bytebuddy.android.AndroidClassLoadingStrategy.DexProcessor.ForSdkCompiler} which uses the
-     * Android SDK's dex compiler in version 1.7 which is automatically included with this strategy. Doing so,
-     * the dex compiler is applied with default options.
-     *
-     * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
-     *                         generated classes and their processed forms.
-     */
-    public AndroidClassLoadingStrategy(File privateDirectory) {
-        this(privateDirectory, DexProcessor.ForSdkCompiler.makeDefault());
-    }
-
-    /**
-     * Creates a new Android class loading strategy that uses the given folder for storing classes.
+     * Creates a new Android class loading strategy that uses the given folder for storing classes. The directory is not cleared
+     * by Byte Buddy after the application terminates. This remains the responsibility of the user.
      *
      * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
      *                         generated classes and their processed forms.
      * @param dexProcessor     The dex processor to be used for creating a dex file out of Java files.
      */
-    public AndroidClassLoadingStrategy(File privateDirectory, DexProcessor dexProcessor) {
+    protected AndroidClassLoadingStrategy(File privateDirectory, DexProcessor dexProcessor) {
         if (!privateDirectory.isDirectory()) {
             throw new IllegalArgumentException("Not a directory " + privateDirectory);
         }
@@ -111,18 +103,20 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
         randomString = new RandomString();
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public Map<TypeDescription, Class<?>> load(ClassLoader classLoader, Map<TypeDescription, byte[]> types) {
         DexProcessor.Conversion conversion = dexProcessor.create();
         for (Map.Entry<TypeDescription, byte[]> entry : types.entrySet()) {
             conversion.register(entry.getKey().getName(), entry.getValue());
         }
-        File zipFile = new File(privateDirectory, randomString.nextString() + JAR_FILE_EXTENSION);
+        File jar = new File(privateDirectory, randomString.nextString() + JAR_FILE_EXTENSION);
         try {
-            if (!zipFile.createNewFile()) {
-                throw new IllegalStateException("Cannot create " + zipFile);
+            if (!jar.createNewFile()) {
+                throw new IllegalStateException("Cannot create " + jar);
             }
-            JarOutputStream zipOutputStream = new JarOutputStream(new FileOutputStream(zipFile));
+            JarOutputStream zipOutputStream = new JarOutputStream(new FileOutputStream(jar));
             try {
                 zipOutputStream.putNextEntry(new JarEntry(DEX_CLASS_FILE));
                 conversion.drainTo(zipOutputStream);
@@ -130,33 +124,26 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
             } finally {
                 zipOutputStream.close();
             }
-            ClassLoader dexClassLoader = dexProcessor.makeClassLoader(zipFile, privateDirectory, classLoader);
-            Map<TypeDescription, Class<?>> loadedTypes = new HashMap<TypeDescription, Class<?>>(types.size());
-            for (TypeDescription typeDescription : types.keySet()) {
-                try {
-                    loadedTypes.put(typeDescription, dexClassLoader.loadClass(typeDescription.getName()));
-                } catch (ClassNotFoundException exception) {
-                    throw new IllegalStateException("Cannot load " + typeDescription, exception);
-                }
-            }
-            return loadedTypes;
+            return doLoad(classLoader, types.keySet(), jar);
         } catch (IOException exception) {
-            throw new IllegalStateException("Cannot write to zip file " + zipFile, exception);
+            throw new IllegalStateException("Cannot write to zip file " + jar, exception);
         } finally {
-            if (!zipFile.delete()) {
-                Logger.getAnonymousLogger().warning("Could not delete " + zipFile);
+            if (!jar.delete()) {
+                Logger.getLogger("net.bytebuddy").warning("Could not delete " + jar);
             }
         }
     }
 
-    @Override
-    public String toString() {
-        return "AndroidClassLoadingStrategy{" +
-                "dexProcessor=" + dexProcessor +
-                ", privateDirectory=" + privateDirectory +
-                ", randomString=" + randomString +
-                '}';
-    }
+    /**
+     * Applies the actual class loading.
+     *
+     * @param classLoader      The target class loader.
+     * @param typeDescriptions Descriptions of the loaded types.
+     * @param jar              A jar file containing the supplied types as dex files.
+     * @return A mapping of all type descriptions to their loaded types.
+     * @throws IOException If an I/O exception occurs.
+     */
+    protected abstract Map<TypeDescription, Class<?>> doLoad(ClassLoader classLoader, Set<TypeDescription> typeDescriptions, File jar) throws IOException;
 
     /**
      * A dex processor is responsible for converting a collection of Java class files into a Android dex file.
@@ -170,17 +157,6 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
          * @return A mutable conversion process.
          */
         Conversion create();
-
-        /**
-         * Creates a class loader capable of loading dex files.
-         *
-         * @param zipFile           The zip file containing a <i>classes.dex</i> file.
-         * @param privateDirectory  A directory that is <b>not shared with other applications</b> to be used for
-         *                          storing generated classes and their processed forms.
-         * @param parentClassLoader The parent class loader.
-         * @return A class loader for the specified data.
-         */
-        ClassLoader makeClassLoader(File zipFile, File privateDirectory, ClassLoader parentClassLoader);
 
         /**
          * Represents an ongoing conversion of several Java class files into an Android dex file.
@@ -262,37 +238,11 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
                 this.dexCompilerOptions = dexCompilerOptions;
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public DexProcessor.Conversion create() {
                 return new Conversion(new DexFile(dexFileOptions));
-            }
-
-            @Override
-            @SuppressFBWarnings(value = "DP_CREATE_CLASSLOADER_INSIDE_DO_PRIVILEGED", justification = "Android discourages the use access controllers")
-            public ClassLoader makeClassLoader(File zipFile, File privateDirectory, ClassLoader parentClassLoader) {
-                return new DexClassLoader(zipFile.getAbsolutePath(), privateDirectory.getAbsolutePath(), EMPTY_LIBRARY_PATH, parentClassLoader);
-            }
-
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass()) &&
-                        dexCompilerOptions.equals(((ForSdkCompiler) other).dexCompilerOptions)
-                        && dexFileOptions.equals(((ForSdkCompiler) other).dexFileOptions);
-            }
-
-            @Override
-            public int hashCode() {
-                int result = dexFileOptions.hashCode();
-                result = 31 * result + dexCompilerOptions.hashCode();
-                return result;
-            }
-
-            @Override
-            public String toString() {
-                return "AndroidClassLoadingStrategy.DexProcessor.ForSdkCompiler{" +
-                        "dexFileOptions=" + dexFileOptions +
-                        ", dexCompilerOptions=" + dexCompilerOptions +
-                        '}';
             }
 
             /**
@@ -300,6 +250,11 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
              * {@link net.bytebuddy.android.AndroidClassLoadingStrategy.DexProcessor.ForSdkCompiler}.
              */
             protected class Conversion implements DexProcessor.Conversion {
+
+                /**
+                 * Indicates non-strict parsing of a class file.
+                 */
+                private static final boolean NON_STRICT = false;
 
                 /**
                  * The dex file that is created by this conversion.
@@ -315,46 +270,272 @@ public class AndroidClassLoadingStrategy implements ClassLoadingStrategy {
                     this.dexFile = dexFile;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public void register(String name, byte[] binaryRepresentation) {
-                    dexFile.add(CfTranslator.translate(name.replace('.', '/') + CLASS_FILE_EXTENSION,
+                    DirectClassFile directClassFile = new DirectClassFile(binaryRepresentation, name.replace('.', '/') + CLASS_FILE_EXTENSION, NON_STRICT);
+                    directClassFile.setAttributeFactory(new StdAttributeFactory());
+                    dexFile.add(CfTranslator.translate(directClassFile,
                             binaryRepresentation,
                             dexCompilerOptions,
-                            dexFileOptions));
-                }
-
-                @Override
-                public void drainTo(OutputStream outputStream) throws IOException {
-                    dexFile.writeTo(outputStream, NO_PRINT_OUTPUT, NOT_VERBOSE);
+                            dexFileOptions,
+                            new DexFile(dexFileOptions)));
                 }
 
                 /**
-                 * Returns the outer instance.
-                 *
-                 * @return The outer instance.
+                 * {@inheritDoc}
                  */
-                private ForSdkCompiler getOuter() {
-                    return ForSdkCompiler.this;
+                public void drainTo(OutputStream outputStream) throws IOException {
+                    dexFile.writeTo(outputStream, NO_PRINT_OUTPUT, NOT_VERBOSE);
+                }
+            }
+        }
+    }
+
+    /**
+     * An Android class loading strategy that creates a wrapper class loader that loads any type.
+     */
+    @TargetApi(Build.VERSION_CODES.CUPCAKE)
+    public static class Wrapping extends AndroidClassLoadingStrategy {
+
+        /**
+         * Creates a new wrapping class loading strategy for Android that uses the default SDK-compiler based dex processor.
+         *
+         * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
+         *                         generated classes and their processed forms.
+         */
+        public Wrapping(File privateDirectory) {
+            this(privateDirectory, DexProcessor.ForSdkCompiler.makeDefault());
+        }
+
+        /**
+         * Creates a new wrapping class loading strategy for Android.
+         *
+         * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
+         *                         generated classes and their processed forms.
+         * @param dexProcessor     The dex processor to be used for creating a dex file out of Java files.
+         */
+        public Wrapping(File privateDirectory, DexProcessor dexProcessor) {
+            super(privateDirectory, dexProcessor);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        @SuppressFBWarnings(value = "DP_CREATE_CLASSLOADER_INSIDE_DO_PRIVILEGED", justification = "Android discourages the use of access controllers")
+        protected Map<TypeDescription, Class<?>> doLoad(ClassLoader classLoader, Set<TypeDescription> typeDescriptions, File jar) {
+            ClassLoader dexClassLoader = new DexClassLoader(jar.getAbsolutePath(), privateDirectory.getAbsolutePath(), EMPTY_LIBRARY_PATH, classLoader);
+            Map<TypeDescription, Class<?>> loadedTypes = new HashMap<TypeDescription, Class<?>>();
+            for (TypeDescription typeDescription : typeDescriptions) {
+                try {
+                    loadedTypes.put(typeDescription, Class.forName(typeDescription.getName(), false, dexClassLoader));
+                } catch (ClassNotFoundException exception) {
+                    throw new IllegalStateException("Cannot load " + typeDescription, exception);
+                }
+            }
+            return loadedTypes;
+        }
+    }
+
+    /**
+     * An Android class loading strategy that injects types into the target class loader.
+     */
+    @TargetApi(Build.VERSION_CODES.CUPCAKE)
+    public static class Injecting extends AndroidClassLoadingStrategy {
+
+        /**
+         * The dispatcher to use for loading a dex file.
+         */
+        private static final Dispatcher DISPATCHER;
+
+        /*
+         * Creates a dispatcher to use for loading a dex file.
+         */
+        static {
+            Dispatcher dispatcher;
+            try {
+                dispatcher = new Dispatcher.ForAndroidPVm(BaseDexClassLoader.class.getMethod("addDexPath", String.class, boolean.class));
+            } catch (Throwable ignored) {
+                dispatcher = Dispatcher.ForLegacyVm.INSTANCE;
+            }
+            DISPATCHER = dispatcher;
+        }
+
+        /**
+         * Creates a new injecting class loading strategy for Android that uses the default SDK-compiler based dex processor.
+         *
+         * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
+         *                         generated classes and their processed forms.
+         */
+        public Injecting(File privateDirectory) {
+            this(privateDirectory, DexProcessor.ForSdkCompiler.makeDefault());
+        }
+
+        /**
+         * Creates a new injecting class loading strategy for Android.
+         *
+         * @param privateDirectory A directory that is <b>not shared with other applications</b> to be used for storing
+         *                         generated classes and their processed forms.
+         * @param dexProcessor     The dex processor to be used for creating a dex file out of Java files.
+         */
+        public Injecting(File privateDirectory, DexProcessor dexProcessor) {
+            super(privateDirectory, dexProcessor);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public Map<TypeDescription, Class<?>> load(ClassLoader classLoader, Map<TypeDescription, byte[]> types) {
+            if (classLoader == null) {
+                throw new IllegalArgumentException("Cannot inject classes into the bootstrap class loader on Android");
+            }
+            return super.load(classLoader, types);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        protected Map<TypeDescription, Class<?>> doLoad(ClassLoader classLoader, Set<TypeDescription> typeDescriptions, File jar) throws IOException {
+            dalvik.system.DexFile dexFile = DISPATCHER.loadDex(privateDirectory, jar, classLoader, randomString);
+            Map<TypeDescription, Class<?>> loadedTypes = new HashMap<TypeDescription, Class<?>>();
+            for (TypeDescription typeDescription : typeDescriptions) {
+                synchronized (classLoader) { // Guaranteed to be non-null by check in 'load' method.
+                    Class<?> type = DISPATCHER.loadClass(dexFile, classLoader, typeDescription);
+                    if (type == null) {
+                        throw new IllegalStateException("Could not load " + typeDescription);
+                    }
+                    loadedTypes.put(typeDescription, type);
+                }
+            }
+            return loadedTypes;
+        }
+
+        /**
+         * A dispatcher for loading a dex file.
+         */
+        protected interface Dispatcher {
+
+            /**
+             * Loads a dex file.
+             *
+             * @param privateDirectory The private directory to use if required.
+             * @param jar              The jar to load.
+             * @param classLoader      The class loader to inject into.
+             * @param randomString     The random string to use.
+             * @return The created {@link dalvik.system.DexFile} or {@code null} if no such file is created.
+             * @throws IOException If an I/O exception is thrown.
+             */
+            dalvik.system.DexFile loadDex(File privateDirectory, File jar, ClassLoader classLoader, RandomString randomString) throws IOException;
+
+            /**
+             * Loads a class.
+             *
+             * @param dexFile         The dex file to process if any was created.
+             * @param classLoader     The class loader to load the class from.
+             * @param typeDescription The type to load.
+             * @return The loaded class.
+             */
+            Class<?> loadClass(dalvik.system.DexFile dexFile, ClassLoader classLoader, TypeDescription typeDescription);
+
+            /**
+             * A dispatcher for legacy VMs that allow {@link dalvik.system.DexFile#loadDex(String, String, int)}.
+             */
+            enum ForLegacyVm implements Dispatcher {
+
+                /**
+                 * The singleton instance.
+                 */
+                INSTANCE;
+
+                /**
+                 * A constant indicating the use of no flags.
+                 */
+                private static final int NO_FLAGS = 0;
+
+                /**
+                 * A file extension used for holding Android's optimized data.
+                 */
+                private static final String EXTENSION = ".data";
+
+                /**
+                 * {@inheritDoc}
+                 */
+                public dalvik.system.DexFile loadDex(File privateDirectory,
+                                                     File jar,
+                                                     ClassLoader classLoader,
+                                                     RandomString randomString) throws IOException {
+                    return dalvik.system.DexFile.loadDex(jar.getAbsolutePath(),
+                            new File(privateDirectory.getAbsolutePath(), randomString.nextString() + EXTENSION).getAbsolutePath(),
+                            NO_FLAGS);
                 }
 
-                @Override
-                public boolean equals(Object other) {
-                    return this == other || !(other == null || getClass() != other.getClass())
-                            && ForSdkCompiler.this.equals(((Conversion) other).getOuter())
-                            && dexFile.equals(((Conversion) other).dexFile);
+                /**
+                 * {@inheritDoc}
+                 */
+                public Class<?> loadClass(dalvik.system.DexFile dexFile, ClassLoader classLoader, TypeDescription typeDescription) {
+                    return dexFile.loadClass(typeDescription.getName(), classLoader);
+                }
+            }
+
+            /**
+             * A dispatcher for an Android P VM that uses the reflection-only method {@code addDexPath} of {@link DexClassLoader}.
+             */
+            class ForAndroidPVm implements Dispatcher {
+
+                /**
+                 * Indicates that this dispatcher does not return a {@link dalvik.system.DexFile} instance.
+                 */
+                private static final dalvik.system.DexFile NO_RETURN_VALUE = null;
+
+                /**
+                 * The {@code BaseDexClassLoader#addDexPath(String, boolean)} method.
+                 */
+                private final Method addDexPath;
+
+                /**
+                 * Creates a new Android P-compatible dispatcher for loading a dex file.
+                 *
+                 * @param addDexPath The {@code BaseDexClassLoader#addDexPath(String, boolean)} method.
+                 */
+                protected ForAndroidPVm(Method addDexPath) {
+                    this.addDexPath = addDexPath;
                 }
 
-                @Override
-                public int hashCode() {
-                    return dexFile.hashCode() + 31 * ForSdkCompiler.this.hashCode();
+                /**
+                 * {@inheritDoc}
+                 */
+                public dalvik.system.DexFile loadDex(File privateDirectory,
+                                                     File jar,
+                                                     ClassLoader classLoader,
+                                                     RandomString randomString) throws IOException {
+                    if (!(classLoader instanceof BaseDexClassLoader)) {
+                        throw new IllegalArgumentException("On Android P, a class injection can only be applied to BaseDexClassLoader: " + classLoader);
+                    }
+                    try {
+                        addDexPath.invoke(classLoader, jar.getAbsolutePath(), true);
+                        return NO_RETURN_VALUE;
+                    } catch (IllegalAccessException exception) {
+                        throw new IllegalStateException("Cannot access BaseDexClassLoader#addDexPath(String, boolean)", exception);
+                    } catch (InvocationTargetException exception) {
+                        Throwable cause = exception.getCause();
+                        if (cause instanceof IOException) {
+                            throw (IOException) cause;
+                        } else {
+                            throw new IllegalStateException("Cannot invoke BaseDexClassLoader#addDexPath(String, boolean)", cause);
+                        }
+                    }
                 }
 
-                @Override
-                public String toString() {
-                    return "AndroidClassLoadingStrategy.DexProcessor.ForSdkCompiler.Conversion{" +
-                            "dexProcessor=" + ForSdkCompiler.this +
-                            ", dexFile=" + dexFile +
-                            '}';
+                /**
+                 * {@inheritDoc}
+                 */
+                public Class<?> loadClass(dalvik.system.DexFile dexFile, ClassLoader classLoader, TypeDescription typeDescription) {
+                    try {
+                        return Class.forName(typeDescription.getName(), false, classLoader);
+                    } catch (ClassNotFoundException exception) {
+                        throw new IllegalStateException("Could not locate " + typeDescription, exception);
+                    }
                 }
             }
         }

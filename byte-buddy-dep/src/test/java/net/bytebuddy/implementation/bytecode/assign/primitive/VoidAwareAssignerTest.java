@@ -5,7 +5,6 @@ import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.test.utility.MockitoRule;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
@@ -13,8 +12,8 @@ import org.junit.rules.TestRule;
 import org.mockito.Mock;
 import org.objectweb.asm.MethodVisitor;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.*;
 
 public class VoidAwareAssignerTest {
@@ -23,7 +22,7 @@ public class VoidAwareAssignerTest {
     public TestRule mockitoRule = new MockitoRule(this);
 
     @Mock
-    private TypeDescription sourceTypeDescription, targetTypeDescription;
+    private TypeDescription.Generic sourceTypeDescription, targetTypeDescription;
 
     @Mock
     private Assigner chainedAssigner;
@@ -62,16 +61,5 @@ public class VoidAwareAssignerTest {
         assertThat(stackManipulation, is(chainedStackManipulation));
         verify(chainedAssigner).assign(sourceTypeDescription, targetTypeDescription, Assigner.Typing.STATIC);
         verifyNoMoreInteractions(chainedAssigner);
-    }
-
-    @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(VoidAwareAssigner.class).apply();
-    }
-
-    @Test
-    public void testValueRemoval() throws Exception {
-
-
     }
 }

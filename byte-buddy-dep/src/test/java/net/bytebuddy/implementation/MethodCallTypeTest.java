@@ -1,10 +1,13 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.test.utility.MockitoRule;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -18,13 +21,13 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collection;
 
+import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertNotEquals;
 import static org.mockito.Mockito.when;
 
 @RunWith(Parameterized.class)
-public class MethodCallTypeTest extends AbstractImplementationTest {
+public class MethodCallTypeTest {
 
     private static final String FOO = "foo";
 
@@ -93,41 +96,55 @@ public class MethodCallTypeTest extends AbstractImplementationTest {
 
     @Before
     public void setUp() throws Exception {
-        when(nonAssigner.assign(Mockito.any(TypeDescription.class), Mockito.any(TypeDescription.class), Mockito.any(Assigner.Typing.class)))
+        when(nonAssigner.assign(Mockito.any(TypeDescription.Generic.class), Mockito.any(TypeDescription.Generic.class), Mockito.any(Assigner.Typing.class)))
                 .thenReturn(StackManipulation.Illegal.INSTANCE);
     }
 
     @Test
     public void testFieldConstantPool() throws Exception {
-        DynamicType.Loaded<Foo> loaded = implement(Foo.class, MethodCall.invokeSuper().with(value));
+        DynamicType.Loaded<Foo> loaded = new ByteBuddy()
+                .subclass(Foo.class)
+                .method(isDeclaredBy(Foo.class))
+                .intercept(MethodCall.invokeSuper().with(value))
+                .make()
+                .load(Foo.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
         assertThat(loaded.getLoaded().getDeclaredMethod(FOO, Object.class), not(nullValue(Method.class)));
         assertThat(loaded.getLoaded().getDeclaredConstructors().length, is(1));
         assertThat(loaded.getLoaded().getDeclaredFields().length, is(definesFieldConstantPool ? 1 : 0));
-        Foo instance = loaded.getLoaded().newInstance();
-        assertNotEquals(Foo.class, instance.getClass());
+        Foo instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(Foo.class)));
         assertThat(instance, instanceOf(Foo.class));
         assertThat(instance.foo(new Object()), is(value));
     }
 
     @Test
     public void testFieldReference() throws Exception {
-        DynamicType.Loaded<Foo> loaded = implement(Foo.class, MethodCall.invokeSuper().withReference(value));
+        DynamicType.Loaded<Foo> loaded = new ByteBuddy()
+                .subclass(Foo.class)
+                .method(isDeclaredBy(Foo.class))
+                .intercept(MethodCall.invokeSuper().withReference(value))
+                .make()
+                .load(Foo.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER);
         assertThat(loaded.getLoadedAuxiliaryTypes().size(), is(0));
         assertThat(loaded.getLoaded().getDeclaredMethods().length, is(1));
         assertThat(loaded.getLoaded().getDeclaredMethod(FOO, Object.class), not(nullValue(Method.class)));
         assertThat(loaded.getLoaded().getDeclaredConstructors().length, is(1));
         assertThat(loaded.getLoaded().getDeclaredFields().length, is(definesFieldReference ? 1 : 0));
-        Foo instance = loaded.getLoaded().newInstance();
-        assertNotEquals(Foo.class, instance.getClass());
+        Foo instance = loaded.getLoaded().getDeclaredConstructor().newInstance();
+        assertThat(instance.getClass(), not(CoreMatchers.<Class<?>>is(Foo.class)));
         assertThat(instance, instanceOf(Foo.class));
         assertThat(instance.foo(new Object()), sameInstance(value));
     }
 
     @Test(expected = IllegalStateException.class)
     public void testNonAssignable() throws Exception {
-        implement(Foo.class, MethodCall.invokeSuper().with(value).withAssigner(nonAssigner, Assigner.Typing.STATIC));
+        new ByteBuddy()
+                .subclass(Foo.class)
+                .method(isDeclaredBy(Foo.class))
+                .intercept(MethodCall.invokeSuper().with(value).withAssigner(nonAssigner, Assigner.Typing.STATIC))
+                .make();
     }
 
     public enum Bar {

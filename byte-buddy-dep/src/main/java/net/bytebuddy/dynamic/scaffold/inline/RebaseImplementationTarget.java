@@ -1,7 +1,8 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.scaffold.MethodGraph;
 import net.bytebuddy.implementation.Implementation;
@@ -9,7 +10,6 @@ import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import org.objectweb.asm.MethodVisitor;
 
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -22,25 +22,28 @@ import java.util.Map;
  * virtually or they are invoked directly via the {@code INVOKESPECIAL} invocation to explicitly forbid a virtual
  * dispatch.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class RebaseImplementationTarget extends Implementation.Target.AbstractBase {
 
     /**
      * A mapping of the instrumented type's declared methods by each method's token.
      */
-    private final Map<MethodDescription.Token, MethodRebaseResolver.Resolution> rebaseableMethods;
+    private final Map<MethodDescription.SignatureToken, MethodRebaseResolver.Resolution> rebaseableMethods;
 
     /**
      * Creates a rebase implementation target.
      *
-     * @param instrumentedType The instrumented type.
-     * @param methodGraph      A method graph of the instrumented type.
-     * @param rebasements      A mapping of the instrumented type's declared methods by each method's token.
+     * @param instrumentedType        The instrumented type.
+     * @param methodGraph             A method graph of the instrumented type.
+     * @param defaultMethodInvocation The default method invocation mode to apply.
+     * @param rebaseableMethods       A mapping of the instrumented type's declared methods by each method's token.
      */
     protected RebaseImplementationTarget(TypeDescription instrumentedType,
                                          MethodGraph.Linked methodGraph,
-                                         Map<MethodDescription.Token, MethodRebaseResolver.Resolution> rebasements) {
-        super(instrumentedType, methodGraph);
-        this.rebaseableMethods = rebasements;
+                                         DefaultMethodInvocation defaultMethodInvocation,
+                                         Map<MethodDescription.SignatureToken, MethodRebaseResolver.Resolution> rebaseableMethods) {
+        super(instrumentedType, methodGraph, defaultMethodInvocation);
+        this.rebaseableMethods = rebaseableMethods;
     }
 
     /**
@@ -48,26 +51,24 @@ public class RebaseImplementationTarget extends Implementation.Target.AbstractBa
      *
      * @param instrumentedType     The instrumented type.
      * @param methodGraph          A method graph of the instrumented type.
-     * @param rebaseableMethods    A list of methods that can be considered for rebasing.
+     * @param classFileVersion     The type's class file version.
      * @param methodRebaseResolver A method rebase resolver to be used when calling a rebased method.
      * @return An implementation target for the given input.
      */
     protected static Implementation.Target of(TypeDescription instrumentedType,
                                               MethodGraph.Linked methodGraph,
-                                              MethodList<MethodDescription.InDefinedShape> rebaseableMethods,
+                                              ClassFileVersion classFileVersion,
                                               MethodRebaseResolver methodRebaseResolver) {
-        Map<MethodDescription.Token, MethodRebaseResolver.Resolution> rebasements = new HashMap<MethodDescription.Token, MethodRebaseResolver.Resolution>(rebaseableMethods.size());
-        for (MethodDescription.InDefinedShape methodDescription : rebaseableMethods) {
-            rebasements.put(methodDescription.asToken(), methodRebaseResolver.resolve(methodDescription));
-        }
-        return new RebaseImplementationTarget(instrumentedType, methodGraph, rebasements);
+        return new RebaseImplementationTarget(instrumentedType, methodGraph, DefaultMethodInvocation.of(classFileVersion), methodRebaseResolver.asTokenMap());
     }
 
-    @Override
-    public Implementation.SpecialMethodInvocation invokeSuper(MethodDescription.Token methodToken) {
-        MethodRebaseResolver.Resolution resolution = rebaseableMethods.get(methodToken);
+    /**
+     * {@inheritDoc}
+     */
+    public Implementation.SpecialMethodInvocation invokeSuper(MethodDescription.SignatureToken token) {
+        MethodRebaseResolver.Resolution resolution = rebaseableMethods.get(token);
         return resolution == null
-                ? invokeSuper(methodGraph.getSuperGraph().locate(methodToken))
+                ? invokeSuper(methodGraph.getSuperClassGraph().locate(token))
                 : invokeSuper(resolution);
     }
 
@@ -79,7 +80,7 @@ public class RebaseImplementationTarget extends Implementation.Target.AbstractBa
      */
     private Implementation.SpecialMethodInvocation invokeSuper(MethodGraph.Node node) {
         return node.getSort().isResolved()
-                ? Implementation.SpecialMethodInvocation.Simple.of(node.getRepresentative(), instrumentedType.getSuperType().asErasure())
+                ? Implementation.SpecialMethodInvocation.Simple.of(node.getRepresentative(), instrumentedType.getSuperClass().asErasure())
                 : Implementation.SpecialMethodInvocation.Illegal.INSTANCE;
     }
 
@@ -95,32 +96,11 @@ public class RebaseImplementationTarget extends Implementation.Target.AbstractBa
                 : Implementation.SpecialMethodInvocation.Simple.of(resolution.getResolvedMethod(), instrumentedType);
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public TypeDescription getOriginType() {
         return instrumentedType;
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && super.equals(other)
-                && rebaseableMethods.equals(((RebaseImplementationTarget) other).rebaseableMethods);
-    }
-
-    @Override
-    public int hashCode() {
-        int result = super.hashCode();
-        result = 31 * result + rebaseableMethods.hashCode();
-        return result;
-    }
-
-    @Override
-    public String toString() {
-        return "RebaseImplementationTarget{" +
-                ", instrumentedType=" + instrumentedType +
-                ", methodGraph=" + methodGraph +
-                ", rebaseableMethods=" + rebaseableMethods +
-                '}';
     }
 
     /**
@@ -176,81 +156,53 @@ public class RebaseImplementationTarget extends Implementation.Target.AbstractBa
                     : Illegal.INSTANCE;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDescription getMethodDescription() {
             return methodDescription;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public TypeDescription getTypeDescription() {
             return instrumentedType;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             return stackManipulation.apply(methodVisitor, implementationContext);
-        }
-
-        @Override
-        public String toString() {
-            return "RebaseImplementationTarget.RebasedMethodInvocation{" +
-                    "instrumentedType=" + instrumentedType +
-                    ", methodDescription=" + methodDescription +
-                    ", stackManipulation=" + stackManipulation +
-                    '}';
         }
     }
 
     /**
      * A factory for creating a {@link RebaseImplementationTarget}.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     public static class Factory implements Implementation.Target.Factory {
-
-        /**
-         * A list of methods that is to be rebased.
-         */
-        private final MethodList<MethodDescription.InDefinedShape> rebaseableMethods;
 
         /**
          * The method rebase resolver to use.
          */
         private final MethodRebaseResolver methodRebaseResolver;
 
-
         /**
          * Creates a new factory for a rebase implementation target.
          *
-         * @param rebaseableMethods    A list of methods that can be considered for rebasing.
          * @param methodRebaseResolver The method rebase resolver to use.
          */
-        public Factory(MethodList<MethodDescription.InDefinedShape> rebaseableMethods, MethodRebaseResolver methodRebaseResolver) {
-            this.rebaseableMethods = rebaseableMethods;
+        public Factory(MethodRebaseResolver methodRebaseResolver) {
             this.methodRebaseResolver = methodRebaseResolver;
         }
 
-        @Override
-        public Implementation.Target make(TypeDescription instrumentedType, MethodGraph.Linked methodGraph) {
-            return RebaseImplementationTarget.of(instrumentedType, methodGraph, rebaseableMethods, methodRebaseResolver);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && methodRebaseResolver.equals(((Factory) other).methodRebaseResolver)
-                    && rebaseableMethods.equals(((Factory) other).rebaseableMethods);
-        }
-
-        @Override
-        public int hashCode() {
-            return methodRebaseResolver.hashCode() + 31 * rebaseableMethods.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "RebaseImplementationTarget.Factory{" +
-                    "methodRebaseResolver=" + methodRebaseResolver +
-                    ", rebaseableMethods=" + rebaseableMethods +
-                    '}';
+        /**
+         * {@inheritDoc}
+         */
+        public Implementation.Target make(TypeDescription instrumentedType, MethodGraph.Linked methodGraph, ClassFileVersion classFileVersion) {
+            return RebaseImplementationTarget.of(instrumentedType, methodGraph, classFileVersion, methodRebaseResolver);
         }
     }
 }

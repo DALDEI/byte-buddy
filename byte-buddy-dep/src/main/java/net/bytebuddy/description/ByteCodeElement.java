@@ -1,18 +1,18 @@
 package net.bytebuddy.description;
 
-import net.bytebuddy.description.annotation.AnnotatedCodeElement;
+import net.bytebuddy.description.annotation.AnnotationSource;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.generic.GenericTypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.FilterableList;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
  * Implementations describe an element represented in byte code, i.e. a type, a field or a method or a constructor.
  */
-public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierReviewable, DeclaredByType, AnnotatedCodeElement {
+public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierReviewable, DeclaredByType, AnnotationSource {
 
     /**
      * The generic type signature of a non-generic byte code element.
@@ -36,7 +36,9 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
 
     /**
      * <p>
-     * Checks if this element is visible from a given type.
+     * Checks if this element is visible from a given type. Visibility is a wider criteria then accessibility which can be checked by
+     * {@link ByteCodeElement#isAccessibleTo(TypeDescription)}. Visibility allows the invocation of a method on itself or on external
+     * instances.
      * </p>
      * <p>
      * <b>Note</b>: A method or field might define a signature that includes types that are not visible to a type. Such methods can be
@@ -49,10 +51,32 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
      * method but requires an additional check of the target type.
      * </p>
      *
-     * @param typeDescription The type which is checked for its access of this element.
+     * @param typeDescription The type which is checked for its visibility of this element.
      * @return {@code true} if this element is visible for {@code typeDescription}.
      */
     boolean isVisibleTo(TypeDescription typeDescription);
+
+    /**
+     * <p>
+     * Checks if this element is accessible from a given type. Accessibility is a more narrow criteria then visibility which can be
+     * checked by {@link ByteCodeElement#isVisibleTo(TypeDescription)}. Accessibility allows the invocation of a method on external
+     * instances or on itself. Methods that can be invoked from within an instance might however not be considered accessible.
+     * </p>
+     * <p>
+     * <b>Note</b>: A method or field might define a signature that includes types that are not visible to a type. Such methods can be
+     * legally invoked from this type and can even be implemented as bridge methods by this type. It is however not legal to declare
+     * a method with invisible types in its signature that are not bridges what might require additional validation.
+     * </p>
+     * <p>
+     * <b>Important</b>: Virtual byte code elements, i.e. virtual methods, are only considered visible if the type they are invoked upon
+     * is visible to a given type. The visibility of such virtual members can therefore not be determined by only investigating the invoked
+     * method but requires an additional check of the target type.
+     * </p>
+     *
+     * @param typeDescription The type which is checked for its accessibility of this element.
+     * @return {@code true} if this element is accessible for {@code typeDescription}.
+     */
+    boolean isAccessibleTo(TypeDescription typeDescription);
 
     /**
      * A type dependant describes an element that is an extension of a type definition, i.e. a field, method or method parameter.
@@ -70,51 +94,21 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
         T asDefined();
 
         /**
-         * Returns a token representative of this type dependant.
-         *
-         * @return A token representative of this type dependant.
-         */
-        S asToken();
-
-        /**
          * Returns a token representative of this type dependant. All types that are matched by the supplied matcher are replaced by
          * {@link net.bytebuddy.dynamic.TargetType} descriptions.
          *
-         * @param targetTypeMatcher A matcher to identify types to be replaced by {@link net.bytebuddy.dynamic.TargetType} descriptions.
+         * @param matcher A matcher to identify types to be replaced by {@link net.bytebuddy.dynamic.TargetType} descriptions.
          * @return A token representative of this type dependant.
          */
-        S asToken(ElementMatcher<? super GenericTypeDescription> targetTypeMatcher);
+        S asToken(ElementMatcher<? super TypeDescription> matcher);
     }
 
     /**
-     * Describes a byte code element that can be accessed by another element.
-     */
-    interface Accessible extends ByteCodeElement {
-
-        /**
-         * Determines if this byte code element is considered accessible to the given type by the semantics
-         * of the Java reflection API.
-         *
-         * @param typeDescription The type for which the access is to be determined.
-         * @return {@code true} if this element is considered accessible to the given type.
-         */
-        boolean isAccessibleTo(TypeDescription typeDescription);
-    }
-
-    /**
-     * Representation of a tokenized, detached byte code element.
+     * A token representing a byte code element.
      *
-     * @param <T> The actual token type.
+     * @param <T> The type of the implementation.
      */
     interface Token<T extends Token<T>> {
-
-        /**
-         * Checks if this token is fully identical to the provided token.
-         *
-         * @param token The token to compare this token with.
-         * @return {@code true} if this token is identical to the given token.
-         */
-        boolean isIdenticalTo(T token);
 
         /**
          * Transforms the types represented by this token by applying the given visitor to them.
@@ -122,7 +116,7 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
          * @param visitor The visitor to transform all types that are represented by this token.
          * @return This token with all of its represented types transformed by the supplied visitor.
          */
-        T accept(GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor);
+        T accept(TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor);
 
         /**
          * A list of tokens.
@@ -139,6 +133,16 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
             /**
              * Creates a list of tokens.
              *
+             * @param token The tokens that this list represents.
+             */
+            @SuppressWarnings("unchecked")
+            public TokenList(S... token) {
+                this(Arrays.asList(token));
+            }
+
+            /**
+             * Creates a list of tokens.
+             *
              * @param tokens The tokens that this list represents.
              */
             public TokenList(List<? extends S> tokens) {
@@ -151,7 +155,7 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
              * @param visitor The visitor to apply to all tokens.
              * @return A list containing the transformed tokens.
              */
-            public TokenList<S> accept(GenericTypeDescription.Visitor<? extends GenericTypeDescription> visitor) {
+            public TokenList<S> accept(TypeDescription.Generic.Visitor<? extends TypeDescription.Generic> visitor) {
                 List<S> tokens = new ArrayList<S>(this.tokens.size());
                 for (S token : this.tokens) {
                     tokens.add(token.accept(visitor));
@@ -164,12 +168,16 @@ public interface ByteCodeElement extends NamedElement.WithRuntimeName, ModifierR
                 return new TokenList<S>(values);
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public S get(int index) {
                 return tokens.get(index);
             }
 
-            @Override
+            /**
+             * {@inheritDoc}
+             */
             public int size() {
                 return tokens.size();
             }

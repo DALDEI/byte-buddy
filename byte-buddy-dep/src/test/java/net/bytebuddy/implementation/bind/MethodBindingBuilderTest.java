@@ -17,9 +17,8 @@ import org.mockito.Answers;
 import org.mockito.Mock;
 import org.objectweb.asm.MethodVisitor;
 
-import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 public class MethodBindingBuilderTest {
@@ -45,6 +44,9 @@ public class MethodBindingBuilderTest {
     @Mock
     private MethodVisitor methodVisitor;
 
+    @Mock
+    private TypeDescription.Generic returnType;
+
     @Mock(answer = Answers.RETURNS_MOCKS)
     private StackManipulation legalStackManipulation, illegalStackManipulation;
 
@@ -63,9 +65,8 @@ public class MethodBindingBuilderTest {
         when(methodDescription.getInternalName()).thenReturn(BAR);
         when(methodDescription.getDescriptor()).thenReturn(BAZ);
         when(methodDescription.getStackSize()).thenReturn(0);
-        TypeDescription returnTpeDescription = mock(TypeDescription.class);
-        when(methodDescription.getReturnType()).thenReturn(returnTpeDescription);
-        when(returnTpeDescription.getStackSize()).thenReturn(StackSize.ZERO);
+        when(methodDescription.getReturnType()).thenReturn(returnType);
+        when(returnType.getStackSize()).thenReturn(StackSize.ZERO);
         when(legalStackManipulation.isValid()).thenReturn(true);
         when(illegalStackManipulation.isValid()).thenReturn(false);
     }
@@ -151,19 +152,6 @@ public class MethodBindingBuilderTest {
         new MethodDelegationBinder.MethodBinding.Builder(methodInvoker, methodDescription).build(legalStackManipulation);
     }
 
-    @Test
-    public void testBuildHashCodeEquals() throws Exception {
-        when(methodInvoker.invoke(any(MethodDescription.class))).thenReturn(legalStackManipulation);
-        MethodDelegationBinder.MethodBinding.Builder builder = new MethodDelegationBinder.MethodBinding.Builder(methodInvoker, methodDescription);
-        MethodDelegationBinder.MethodBinding methodBinding = builder.build(legalStackManipulation);
-        MethodDelegationBinder.MethodBinding equalMethodBinding = builder.build(legalStackManipulation);
-        assertThat(methodBinding.hashCode(), is(equalMethodBinding.hashCode()));
-        assertThat(methodBinding, is(equalMethodBinding));
-        MethodDelegationBinder.MethodBinding unequalMethodBinding = builder.build(mock(StackManipulation.class));
-        assertThat(methodBinding.hashCode(), not(is(unequalMethodBinding.hashCode())));
-        assertThat(methodBinding, not(is(unequalMethodBinding)));
-    }
-
     private static class Key {
 
         private final String identifier;
@@ -173,15 +161,15 @@ public class MethodBindingBuilderTest {
         }
 
         @Override
+        public int hashCode() {
+            return identifier.hashCode();
+        }
+
+        @Override
         public boolean equals(Object other) {
             return this == other || !(other == null || getClass() != other.getClass())
                     && identifier.equals(((Key) other).identifier);
 
-        }
-
-        @Override
-        public int hashCode() {
-            return identifier.hashCode();
         }
     }
 }

@@ -1,22 +1,24 @@
 package net.bytebuddy.dynamic.scaffold.inline;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
-import net.bytebuddy.matcher.LatentMethodMatcher;
+import net.bytebuddy.matcher.LatentMatcher;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * A latent method matcher that identifies methods to instrument when redefining or rebasing a type.
  */
-public class InliningImplementationMatcher implements LatentMethodMatcher {
+@HashCodeAndEqualsPlugin.Enhance
+public class InliningImplementationMatcher implements LatentMatcher<MethodDescription> {
 
     /**
      * A method matcher that matches any ignored method.
      */
-    private final ElementMatcher<? super MethodDescription> ignoredMethods;
+    private final LatentMatcher<? super MethodDescription> ignoredMethods;
 
     /**
      * A method matcher that matches any predefined method.
@@ -29,7 +31,7 @@ public class InliningImplementationMatcher implements LatentMethodMatcher {
      * @param ignoredMethods             A method matcher that matches any ignored method.
      * @param predefinedMethodSignatures A method matcher that matches any predefined method.
      */
-    protected InliningImplementationMatcher(ElementMatcher<? super MethodDescription> ignoredMethods,
+    protected InliningImplementationMatcher(LatentMatcher<? super MethodDescription> ignoredMethods,
                                             ElementMatcher<? super MethodDescription> predefinedMethodSignatures) {
         this.ignoredMethods = ignoredMethods;
         this.predefinedMethodSignatures = predefinedMethodSignatures;
@@ -41,12 +43,12 @@ public class InliningImplementationMatcher implements LatentMethodMatcher {
      * target type are always matched.
      *
      * @param ignoredMethods A method matcher that matches any ignored method.
-     * @param targetType     The target type of the instrumentation before adding any user methods.
+     * @param originalType   The original type of the instrumentation before adding any user methods.
      * @return A latent method matcher that identifies any method to instrument for a rebasement or redefinition.
      */
-    protected static LatentMethodMatcher of(ElementMatcher<? super MethodDescription> ignoredMethods, TypeDescription targetType) {
+    protected static LatentMatcher<MethodDescription> of(LatentMatcher<? super MethodDescription> ignoredMethods, TypeDescription originalType) {
         ElementMatcher.Junction<MethodDescription> predefinedMethodSignatures = none();
-        for (MethodDescription methodDescription : targetType.getDeclaredMethods()) {
+        for (MethodDescription methodDescription : originalType.getDeclaredMethods()) {
             ElementMatcher.Junction<MethodDescription> signature = methodDescription.isConstructor()
                     ? isConstructor()
                     : ElementMatchers.<MethodDescription>named(methodDescription.getName());
@@ -57,29 +59,12 @@ public class InliningImplementationMatcher implements LatentMethodMatcher {
         return new InliningImplementationMatcher(ignoredMethods, predefinedMethodSignatures);
     }
 
-    @Override
-    public ElementMatcher<? super MethodDescription> resolve(TypeDescription instrumentedType) {
-        return (ElementMatcher<? super MethodDescription>) not(ignoredMethods).and(isVirtual().and(not(isFinal())).or(isDeclaredBy(instrumentedType)))
-                .or(isDeclaredBy(instrumentedType).and(not(predefinedMethodSignatures)));
-    }
-
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && ignoredMethods.equals(((InliningImplementationMatcher) other).ignoredMethods)
-                && predefinedMethodSignatures.equals(((InliningImplementationMatcher) other).predefinedMethodSignatures);
-    }
-
-    @Override
-    public int hashCode() {
-        return 31 * ignoredMethods.hashCode() + predefinedMethodSignatures.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "InliningImplementationMatcher{" +
-                "ignoredMethods=" + ignoredMethods +
-                ", predefinedMethodSignatures=" + predefinedMethodSignatures +
-                '}';
+    /**
+     * {@inheritDoc}
+     */
+    public ElementMatcher<? super MethodDescription> resolve(TypeDescription typeDescription) {
+        return (ElementMatcher<? super MethodDescription>) not(ignoredMethods.resolve(typeDescription))
+                .and(isVirtual().and(not(isFinal())).or(isDeclaredBy(typeDescription)))
+                .or(isDeclaredBy(typeDescription).and(not(predefinedMethodSignatures)));
     }
 }

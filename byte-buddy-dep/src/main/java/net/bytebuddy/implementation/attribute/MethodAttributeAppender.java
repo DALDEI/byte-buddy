@@ -1,17 +1,18 @@
 package net.bytebuddy.implementation.attribute;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.annotation.AnnotationDescription;
-import net.bytebuddy.description.annotation.AnnotationList;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.ParameterDescription;
+import net.bytebuddy.description.method.ParameterList;
 import net.bytebuddy.description.type.TypeDescription;
 import org.objectweb.asm.MethodVisitor;
 
-import java.lang.annotation.Annotation;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * An appender that writes attributes or annotations to a given ASM {@link org.objectweb.asm.MethodVisitor}.
@@ -21,12 +22,13 @@ public interface MethodAttributeAppender {
     /**
      * Applies this attribute appender to a given method visitor.
      *
-     * @param methodVisitor     The method visitor to which the attributes that are represented by this attribute
-     *                          appender are written to.
-     * @param methodDescription The description of the method for which the given method visitor creates an
-     *                          instrumentation for.
+     * @param methodVisitor         The method visitor to which the attributes that are represented by this attribute
+     *                              appender are written to.
+     * @param methodDescription     The description of the method for which the given method visitor creates an
+     *                              instrumentation for.
+     * @param annotationValueFilter The annotation value filter to apply when the annotations are written.
      */
-    void apply(MethodVisitor methodVisitor, MethodDescription methodDescription);
+    void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter);
 
     /**
      * A method attribute appender that does not append any attributes.
@@ -38,19 +40,18 @@ public interface MethodAttributeAppender {
          */
         INSTANCE;
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodAttributeAppender make(TypeDescription typeDescription) {
             return this;
         }
 
-        @Override
-        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription) {
+        /**
+         * {@inheritDoc}
+         */
+        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter) {
             /* do nothing */
-        }
-
-        @Override
-        public String toString() {
-            return "MethodAttributeAppender.NoOp." + name();
         }
     }
 
@@ -71,175 +72,159 @@ public interface MethodAttributeAppender {
          * A method attribute appender factory that combines several method attribute appender factories to be
          * represented as a single factory.
          */
+        @HashCodeAndEqualsPlugin.Enhance
         class Compound implements Factory {
 
             /**
              * The factories this compound factory represents in their application order.
              */
-            private final Factory[] factory;
+            private final List<Factory> factories;
 
             /**
              * Creates a new compound method attribute appender factory.
              *
-             * @param factory The factories that are to be combined by this compound factory in the order of their
-             *                application.
+             * @param factory The factories that are to be combined by this compound factory in the order of their application.
              */
             public Compound(Factory... factory) {
-                this.factory = factory;
+                this(Arrays.asList(factory));
             }
 
-            @Override
-            public MethodAttributeAppender make(TypeDescription typeDescription) {
-                MethodAttributeAppender[] methodAttributeAppender = new MethodAttributeAppender[factory.length];
-                int index = 0;
-                for (Factory factory : this.factory) {
-                    methodAttributeAppender[index++] = factory.make(typeDescription);
+            /**
+             * Creates a new compound method attribute appender factory.
+             *
+             * @param factories The factories that are to be combined by this compound factory in the order of their application.
+             */
+            public Compound(List<? extends Factory> factories) {
+                this.factories = new ArrayList<Factory>();
+                for (Factory factory : factories) {
+                    if (factory instanceof Compound) {
+                        this.factories.addAll(((Compound) factory).factories);
+                    } else if (!(factory instanceof NoOp)) {
+                        this.factories.add(factory);
+                    }
                 }
-                return new MethodAttributeAppender.Compound(methodAttributeAppender);
             }
 
-            @Override
-            public boolean equals(Object other) {
-                return this == other || !(other == null || getClass() != other.getClass())
-                        && Arrays.equals(factory, ((Compound) other).factory);
-            }
-
-            @Override
-            public int hashCode() {
-                return Arrays.hashCode(factory);
-            }
-
-            @Override
-            public String toString() {
-                return "MethodAttributeAppender.Factory.Compound{factory=" + Arrays.toString(factory) + '}';
+            /**
+             * {@inheritDoc}
+             */
+            public MethodAttributeAppender make(TypeDescription typeDescription) {
+                List<MethodAttributeAppender> methodAttributeAppenders = new ArrayList<MethodAttributeAppender>(factories.size());
+                for (Factory factory : factories) {
+                    methodAttributeAppenders.add(factory.make(typeDescription));
+                }
+                return new MethodAttributeAppender.Compound(methodAttributeAppenders);
             }
         }
     }
 
     /**
+     * <p>
      * Implementation of a method attribute appender that writes all annotations of the instrumented method to the
      * method that is being created. This includes method and parameter annotations.
+     * </p>
+     * <p>
+     * <b>Important</b>: This attribute appender does not apply for annotation types within the {@code jdk.internal.} namespace
+     * which are silently ignored. If such annotations should be inherited, they need to be added explicitly.
+     * </p>
      */
-    class ForInstrumentedMethod implements Factory {
+    enum ForInstrumentedMethod implements MethodAttributeAppender, Factory {
 
         /**
-         * The value filter to apply for discovering which values of an annotation should be written.
+         * Appends all annotations of the instrumented method but not the annotations of the method's receiver type if such a type exists.
          */
-        private final AnnotationAppender.ValueFilter valueFilter;
+        EXCLUDING_RECEIVER {
+            @Override
+            protected AnnotationAppender appendReceiver(AnnotationAppender annotationAppender,
+                                                        AnnotationValueFilter annotationValueFilter,
+                                                        MethodDescription methodDescription) {
+                return annotationAppender;
+            }
+        },
 
         /**
-         * Creates a new appender for appending the instrumented method's annotation to the created method.
-         *
-         * @param valueFilter The value filter to apply for discovering which values of an annotation should be written.
+         * <p>
+         * Appends all annotations of the instrumented method including the annotations of the method's receiver type if such a type exists.
+         * </p>
+         * <p>
+         * If a method is overridden, the annotations can be misplaced if the overriding class does not expose a similar structure to
+         * the method that declared the method, i.e. the same amount of type variables and similar owner types. If this is not the case,
+         * type annotations are appended as if the overridden method was declared by the original type. This does not corrupt the resulting
+         * class file but it might result in type annotations not being visible via core reflection. This might however confuse other tools
+         * that parse the resulting class file manually.
+         * </p>
          */
-        public ForInstrumentedMethod(AnnotationAppender.ValueFilter valueFilter) {
-            this.valueFilter = valueFilter;
-        }
+        INCLUDING_RECEIVER {
+            @Override
+            protected AnnotationAppender appendReceiver(AnnotationAppender annotationAppender,
+                                                        AnnotationValueFilter annotationValueFilter,
+                                                        MethodDescription methodDescription) {
+                TypeDescription.Generic receiverType = methodDescription.getReceiverType();
+                return receiverType == null
+                        ? annotationAppender
+                        : receiverType.accept(AnnotationAppender.ForTypeAnnotations.ofReceiverType(annotationAppender, annotationValueFilter));
+            }
+        };
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodAttributeAppender make(TypeDescription typeDescription) {
-            return new Appender(typeDescription, valueFilter);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && valueFilter.equals(((ForInstrumentedMethod) other).valueFilter);
-        }
-
-        @Override
-        public int hashCode() {
-            return valueFilter.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodAttributeAppender.ForInstrumentedMethod{" +
-                    "valueFilter=" + valueFilter +
-                    '}';
+            return this;
         }
 
         /**
-         * An appender for an instrumented method that only appends the intercepted method's annotations if it is not already declared by the
-         * instrumented type, i.e. it is defined explicitly.
+         * {@inheritDoc}
          */
-        protected static class Appender implements MethodAttributeAppender {
-
-            /**
-             * The instrumented type.
-             */
-            private final TypeDescription instrumentedType;
-
-            /**
-             * The value filter to apply for discovering which values of an annotation should be written.
-             */
-            private final AnnotationAppender.ValueFilter valueFilter;
-
-            /**
-             * Creates a new appender.
-             *
-             * @param instrumentedType The instrumented type.
-             * @param valueFilter      The value filter to apply for discovering which values of an annotation should be written.
-             */
-            protected Appender(TypeDescription instrumentedType, AnnotationAppender.ValueFilter valueFilter) {
-                this.instrumentedType = instrumentedType;
-                this.valueFilter = valueFilter;
+        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter) {
+            AnnotationAppender annotationAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethod(methodVisitor));
+            annotationAppender = methodDescription.getReturnType().accept(AnnotationAppender.ForTypeAnnotations.ofMethodReturnType(annotationAppender,
+                    annotationValueFilter));
+            annotationAppender = AnnotationAppender.ForTypeAnnotations.ofTypeVariable(annotationAppender,
+                    annotationValueFilter,
+                    AnnotationAppender.ForTypeAnnotations.VARIABLE_ON_INVOKEABLE,
+                    methodDescription.getTypeVariables());
+            for (AnnotationDescription annotation : methodDescription.getDeclaredAnnotations().filter(not(annotationType(nameStartsWith("jdk.internal."))))) {
+                annotationAppender = annotationAppender.append(annotation, annotationValueFilter);
             }
-
-            @Override
-            public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription) {
-                if (methodDescription.getDeclaringType().equals(instrumentedType)) {
-                    return;
-                }
-                AnnotationAppender methodAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethod(methodVisitor), valueFilter);
-                for (AnnotationDescription annotation : methodDescription.getDeclaredAnnotations()) {
-                    methodAppender.append(annotation, AnnotationAppender.AnnotationVisibility.of(annotation));
-                }
-                int index = 0;
-                for (ParameterDescription parameterDescription : methodDescription.getParameters()) {
-                    AnnotationAppender parameterAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethodParameter(methodVisitor, index++), valueFilter);
-                    for (AnnotationDescription annotation : parameterDescription.getDeclaredAnnotations()) {
-                        parameterAppender.append(annotation, AnnotationAppender.AnnotationVisibility.of(annotation));
-                    }
+            for (ParameterDescription parameterDescription : methodDescription.getParameters()) {
+                AnnotationAppender parameterAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethodParameter(methodVisitor,
+                        parameterDescription.getIndex()));
+                parameterAppender = parameterDescription.getType().accept(AnnotationAppender.ForTypeAnnotations.ofMethodParameterType(parameterAppender,
+                        annotationValueFilter,
+                        parameterDescription.getIndex()));
+                for (AnnotationDescription annotation : parameterDescription.getDeclaredAnnotations()) {
+                    parameterAppender = parameterAppender.append(annotation, annotationValueFilter);
                 }
             }
-
-            @Override
-            public boolean equals(Object other) {
-                if (this == other) return true;
-                if (other == null || getClass() != other.getClass()) return false;
-                Appender appender = (Appender) other;
-                return instrumentedType.equals(appender.instrumentedType)
-                        && valueFilter.equals(appender.valueFilter);
-            }
-
-            @Override
-            public int hashCode() {
-                int result = instrumentedType.hashCode();
-                result = 31 * result + valueFilter.hashCode();
-                return result;
-            }
-
-            @Override
-            public String toString() {
-                return "MethodAttributeAppender.ForInstrumentedMethod.Appender{" +
-                        "instrumentedType=" + instrumentedType +
-                        ", valueFilter=" + valueFilter +
-                        '}';
+            annotationAppender = appendReceiver(annotationAppender, annotationValueFilter, methodDescription);
+            int exceptionTypeIndex = 0;
+            for (TypeDescription.Generic exceptionType : methodDescription.getExceptionTypes()) {
+                annotationAppender = exceptionType.accept(AnnotationAppender.ForTypeAnnotations.ofExceptionType(annotationAppender,
+                        annotationValueFilter,
+                        exceptionTypeIndex++));
             }
         }
+
+        /**
+         * Appends the annotations of the instrumented method's receiver type if this is enabled and such a type exists.
+         *
+         * @param annotationAppender    The annotation appender to use.
+         * @param annotationValueFilter The annotation value filter to apply when the annotations are written.
+         * @param methodDescription     The instrumented method.
+         * @return The resulting annotation appender.
+         */
+        protected abstract AnnotationAppender appendReceiver(AnnotationAppender annotationAppender,
+                                                             AnnotationValueFilter annotationValueFilter,
+                                                             MethodDescription methodDescription);
     }
 
     /**
      * Appends an annotation to a method or method parameter. The visibility of the annotation is determined by the
      * annotation type's {@link java.lang.annotation.RetentionPolicy} annotation.
      */
-    class ForAnnotation implements MethodAttributeAppender, Factory {
-
-        /**
-         * the annotations this method attribute appender is writing to its target.
-         */
-        private final List<? extends AnnotationDescription> annotations;
+    @HashCodeAndEqualsPlugin.Enhance
+    class Explicit implements MethodAttributeAppender, Factory {
 
         /**
          * The target to which the annotations are written to.
@@ -247,89 +232,72 @@ public interface MethodAttributeAppender {
         private final Target target;
 
         /**
-         * The value filter to apply for discovering which values of an annotation should be written.
+         * the annotations this method attribute appender is writing to its target.
          */
-        private final AnnotationAppender.ValueFilter valueFilter;
-
-        /**
-         * Creates a new appender for appending an annotation to a method parameter.
-         *
-         * @param parameterIndex The index of the parameter to which the annotations should be written.
-         * @param valueFilter    The value filter to apply for discovering which values of an annotation should be written.
-         * @param annotation     The annotations that should be written.
-         */
-        public ForAnnotation(int parameterIndex, AnnotationAppender.ValueFilter valueFilter, Annotation... annotation) {
-            this(parameterIndex, new AnnotationList.ForLoadedAnnotation(annotation), valueFilter);
-        }
-
-        /**
-         * Creates a new appender for appending an annotation to a method parameter.
-         *
-         * @param valueFilter The value filter to apply for discovering which values of an annotation should be written.
-         * @param annotation  The annotations that should be written.
-         */
-        public ForAnnotation(AnnotationAppender.ValueFilter valueFilter, Annotation... annotation) {
-            this(new AnnotationList.ForLoadedAnnotation(annotation), valueFilter);
-        }
+        private final List<? extends AnnotationDescription> annotations;
 
         /**
          * Creates a new appender for appending an annotation to a method.
          *
          * @param parameterIndex The index of the parameter to which the annotations should be written.
          * @param annotations    The annotations that should be written.
-         * @param valueFilter    The value filter to apply for discovering which values of an annotation should be written.
          */
-        public ForAnnotation(int parameterIndex, List<? extends AnnotationDescription> annotations, AnnotationAppender.ValueFilter valueFilter) {
-            this.annotations = annotations;
-            target = new Target.OnMethodParameter(parameterIndex);
-            this.valueFilter = valueFilter;
+        public Explicit(int parameterIndex, List<? extends AnnotationDescription> annotations) {
+            this(new Target.OnMethodParameter(parameterIndex), annotations);
         }
 
         /**
          * Creates a new appender for appending an annotation to a method.
          *
          * @param annotations The annotations that should be written.
-         * @param valueFilter The value filter to apply for discovering which values of an annotation should be written.
          */
-        public ForAnnotation(List<? extends AnnotationDescription> annotations, AnnotationAppender.ValueFilter valueFilter) {
+        public Explicit(List<? extends AnnotationDescription> annotations) {
+            this(Target.OnMethod.INSTANCE, annotations);
+        }
+
+        /**
+         * Creates an explicit annotation appender for a either a method or one of its parameters..
+         *
+         * @param target      The target to which the annotation should be written to.
+         * @param annotations The annotations to write.
+         */
+        protected Explicit(Target target, List<? extends AnnotationDescription> annotations) {
+            this.target = target;
             this.annotations = annotations;
-            target = Target.OnMethod.INSTANCE;
-            this.valueFilter = valueFilter;
         }
 
-        @Override
-        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription) {
-            AnnotationAppender appender = new AnnotationAppender.Default(target.make(methodVisitor, methodDescription), valueFilter);
-            for (AnnotationDescription annotation : this.annotations) {
-                appender.append(annotation, AnnotationAppender.AnnotationVisibility.of(annotation));
+        /**
+         * Creates a method attribute appender factory that writes all annotations of a given method, both the method
+         * annotations themselves and all annotations that are defined for every parameter.
+         *
+         * @param methodDescription The method from which to extract the annotations.
+         * @return A method attribute appender factory for an appender that writes all annotations of the supplied method.
+         */
+        public static Factory of(MethodDescription methodDescription) {
+            ParameterList<?> parameters = methodDescription.getParameters();
+            List<MethodAttributeAppender.Factory> methodAttributeAppenders = new ArrayList<MethodAttributeAppender.Factory>(parameters.size() + 1);
+            methodAttributeAppenders.add(new Explicit(methodDescription.getDeclaredAnnotations()));
+            for (ParameterDescription parameter : parameters) {
+                methodAttributeAppenders.add(new Explicit(parameter.getIndex(), parameter.getDeclaredAnnotations()));
             }
+            return new Factory.Compound(methodAttributeAppenders);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodAttributeAppender make(TypeDescription typeDescription) {
             return this;
         }
 
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && annotations.equals(((ForAnnotation) other).annotations)
-                    && valueFilter.equals(((ForAnnotation) other).valueFilter)
-                    && target.equals(((ForAnnotation) other).target);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * (31 * annotations.hashCode() + valueFilter.hashCode()) + target.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodAttributeAppender.ForAnnotation{" +
-                    "annotations=" + annotations +
-                    ", valueFilter=" + valueFilter +
-                    ", target=" + target +
-                    '}';
+        /**
+         * {@inheritDoc}
+         */
+        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter) {
+            AnnotationAppender appender = new AnnotationAppender.Default(target.make(methodVisitor, methodDescription));
+            for (AnnotationDescription annotation : annotations) {
+                appender = appender.append(annotation, annotationValueFilter);
+            }
         }
 
         /**
@@ -358,20 +326,18 @@ public interface MethodAttributeAppender {
                  */
                 INSTANCE;
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public AnnotationAppender.Target make(MethodVisitor methodVisitor, MethodDescription methodDescription) {
                     return new AnnotationAppender.Target.OnMethod(methodVisitor);
-                }
-
-                @Override
-                public String toString() {
-                    return "MethodAttributeAppender.ForAnnotation.Target.OnMethod." + name();
                 }
             }
 
             /**
              * A method attribute appender target for writing annotations onto a given method parameter.
              */
+            @HashCodeAndEqualsPlugin.Enhance
             class OnMethodParameter implements Target {
 
                 /**
@@ -388,123 +354,51 @@ public interface MethodAttributeAppender {
                     this.parameterIndex = parameterIndex;
                 }
 
-                @Override
+                /**
+                 * {@inheritDoc}
+                 */
                 public AnnotationAppender.Target make(MethodVisitor methodVisitor, MethodDescription methodDescription) {
                     if (parameterIndex >= methodDescription.getParameters().size()) {
                         throw new IllegalArgumentException("Method " + methodDescription + " has less then " + parameterIndex + " parameters");
                     }
                     return new AnnotationAppender.Target.OnMethodParameter(methodVisitor, parameterIndex);
                 }
-
-                @Override
-                public boolean equals(Object other) {
-                    return this == other || !(other == null || getClass() != other.getClass())
-                            && parameterIndex == ((OnMethodParameter) other).parameterIndex;
-                }
-
-                @Override
-                public int hashCode() {
-                    return parameterIndex;
-                }
-
-                @Override
-                public String toString() {
-                    return "MethodAttributeAppender.ForAnnotation.Target.OnMethodParameter{parameterIndex=" + parameterIndex + '}';
-                }
             }
         }
     }
 
     /**
-     * Implementation of a method attribute appender that writes all annotations of a given loaded method to the
-     * method that is being created. This includes method and parameter annotations. In order to being able to do so,
-     * the target method and the given method must have compatible signatures, i.e. an identical number of method
-     * parameters. Otherwise, an exception is thrown when this attribute appender is applied on a method.
+     * A method attribute appender that writes a receiver type.
      */
-    class ForMethod implements MethodAttributeAppender, Factory {
+    @HashCodeAndEqualsPlugin.Enhance
+    class ForReceiverType implements MethodAttributeAppender, Factory {
 
         /**
-         * The method of which the annotations are to be copied.
+         * The receiver type for which annotations are appended to the instrumented method.
          */
-        private final MethodDescription methodDescription;
+        private final TypeDescription.Generic receiverType;
 
         /**
-         * The value filter to apply for discovering which values of an annotation should be written.
-         */
-        private final AnnotationAppender.ValueFilter valueFilter;
-
-        /**
-         * Creates an that copies the annotations of a given constructor to its target.
+         * Creates a new attribute appender that writes a receiver type.
          *
-         * @param constructor The constructor of which the annotations should be copied.
-         * @param valueFilter The value filter to apply for discovering which values of an annotation should be written.
+         * @param receiverType The receiver type for which annotations are appended to the instrumented method.
          */
-        public ForMethod(Constructor<?> constructor, AnnotationAppender.ValueFilter valueFilter) {
-            this(new MethodDescription.ForLoadedConstructor(constructor), valueFilter);
+        public ForReceiverType(TypeDescription.Generic receiverType) {
+            this.receiverType = receiverType;
         }
 
         /**
-         * Creates an that copies the annotations of a given method to its target.
-         *
-         * @param method      The method of which the annotations should be copied.
-         * @param valueFilter The value filter to apply for discovering which values of an annotation should be written.
+         * {@inheritDoc}
          */
-        public ForMethod(Method method, AnnotationAppender.ValueFilter valueFilter) {
-            this(new MethodDescription.ForLoadedMethod(method), valueFilter);
-        }
-
-        /**
-         * Creates an that copies the annotations of a given method description to its target.
-         *
-         * @param methodDescription The method description of which the annotations should be copied.
-         * @param valueFilter       The value filter to apply for discovering which values of an annotation should be written.
-         */
-        public ForMethod(MethodDescription methodDescription, AnnotationAppender.ValueFilter valueFilter) {
-            this.methodDescription = methodDescription;
-            this.valueFilter = valueFilter;
-        }
-
-        @Override
-        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription) {
-            if (this.methodDescription.getParameters().size() > methodDescription.getParameters().size()) {
-                throw new IllegalArgumentException(this.methodDescription + " has more parameters than the instrumented method " + methodDescription);
-            }
-            AnnotationAppender methodAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethod(methodVisitor), valueFilter);
-            for (AnnotationDescription annotation : this.methodDescription.getDeclaredAnnotations()) {
-                methodAppender.append(annotation, AnnotationAppender.AnnotationVisibility.of(annotation));
-            }
-            int index = 0;
-            for (ParameterDescription parameterDescription : this.methodDescription.getParameters()) {
-                AnnotationAppender parameterAppender = new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethodParameter(methodVisitor, index++), valueFilter);
-                for (AnnotationDescription annotation : parameterDescription.getDeclaredAnnotations()) {
-                    parameterAppender.append(annotation, AnnotationAppender.AnnotationVisibility.of(annotation));
-                }
-            }
-        }
-
-        @Override
         public MethodAttributeAppender make(TypeDescription typeDescription) {
             return this;
         }
 
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && methodDescription.equals(((ForMethod) other).methodDescription)
-                    && valueFilter.equals(((ForMethod) other).valueFilter);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * methodDescription.hashCode() + valueFilter.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "MethodAttributeAppender.ForMethod{" +
-                    "methodDescription=" + methodDescription +
-                    ", valueFilter=" + valueFilter +
-                    '}';
+        /**
+         * {@inheritDoc}
+         */
+        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter) {
+            receiverType.accept(AnnotationAppender.ForTypeAnnotations.ofReceiverType(new AnnotationAppender.Default(new AnnotationAppender.Target.OnMethod(methodVisitor)), annotationValueFilter));
         }
     }
 
@@ -512,12 +406,13 @@ public interface MethodAttributeAppender {
      * A method attribute appender that combines several method attribute appenders to be represented as a single
      * method attribute appender.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     class Compound implements MethodAttributeAppender {
 
         /**
          * The method attribute appenders this compound appender represents in their application order.
          */
-        private final MethodAttributeAppender[] methodAttributeAppender;
+        private final List<MethodAttributeAppender> methodAttributeAppenders;
 
         /**
          * Creates a new compound method attribute appender.
@@ -526,30 +421,33 @@ public interface MethodAttributeAppender {
          *                                in the order of their application.
          */
         public Compound(MethodAttributeAppender... methodAttributeAppender) {
-            this.methodAttributeAppender = methodAttributeAppender;
+            this(Arrays.asList(methodAttributeAppender));
         }
 
-        @Override
-        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription) {
-            for (MethodAttributeAppender methodAttributeAppender : this.methodAttributeAppender) {
-                methodAttributeAppender.apply(methodVisitor, methodDescription);
+        /**
+         * Creates a new compound method attribute appender.
+         *
+         * @param methodAttributeAppenders The method attribute appenders that are to be combined by this compound appender
+         *                                 in the order of their application.
+         */
+        public Compound(List<? extends MethodAttributeAppender> methodAttributeAppenders) {
+            this.methodAttributeAppenders = new ArrayList<MethodAttributeAppender>();
+            for (MethodAttributeAppender methodAttributeAppender : methodAttributeAppenders) {
+                if (methodAttributeAppender instanceof Compound) {
+                    this.methodAttributeAppenders.addAll(((Compound) methodAttributeAppender).methodAttributeAppenders);
+                } else if (!(methodAttributeAppender instanceof NoOp)) {
+                    this.methodAttributeAppenders.add(methodAttributeAppender);
+                }
             }
         }
 
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && Arrays.equals(methodAttributeAppender, ((Compound) other).methodAttributeAppender);
-        }
-
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(methodAttributeAppender);
-        }
-
-        @Override
-        public String toString() {
-            return "MethodAttributeAppender.Compound{methodAttributeAppender=" + Arrays.toString(methodAttributeAppender) + '}';
+        /**
+         * {@inheritDoc}
+         */
+        public void apply(MethodVisitor methodVisitor, MethodDescription methodDescription, AnnotationValueFilter annotationValueFilter) {
+            for (MethodAttributeAppender methodAttributeAppender : methodAttributeAppenders) {
+                methodAttributeAppender.apply(methodVisitor, methodDescription, annotationValueFilter);
+            }
         }
     }
 }

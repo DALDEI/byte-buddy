@@ -1,6 +1,7 @@
 package net.bytebuddy.implementation.bytecode.assign.primitive;
 
-import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.StackSize;
@@ -190,67 +191,63 @@ public enum PrimitiveWideningDelegate {
     /**
      * Locates the delegate that is capable of widening the given type into another type.
      *
-     * @param typeDescription A non-void primitive type that is to be widened into another type.
+     * @param typeDefinition A non-void primitive type that is to be widened into another type.
      * @return A delegate for the given type.
      */
-    public static PrimitiveWideningDelegate forPrimitive(TypeDescription typeDescription) {
-        if (typeDescription.represents(boolean.class)) {
+    public static PrimitiveWideningDelegate forPrimitive(TypeDefinition typeDefinition) {
+        if (typeDefinition.represents(boolean.class)) {
             return BOOLEAN;
-        } else if (typeDescription.represents(byte.class)) {
+        } else if (typeDefinition.represents(byte.class)) {
             return BYTE;
-        } else if (typeDescription.represents(short.class)) {
+        } else if (typeDefinition.represents(short.class)) {
             return SHORT;
-        } else if (typeDescription.represents(char.class)) {
+        } else if (typeDefinition.represents(char.class)) {
             return CHARACTER;
-        } else if (typeDescription.represents(int.class)) {
+        } else if (typeDefinition.represents(int.class)) {
             return INTEGER;
-        } else if (typeDescription.represents(long.class)) {
+        } else if (typeDefinition.represents(long.class)) {
             return LONG;
-        } else if (typeDescription.represents(float.class)) {
+        } else if (typeDefinition.represents(float.class)) {
             return FLOAT;
-        } else if (typeDescription.represents(double.class)) {
+        } else if (typeDefinition.represents(double.class)) {
             return DOUBLE;
         } else {
-            throw new IllegalArgumentException("Not a primitive, non-void type: " + typeDescription);
+            throw new IllegalArgumentException("Not a primitive, non-void type: " + typeDefinition);
         }
     }
 
     /**
      * Attempts to widen the represented type into another type.
      *
-     * @param typeDescription A non-void primitive type that is the expected result of the widening operation.
+     * @param typeDefinition A non-void primitive type that is the expected result of the widening operation.
      * @return A widening instruction or an illegal stack manipulation if such widening is not legitimate.
      */
-    public StackManipulation widenTo(TypeDescription typeDescription) {
-        if (typeDescription.represents(boolean.class)) {
+    public StackManipulation widenTo(TypeDefinition typeDefinition) {
+        if (typeDefinition.represents(boolean.class)) {
             return toBooleanStackManipulation;
-        } else if (typeDescription.represents(byte.class)) {
+        } else if (typeDefinition.represents(byte.class)) {
             return toByteStackManipulation;
-        } else if (typeDescription.represents(short.class)) {
+        } else if (typeDefinition.represents(short.class)) {
             return toShortStackManipulation;
-        } else if (typeDescription.represents(char.class)) {
+        } else if (typeDefinition.represents(char.class)) {
             return toCharacterStackManipulation;
-        } else if (typeDescription.represents(int.class)) {
+        } else if (typeDefinition.represents(int.class)) {
             return toIntegerStackManipulation;
-        } else if (typeDescription.represents(long.class)) {
+        } else if (typeDefinition.represents(long.class)) {
             return toLongStackManipulation;
-        } else if (typeDescription.represents(float.class)) {
+        } else if (typeDefinition.represents(float.class)) {
             return toFloatStackManipulation;
-        } else if (typeDescription.represents(double.class)) {
+        } else if (typeDefinition.represents(double.class)) {
             return toDoubleStackManipulation;
         } else {
-            throw new IllegalArgumentException("Not a primitive non-void type: " + typeDescription);
+            throw new IllegalArgumentException("Not a primitive non-void type: " + typeDefinition);
         }
-    }
-
-    @Override
-    public String toString() {
-        return "PrimitiveWideningDelegate." + name();
     }
 
     /**
      * A stack manipulation that widens a primitive type into a more general primitive type.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class WideningStackManipulation implements StackManipulation {
 
         /**
@@ -274,35 +271,19 @@ public enum PrimitiveWideningDelegate {
             this.size = size;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public boolean isValid() {
             return true;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Implementation.Context implementationContext) {
             methodVisitor.visitInsn(conversionOpcode);
             return size;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && conversionOpcode == ((WideningStackManipulation) other).conversionOpcode
-                    && size.equals(((WideningStackManipulation) other).size);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * conversionOpcode + size.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "PrimitiveWideningDelegate.WideningStackManipulation{" +
-                    "conversionOpcode=" + conversionOpcode +
-                    ", size=" + size +
-                    '}';
         }
     }
 }

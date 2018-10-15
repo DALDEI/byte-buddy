@@ -1,44 +1,40 @@
 package net.bytebuddy.matcher;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
+
 /**
  * An element matcher that reverses the matching result of another matcher.
  *
  * @param <T> The type of the matched entity.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class NegatingMatcher<T> extends ElementMatcher.Junction.AbstractBase<T> {
 
     /**
      * The element matcher to be negated.
      */
-    private final ElementMatcher<? super T> negatedMatcher;
+    private final ElementMatcher<? super T> matcher;
 
     /**
      * Creates a new negating element matcher.
      *
-     * @param negatedMatcher The element matcher to be negated.
+     * @param matcher The element matcher to be negated.
      */
-    public NegatingMatcher(ElementMatcher<? super T> negatedMatcher) {
-        this.negatedMatcher = negatedMatcher;
+    public NegatingMatcher(ElementMatcher<? super T> matcher) {
+        this.matcher = matcher;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public boolean matches(T target) {
-        return !negatedMatcher.matches(target);
+        return !matcher.matches(target);
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && negatedMatcher.equals(((NegatingMatcher<?>) other).negatedMatcher);
-    }
-
-    @Override
-    public int hashCode() {
-        return -1 * negatedMatcher.hashCode();
-    }
-
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public String toString() {
-        return "not(" + negatedMatcher + ')';
+        return "not(" + matcher + ')';
     }
 }

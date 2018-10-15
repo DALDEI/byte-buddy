@@ -47,21 +47,21 @@ public @interface This {
         INSTANCE;
 
         /**
-         * The index of the {@code this} reference of method variable arrays of non-static methods.
+         * {@inheritDoc}
          */
-        private static final int THIS_REFERENCE_INDEX = 0;
-
-        @Override
         public Class<This> getHandledType() {
             return This.class;
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public MethodDelegationBinder.ParameterBinding<?> bind(AnnotationDescription.Loadable<This> annotation,
                                                                MethodDescription source,
                                                                ParameterDescription target,
                                                                Implementation.Target implementationTarget,
-                                                               Assigner assigner) {
+                                                               Assigner assigner,
+                                                               Assigner.Typing typing) {
             if (target.getType().isPrimitive()) {
                 throw new IllegalStateException(target + " uses a primitive type with a @This annotation");
             } else if (target.getType().isArray()) {
@@ -69,18 +69,10 @@ public @interface This {
             } else if (source.isStatic() && !annotation.loadSilent().optional()) {
                 return MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
             }
-            StackManipulation assignment = source.isStatic()
+            return new MethodDelegationBinder.ParameterBinding.Anonymous(source.isStatic()
                     ? NullConstant.INSTANCE
-                    : new StackManipulation.Compound(MethodVariableAccess.REFERENCE.loadOffset(THIS_REFERENCE_INDEX),
-                    assigner.assign(implementationTarget.getTypeDescription(), target.getType().asErasure(), RuntimeType.Verifier.check(target)));
-            return assignment.isValid()
-                    ? new MethodDelegationBinder.ParameterBinding.Anonymous(assignment)
-                    : MethodDelegationBinder.ParameterBinding.Illegal.INSTANCE;
-        }
-
-        @Override
-        public String toString() {
-            return "This.Binder." + name();
+                    : new StackManipulation.Compound(MethodVariableAccess.loadThis(),
+                    assigner.assign(implementationTarget.getInstrumentedType().asGenericType(), target.getType(), typing)));
         }
     }
 }

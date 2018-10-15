@@ -1,30 +1,21 @@
 package net.bytebuddy;
 
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 import org.objectweb.asm.Opcodes;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertTrue;
 
 public class ClassFileVersionTest {
 
     @Test
-    public void testCurrentJavaVersionWasManuallyEvaluated() throws Exception {
-        // This test is supposed to fail if ByteBuddy was not yet manually considered for
-        // a new major release targeting Java.
-        assertTrue(ClassFileVersion.forCurrentJavaVersion().getVersion() <= Opcodes.V1_8);
-    }
-
-    @Test
     public void testExplicitConstructionOfUnknownVersion() throws Exception {
-        assertThat(new ClassFileVersion(Opcodes.V1_8 + 1).getVersion(), is(Opcodes.V1_8 + 1));
+        assertThat(ClassFileVersion.ofMinorMajor(Opcodes.V11 + 1).getMinorMajorVersion(), is(Opcodes.V11 + 1));
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testIllegalVersion() throws Exception {
-        new ClassFileVersion(0);
+        ClassFileVersion.ofMinorMajor(ClassFileVersion.BASE_VERSION);
     }
 
     @Test
@@ -38,7 +29,16 @@ public class ClassFileVersionTest {
     }
 
     @Test
-    public void testObjectProperties() throws Exception {
-        ObjectPropertyAssertion.of(ClassFileVersion.class).apply();
+    public void testVersionPropertyAction() throws Exception {
+        assertThat(ClassFileVersion.VersionLocator.ForLegacyVm.INSTANCE.run(), is(System.getProperty("java.version")));
+    }
+
+    @Test
+    public void testVersionOfClass() throws Exception {
+        assertThat(ClassFileVersion.of(Foo.class).compareTo(ClassFileVersion.ofThisVm()) < 1, is(true));
+    }
+
+    private static class Foo {
+        /* empty */
     }
 }

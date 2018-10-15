@@ -1,8 +1,17 @@
 package net.bytebuddy.dynamic.loading;
 
-import net.bytebuddy.asm.ClassVisitorWrapper;
-import net.bytebuddy.test.utility.ClassFileExtraction;
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.field.FieldList;
+import net.bytebuddy.description.method.MethodList;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.test.utility.MockitoRule;
+import net.bytebuddy.utility.OpenedClassReader;
+import org.hamcrest.CoreMatchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -11,26 +20,25 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.mockito.Mock;
 import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.commons.RemappingClassAdapter;
+import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.SimpleRemapper;
 
 import java.io.InputStream;
 import java.net.URL;
-import java.security.AccessController;
 import java.security.ProtectionDomain;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Enumeration;
 
 import static junit.framework.TestCase.assertEquals;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertNotEquals;
 
 @RunWith(Parameterized.class)
 public class ByteArrayClassLoaderChildFirstTest {
 
-    private static final String FOO = "foo", BAR = "bar", QUX = "qux", CLASS_FILE = ".class";
+    private static final String BAR = "bar", CLASS_FILE = ".class";
 
     private static final ProtectionDomain DEFAULT_PROTECTION_DOMAIN = null;
 
@@ -61,13 +69,13 @@ public class ByteArrayClassLoaderChildFirstTest {
 
     @Before
     public void setUp() throws Exception {
-        Map<String, byte[]> values = Collections.singletonMap(Foo.class.getName(),
-                ClassFileExtraction.extract(Bar.class, new RenamingWrapper(Bar.class.getName().replace('.', '/'),
-                        Foo.class.getName().replace('.', '/'))));
         classLoader = new ByteArrayClassLoader.ChildFirst(getClass().getClassLoader(),
-                values,
+                Collections.singletonMap(Foo.class.getName(), new ByteBuddy()
+                        .redefine(Bar.class)
+                        .visit(new RenamingWrapper(Bar.class.getName().replace('.', '/'), Foo.class.getName().replace('.', '/')))
+                        .make()
+                        .getBytes()),
                 DEFAULT_PROTECTION_DOMAIN,
-                AccessController.getContext(),
                 persistenceHandler,
                 PackageDefinitionStrategy.NoOp.INSTANCE);
     }
@@ -77,9 +85,12 @@ public class ByteArrayClassLoaderChildFirstTest {
         Class<?> type = classLoader.loadClass(Foo.class.getName());
         assertThat(type.getClassLoader(), is(classLoader));
         assertEquals(classLoader.loadClass(Foo.class.getName()), type);
-        assertNotEquals(Foo.class, type);
+        assertThat(type, not(CoreMatchers.<Class<?>>is(Foo.class)));
         assertThat(type.getPackage(), notNullValue(Package.class));
-        assertThat(type.getPackage(), is(Foo.class.getPackage()));
+        // Due to change in API in Java 9 where package identity is no longer bound by hierarchy.
+        assertThat(type.getPackage(), ClassFileVersion.ofThisVm().isAtLeast(ClassFileVersion.JAVA_V9)
+                ? not(is(Foo.class.getPackage()))
+                : is(Foo.class.getPackage()));
     }
 
     @Test
@@ -197,7 +208,7 @@ public class ByteArrayClassLoaderChildFirstTest {
         /* empty */
     }
 
-    private static class RenamingWrapper implements ClassVisitorWrapper {
+    private static class RenamingWrapper implements AsmVisitorWrapper {
 
         private final String oldName, newName;
 
@@ -206,19 +217,25 @@ public class ByteArrayClassLoaderChildFirstTest {
             this.newName = newName;
         }
 
-        @Override
-        public int mergeWriter(int hint) {
-            return hint;
+        public int mergeWriter(int flags) {
+            return flags;
         }
 
-        @Override
-        public int mergeReader(int hint) {
-            return hint;
+        public int mergeReader(int flags) {
+            return flags;
         }
 
-        @Override
-        public ClassVisitor wrap(ClassVisitor classVisitor) {
-            return new RemappingClassAdapter(classVisitor, new SimpleRemapper(oldName, newName));
+        public ClassVisitor wrap(TypeDescription instrumentedType,
+                                 ClassVisitor classVisitor,
+                                 Implementation.Context implementationContext,
+                                 TypePool typePool,
+                                 FieldList<FieldDescription.InDefinedShape> fields,
+                                 MethodList<?> methods,
+                                 int writerFlags,
+                                 int readerFlags) {
+            return new ClassRemapper(OpenedClassReader.ASM_API, classVisitor, new SimpleRemapper(oldName, newName)) {
+                /* only anonymous to define usage of Byte Buddy specific API version */
+            };
         }
     }
 }

@@ -1,5 +1,6 @@
 package net.bytebuddy.implementation;
 
+import net.bytebuddy.build.HashCodeAndEqualsPlugin;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.description.type.TypeList;
@@ -11,8 +12,6 @@ import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import org.objectweb.asm.MethodVisitor;
 
 import java.util.*;
-
-import static net.bytebuddy.utility.ByteBuddyCommons.*;
 
 /**
  * This {@link Implementation} invokes a default method for the methods it instruments.
@@ -31,6 +30,7 @@ import static net.bytebuddy.utility.ByteBuddyCommons.*;
  * implemented by the instrumented type. The Java runtime only requires the second condition to be fulfilled which
  * is why this implementation only checks the later condition, as well.
  */
+@HashCodeAndEqualsPlugin.Enhance
 public class DefaultMethodCall implements Implementation {
 
     /**
@@ -46,7 +46,7 @@ public class DefaultMethodCall implements Implementation {
      *                              be called.
      */
     protected DefaultMethodCall(List<TypeDescription> prioritizedInterfaces) {
-        this.prioritizedInterfaces = isImplementable(prioritizedInterfaces);
+        this.prioritizedInterfaces = prioritizedInterfaces;
     }
 
     /**
@@ -61,7 +61,7 @@ public class DefaultMethodCall implements Implementation {
      * interfaces to be prioritized in their order.
      */
     public static Implementation prioritize(Class<?>... prioritizedInterface) {
-        return prioritize(new TypeList.ForLoadedType(nonNull(prioritizedInterface)));
+        return prioritize(new TypeList.ForLoadedTypes(prioritizedInterface));
     }
 
     /**
@@ -71,12 +71,16 @@ public class DefaultMethodCall implements Implementation {
      * any remaining interface is searched for a suitable default method. If no or more than one method defines a
      * suitable default method, an exception is thrown.
      *
-     * @param prioritizedInterface A list of prioritized default method interfaces in their prioritization order.
+     * @param prioritizedInterfaces A list of prioritized default method interfaces in their prioritization order.
      * @return An implementation which calls an instrumented method's compatible default method that considers the given
      * interfaces to be prioritized in their order.
      */
-    public static Implementation prioritize(Iterable<? extends Class<?>> prioritizedInterface) {
-        return prioritize(new TypeList.ForLoadedType(toList(prioritizedInterface)));
+    public static Implementation prioritize(Iterable<? extends Class<?>> prioritizedInterfaces) {
+        List<Class<?>> list = new ArrayList<Class<?>>();
+        for (Class<?> prioritizedInterface : prioritizedInterfaces) {
+            list.add(prioritizedInterface);
+        }
+        return prioritize(new TypeList.ForLoadedTypes(list));
     }
 
     /**
@@ -91,7 +95,7 @@ public class DefaultMethodCall implements Implementation {
      * interfaces to be prioritized in their order.
      */
     public static Implementation prioritize(TypeDescription... prioritizedInterface) {
-        return prioritize(Arrays.asList(nonNull(prioritizedInterface)));
+        return prioritize(Arrays.asList(prioritizedInterface));
     }
 
     /**
@@ -106,7 +110,7 @@ public class DefaultMethodCall implements Implementation {
      * interfaces to be prioritized in their order.
      */
     public static Implementation prioritize(Collection<? extends TypeDescription> prioritizedInterfaces) {
-        return new DefaultMethodCall(new ArrayList<TypeDescription>(nonNull(prioritizedInterfaces)));
+        return new DefaultMethodCall(new ArrayList<TypeDescription>(prioritizedInterfaces));
     }
 
     /**
@@ -122,14 +126,18 @@ public class DefaultMethodCall implements Implementation {
         return new DefaultMethodCall(Collections.<TypeDescription>emptyList());
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public InstrumentedType prepare(InstrumentedType instrumentedType) {
         return instrumentedType;
     }
 
-    @Override
+    /**
+     * {@inheritDoc}
+     */
     public ByteCodeAppender appender(Target implementationTarget) {
-        return new Appender(implementationTarget, filterRelevant(implementationTarget.getTypeDescription()));
+        return new Appender(implementationTarget, filterRelevant(implementationTarget.getInstrumentedType()));
     }
 
     /**
@@ -150,25 +158,10 @@ public class DefaultMethodCall implements Implementation {
         return filtered;
     }
 
-    @Override
-    public boolean equals(Object other) {
-        return this == other || !(other == null || getClass() != other.getClass())
-                && prioritizedInterfaces.equals(((DefaultMethodCall) other).prioritizedInterfaces);
-    }
-
-    @Override
-    public int hashCode() {
-        return prioritizedInterfaces.hashCode();
-    }
-
-    @Override
-    public String toString() {
-        return "DefaultMethodCall{prioritizedInterfaces=" + prioritizedInterfaces + '}';
-    }
-
     /**
      * The appender for implementing a {@link net.bytebuddy.implementation.DefaultMethodCall}.
      */
+    @HashCodeAndEqualsPlugin.Enhance
     protected static class Appender implements ByteCodeAppender {
 
         /**
@@ -184,6 +177,7 @@ public class DefaultMethodCall implements Implementation {
         /**
          * The relevant non-prioritized interfaces to be considered by this appender.
          */
+        @HashCodeAndEqualsPlugin.ValueHandling(HashCodeAndEqualsPlugin.ValueHandling.Sort.IGNORE)
         private final Set<TypeDescription> nonPrioritizedInterfaces;
 
         /**
@@ -195,11 +189,13 @@ public class DefaultMethodCall implements Implementation {
         protected Appender(Target implementationTarget, List<TypeDescription> prioritizedInterfaces) {
             this.implementationTarget = implementationTarget;
             this.prioritizedInterfaces = prioritizedInterfaces;
-            this.nonPrioritizedInterfaces = new HashSet<TypeDescription>(implementationTarget.getTypeDescription().getInterfaces().asErasures());
+            this.nonPrioritizedInterfaces = new HashSet<TypeDescription>(implementationTarget.getInstrumentedType().getInterfaces().asErasures());
             nonPrioritizedInterfaces.removeAll(prioritizedInterfaces);
         }
 
-        @Override
+        /**
+         * {@inheritDoc}
+         */
         public Size apply(MethodVisitor methodVisitor, Context implementationContext, MethodDescription instrumentedMethod) {
             StackManipulation defaultMethodInvocation = locateDefault(instrumentedMethod);
             if (!defaultMethodInvocation.isValid()) {
@@ -208,7 +204,7 @@ public class DefaultMethodCall implements Implementation {
             StackManipulation.Size stackSize = new StackManipulation.Compound(
                     MethodVariableAccess.allArgumentsOf(instrumentedMethod).prependThisReference(),
                     defaultMethodInvocation,
-                    MethodReturn.returning(instrumentedMethod.getReturnType().asErasure())
+                    MethodReturn.of(instrumentedMethod.getReturnType())
             ).apply(methodVisitor, implementationContext);
             return new Size(stackSize.getMaximalSize(), instrumentedMethod.getStackSize());
         }
@@ -221,16 +217,16 @@ public class DefaultMethodCall implements Implementation {
          * given method.
          */
         private StackManipulation locateDefault(MethodDescription methodDescription) {
-            MethodDescription.Token methodToken = methodDescription.asToken();
+            MethodDescription.SignatureToken methodToken = methodDescription.asSignatureToken();
             SpecialMethodInvocation specialMethodInvocation = SpecialMethodInvocation.Illegal.INSTANCE;
             for (TypeDescription typeDescription : prioritizedInterfaces) {
-                specialMethodInvocation = implementationTarget.invokeDefault(typeDescription, methodToken);
+                specialMethodInvocation = implementationTarget.invokeDefault(methodToken, typeDescription);
                 if (specialMethodInvocation.isValid()) {
                     return specialMethodInvocation;
                 }
             }
             for (TypeDescription typeDescription : nonPrioritizedInterfaces) {
-                SpecialMethodInvocation other = implementationTarget.invokeDefault(typeDescription, methodToken);
+                SpecialMethodInvocation other = implementationTarget.invokeDefault(methodToken, typeDescription);
                 if (specialMethodInvocation.isValid() && other.isValid()) {
                     throw new IllegalStateException(methodDescription + " has an ambiguous default method with "
                             + other.getMethodDescription() + " and " + specialMethodInvocation.getMethodDescription());
@@ -238,27 +234,6 @@ public class DefaultMethodCall implements Implementation {
                 specialMethodInvocation = other;
             }
             return specialMethodInvocation;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return this == other || !(other == null || getClass() != other.getClass())
-                    && prioritizedInterfaces.equals(((Appender) other).prioritizedInterfaces)
-                    && implementationTarget.equals(((Appender) other).implementationTarget);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * implementationTarget.hashCode() + prioritizedInterfaces.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            return "DefaultMethodCall.Appender{" +
-                    "implementationTarget=" + implementationTarget +
-                    ", prioritizedInterfaces=" + prioritizedInterfaces +
-                    ", nonPrioritizedInterfaces=" + nonPrioritizedInterfaces +
-                    '}';
         }
     }
 }

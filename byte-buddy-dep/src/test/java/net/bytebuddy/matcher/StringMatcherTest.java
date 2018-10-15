@@ -1,11 +1,8 @@
 package net.bytebuddy.matcher;
 
-import net.bytebuddy.description.method.MethodDescription;
-import net.bytebuddy.test.utility.ObjectPropertyAssertion;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
-import org.mockito.Mock;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -22,9 +19,6 @@ public class StringMatcherTest extends AbstractElementMatcherTest<StringMatcher>
     private final StringMatcher.Mode mode;
 
     private final String matching, nonMatching;
-
-    @Mock
-    private MethodDescription methodDescription;
 
     public StringMatcherTest(StringMatcher.Mode mode, String matching, String nonMatching) {
         super(StringMatcher.class, mode.getDescription());
@@ -58,13 +52,8 @@ public class StringMatcherTest extends AbstractElementMatcherTest<StringMatcher>
         assertThat(new StringMatcher(nonMatching, mode).matches(FOO), is(false));
     }
 
-    @Override
-    protected <S> ObjectPropertyAssertion<S> modify(ObjectPropertyAssertion<S> propertyAssertion) {
-        return propertyAssertion.skipToString();
-    }
-
     @Test
-    public void testToString() throws Exception {
+    public void testStringRepresentation() throws Exception {
         assertThat(new StringMatcher(FOO, mode).toString(), startsWith(mode.getDescription()));
     }
 }
